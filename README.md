@@ -6,4 +6,4 @@ Today, the evidence behind these decisions is spread across ticketing, monitorin
 
 Tracer brings that evidence into one incident record and records each human materiality determination with its date, rationale, and supporting evidence. It computes filing and amendment deadlines consistently, drafts evidence-cited disclosure text for human review, and writes every action to an append-only audit trail. The materiality judgment stays with people; Tracer supports the decision but never makes it.
 
-This is Team 7's implementation of Tracer, developed in parallel with Team 10 as part of Pod M in ECE 30861 at Purdue University (Fall 2026).
+This is Team 7's implementation of Tracer, developed in parallel with Team 10 in ECE 30861 (Fall 2026) at Purdue University.
