@@ -367,3 +367,10 @@ Phase 3 is done for Team 7 when the deployed service does all of the following.
 - Writes an audit entry for every action and rejects edits and deletes with 405.
 - Leaves stored data unchanged on every error.
 - Is ready to demo the audit table's DB permissions (AC-23).
+
+## Commits and pull requests
+
+- Follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/); the `conventional-commits` skill holds the spec.
+- On top of the spec, every commit message and PR title must include a scope: `type(scope): description`, e.g. `feat(db): add audit_entries table` or `docs(agents): add database roles`.
+- `type: description` without a scope is valid under the spec but not in this repo.
+- Use a short lowercase noun for the area changed, e.g. `agents`, `skills`, `config`, `db`, `models`, `roles`, `audit`, `incidents`, `evidence`, `workflow`, `api`.
