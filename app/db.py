@@ -49,9 +49,3 @@ def transaction() -> Iterator[Session]:
     """
     with _session_factory()() as session, session.begin():
         yield session
-
-
-def create_tables() -> None:
-    import app.models  # noqa: F401  (registers the tables on Base.metadata)
-
-    Base.metadata.create_all(get_engine())
