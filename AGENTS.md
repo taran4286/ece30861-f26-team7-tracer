@@ -196,8 +196,8 @@ Two roles keep the REQ-22 grants enforceable: a table's owner can always grant i
 | App (`tracer_app`) | `DATABASE_URL` | No | The service and tests |
 
 - `scripts/setup_db.py` runs as the owner, in one transaction, and is safe to re-run. It creates the app role from the user and password in `DATABASE_URL` if missing, runs `Base.metadata.create_all`, then applies the grants.
-- Each run resets the app role to the target state, so leftover privileges don't survive: set its password from `DATABASE_URL`, set it `NOSUPERUSER NOCREATEDB NOCREATEROLE`, and revoke all privileges on the four tables before granting.
-- End the run by checking the grants with `has_table_privilege` and failing if any differ; this doubles as the AC-23 demo.
+- Each run resets the app role, so leftover privileges don't survive: set its password from `DATABASE_URL`, set it `NOSUPERUSER NOCREATEDB NOCREATEROLE`, revoke every role membership it holds, make the owner role the owner of the four tables, and revoke all privileges on them from the app role and from `PUBLIC` before granting.
+- End the run by checking the app role's effective privileges with `has_table_privilege`, both granted and forbidden ones, and fail if any differ; this doubles as the AC-23 demo.
 - Grant the app role exactly:
   - USAGE on the schema.
   - `incidents`: SELECT, INSERT, UPDATE.
