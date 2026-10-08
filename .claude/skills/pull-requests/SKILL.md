@@ -2,7 +2,7 @@
 name: pull-requests
 description: Describes how to write pull/merge requests. Use when asked to write or edit a pull request or merge request description. This skill is not relevant to commit messages.
 ---
-<!-- Copied verbatim from https://github.com/cloudflare/computer/blob/23eda077ff4d9539d8ae00969e17978674a62ce6/.agents/skills/pull-requests/SKILL.md, licensed MIT (see LICENSE in this folder). Only this comment was added. -->
+<!-- Copied verbatim from https://github.com/cloudflare/computer/blob/23eda077ff4d9539d8ae00969e17978674a62ce6/.agents/skills/pull-requests/SKILL.md, licensed MIT (see LICENSE in this folder). Changes from the source: this comment, `<detail>` corrected to `<details>`, and the column-alignment spaces removed from the Anti-Patterns table, which renders the same. -->
 
 # Pull Request + Merge Request Style Guide
 
@@ -109,15 +109,15 @@ e.g. color instead of colour.
 Format the pull request using Github flavored markdown, do not use hard line breaks. Use US English spelling.
 
  - Use code fences to wrap class, variable names etc when referencing code.
- - Use `<detail>` elements to hide verbose code examples or log output.
+ - Use `<details>` elements to hide verbose code examples or log output.
 
 ## Anti-Patterns to Avoid
 
-| Anti-Pattern                            | Problem                                                                                             | Fix                                                                                                           |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Including lists of code changes         | The description is always accompanied by a diff there is no need to include a list of file changes. | Remove the list and include any relevant filenames as part of the implementation overview.                    |
-| Overuse of headings                     | Makes the description overly verbose. It is intended to be short and concise.                       | Remove the headings in favor of sequential paragraphs. Use bold characters if a section is absolutely needed. |
-| Referencing agent conversation or files | The reviewer has no context about these conversations so they are irrelevant.                       | Ensure the context is covered in the pull request and the text is comprehensible on it's own.                 |
+| Anti-Pattern | Problem | Fix |
+| --- | --- | --- |
+| Including lists of code changes | The description is always accompanied by a diff there is no need to include a list of file changes. | Remove the list and include any relevant filenames as part of the implementation overview. |
+| Overuse of headings | Makes the description overly verbose. It is intended to be short and concise. | Remove the headings in favor of sequential paragraphs. Use bold characters if a section is absolutely needed. |
+| Referencing agent conversation or files | The reviewer has no context about these conversations so they are irrelevant. | Ensure the context is covered in the pull request and the text is comprehensible on it's own. |
 
 ## Verification
 
