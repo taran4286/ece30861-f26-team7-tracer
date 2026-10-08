@@ -32,6 +32,8 @@ The business logic is built first, independent of the web framework; the FastAPI
 
 **Local database (Docker)**
 
+Planned: Group A adds `docker-compose.yml` and `scripts/setup_db.py`. Until they land, the commands below won't run.
+
 - Run Postgres locally with `docker compose up -d` from a committed `docker-compose.yml`; everyone in every group uses it, so tests run against the same Postgres version.
 - Use the `postgres:18` image, map port 5432, and keep data in a named volume so it survives restarts; `docker compose down -v` wipes it.
 - Read `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` from `.env`, with placeholders in `.env.example`.
