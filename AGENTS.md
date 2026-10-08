@@ -35,7 +35,7 @@ The business logic is built first, independent of the web framework; the FastAPI
 Planned: Group A adds `docker-compose.yml` and `scripts/setup_db.py`. Until they land, the commands below won't run.
 
 - Run Postgres locally with `docker compose up -d` from a committed `docker-compose.yml`; everyone in every group uses it, so tests run against the same Postgres version.
-- Use the `postgres:18` image, map port 5432, and keep data in a named volume so it survives restarts; `docker compose down -v` wipes it.
+- Use the `postgres:18` image, publish port 5432 on loopback only (`127.0.0.1:5432:5432`; Docker otherwise listens on every host address), and keep data in a named volume so it survives restarts; `docker compose down -v` wipes it.
 - Read `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` from `.env`, with placeholders in `.env.example`.
 - The container's `POSTGRES_USER` is the owner role: point `ADMIN_DATABASE_URL` at it, then run `python scripts/setup_db.py` to create `tracer_app`, the tables and the grants.
 - Point `DATABASE_URL` at the container as `tracer_app`, never as `POSTGRES_USER`; it's a superuser and skips every permission check.
