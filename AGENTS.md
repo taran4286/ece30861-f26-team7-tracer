@@ -28,6 +28,13 @@ The business logic is built first, independent of the web framework; the FastAPI
 - `REGISTRANT_TYPE`: `Domestic` or `FPI`, defaulting to `Domestic`.
 - Commit a `.env.example` with placeholder values; never commit real credentials.
 
+**Local database (Docker)**
+
+- Run Postgres locally with `docker compose up -d` from a committed `docker-compose.yml`; everyone in every group uses it, so tests run against the same Postgres version.
+- Use the `postgres:17` image, map port 5432, and keep data in a named volume so it survives restarts; `docker compose down -v` wipes it.
+- Read `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` from `.env`, with placeholders in `.env.example`.
+- Point `DATABASE_URL` at the container, e.g. `postgresql+psycopg://user:pass@localhost:5432/tracer`.
+
 ## Scope
 
 Phase 3 builds Team 7's Tracer service covering REQ-01, 02, 03, 06, 07, 08, 19, 22 and 23. The Phase 3 implementation plan is the source of truth until the final API arrives; then paths, schemas and error codes get rewired against it.
@@ -46,7 +53,7 @@ The foundation comes first because every endpoint depends on it; after that, thr
 
 | Group | Owns |
 | --- | --- |
-| A. Foundation | Config, database, tables, error type, role checks, `audit()` helper, deployment |
+| A. Foundation | Config, database, local Docker database, tables, error type, role checks, `audit()` helper, deployment |
 | B. Incidents and evidence | Incident create and get, the 405s, evidence import |
 | C. Workflow | Determination, transitions, audit endpoint, 501 stubs |
 
