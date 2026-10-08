@@ -2,7 +2,7 @@
 name: conventional-commits
 description: Write git commit messages and pull request titles following the Conventional Commits 1.0.0 spec (feat, fix, docs, chore, etc.). Use this whenever you write, amend or reword a commit message, squash commits, or create or retitle a pull request, even if the user only says "commit this", "push it" or "raise a PR" and never mentions the format.
 ---
-<!-- Copied verbatim from https://github.com/conventional-commits/conventionalcommits.org/blob/42b627eb4071345cca4f2a1628da93d3420dc645/content/v1.0.0/index.md (published at https://www.conventionalcommits.org/en/v1.0.0/). -->
+<!-- Copied verbatim from https://github.com/conventional-commits/conventionalcommits.org/blob/42b627eb4071345cca4f2a1628da93d3420dc645/content/v1.0.0/index.md (published at https://www.conventionalcommits.org/en/v1.0.0/). The spec text is licensed CC BY 3.0: https://creativecommons.org/licenses/by/3.0/ -->
 
 # Conventional Commits 1.0.0
 
