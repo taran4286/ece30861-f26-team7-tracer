@@ -26,7 +26,7 @@ The business logic is built first, independent of the web framework; the FastAPI
 **Config** (environment variables, loaded from a git-ignored `.env`)
 
 - `DATABASE_URL`: the app role's connection, used by the service and tests, e.g. `postgresql+psycopg://tracer_app:pass@localhost:5432/tracer`.
-- `ADMIN_DATABASE_URL`: the owner role's connection, used only by `scripts/setup_db.py`, e.g. `postgresql+psycopg://tracer_owner:pass@localhost:5432/tracer`.
+- `ADMIN_DATABASE_URL`: the owner role's connection, used only by `scripts/setup_db.py` and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_owner:pass@localhost:5432/tracer`.
 - `REGISTRANT_TYPE`: `Domestic` or `FPI`, defaulting to `Domestic`.
 - Commit a `.env.example` with placeholder values; never commit real credentials.
 
@@ -195,7 +195,9 @@ Two roles keep the REQ-22 grants enforceable: a table's owner can always grant i
 | Owner (e.g. `tracer_owner`) | `ADMIN_DATABASE_URL` | Yes | `scripts/setup_db.py` only |
 | App (`tracer_app`) | `DATABASE_URL` | No | The service and tests |
 
-- `scripts/setup_db.py` runs as the owner and is safe to re-run. It creates the app role from the user and password in `DATABASE_URL` if missing, runs `Base.metadata.create_all`, then applies the grants.
+- `scripts/setup_db.py` runs as the owner, in one transaction, and is safe to re-run. It creates the app role from the user and password in `DATABASE_URL` if missing, runs `Base.metadata.create_all`, then applies the grants.
+- Each run resets the app role to the target state, so leftover privileges don't survive: set its password from `DATABASE_URL`, set it `NOSUPERUSER NOCREATEDB NOCREATEROLE`, and revoke all privileges on the four tables before granting.
+- End the run by checking the grants with `has_table_privilege` and failing if any differ; this doubles as the AC-23 demo.
 - Grant the app role exactly:
   - USAGE on the schema.
   - `incidents`: SELECT, INSERT, UPDATE.
@@ -203,6 +205,7 @@ Two roles keep the REQ-22 grants enforceable: a table's owner can always grant i
   - `determinations`: SELECT, INSERT.
   - `audit_entries`: SELECT, INSERT.
 - Nothing else: no DELETE or TRUNCATE anywhere, and no UPDATE on evidence, determinations or audit_entries.
+- Declare `audit_entries.seq` with SQLAlchemy `Identity()`, not a plain autoincrement column; if it ends up as a serial, the app role also needs USAGE on its sequence.
 - The service never creates tables at startup; the app role can't.
 - The owner role needs permission to create tables and roles. Locally that's the container's superuser; on the host, use the managed database's admin user.
 - Use the setup script in place of migrations for Phase 3; move to Alembic once the schema starts changing.
@@ -334,10 +337,11 @@ Anything not built returns 501 `NOT_IMPLEMENTED` using the `Error` schema.
 The service needs a stable HTTPS base URL and a database that keeps its data across redeploys.
 
 - Deploy behind HTTPS at a URL that won't change for the rest of the semester.
-- Store `DATABASE_URL`, `ADMIN_DATABASE_URL` and any other secrets in the host's settings, never in the repo.
+- Store `DATABASE_URL` and any other secrets in the host's settings, never in the repo.
+- Never expose `ADMIN_DATABASE_URL` to the running service. Set it only on a release or setup step if the host supports one; otherwise don't store it on the host and run `scripts/setup_db.py` from a dev machine.
 - Use a persistent database that survives redeploys.
 - Run the server clock in UTC with NTP sync (AC-02's ±5 s).
-- Run `scripts/setup_db.py` as the owner as part of deploy, which applies the grants.
+- Run `scripts/setup_db.py` as the owner before the service first starts and whenever the tables or grants change.
 
 ## Decisions settled by the Phase 3 plan
 
