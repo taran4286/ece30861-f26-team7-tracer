@@ -20,11 +20,13 @@ The business logic is built first, independent of the web framework; the FastAPI
 - `app/errors.py`: a `TracerError` exception carrying the error code, message and field; the API layer maps it to HTTP responses later.
 - `app/audit.py`: the `audit()` helper.
 - `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination and transitions), callable without any web framework. Each operation takes the acting user's ID and role as arguments.
+- `scripts/setup_db.py`: creates the app role, the tables and the grants (see Database roles).
 - `tests/`: one test file per service module.
 
 **Config** (environment variables, loaded from a git-ignored `.env`)
 
-- `DATABASE_URL`, e.g. `postgresql+psycopg://user:pass@localhost:5432/tracer`.
+- `DATABASE_URL`: the app role's connection, used by the service and tests, e.g. `postgresql+psycopg://tracer_app:pass@localhost:5432/tracer`.
+- `ADMIN_DATABASE_URL`: the owner role's connection, used only by `scripts/setup_db.py`, e.g. `postgresql+psycopg://tracer_owner:pass@localhost:5432/tracer`.
 - `REGISTRANT_TYPE`: `Domestic` or `FPI`, defaulting to `Domestic`.
 - Commit a `.env.example` with placeholder values; never commit real credentials.
 
@@ -33,7 +35,8 @@ The business logic is built first, independent of the web framework; the FastAPI
 - Run Postgres locally with `docker compose up -d` from a committed `docker-compose.yml`; everyone in every group uses it, so tests run against the same Postgres version.
 - Use the `postgres:17` image, map port 5432, and keep data in a named volume so it survives restarts; `docker compose down -v` wipes it.
 - Read `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` from `.env`, with placeholders in `.env.example`.
-- Point `DATABASE_URL` at the container, e.g. `postgresql+psycopg://user:pass@localhost:5432/tracer`.
+- The container's `POSTGRES_USER` is the owner role: point `ADMIN_DATABASE_URL` at it, then run `python scripts/setup_db.py` to create `tracer_app`, the tables and the grants.
+- Point `DATABASE_URL` at the container as `tracer_app`, never as `POSTGRES_USER`; it's a superuser and skips every permission check.
 
 ## Scope
 
@@ -53,7 +56,7 @@ The foundation comes first because every endpoint depends on it; after that, thr
 
 | Group | Owns |
 | --- | --- |
-| A. Foundation | Config, database, local Docker database, tables, error type, role checks, `audit()` helper, deployment |
+| A. Foundation | Config, database, local Docker database, tables, database roles and `setup_db.py`, error type, role checks, `audit()` helper, deployment |
 | B. Incidents and evidence | Incident create and get, the 405s, evidence import |
 | C. Workflow | Determination, transitions, audit endpoint, 501 stubs |
 
@@ -179,8 +182,28 @@ Four tables hold everything in Phase 3. IDs are opaque, globally unique strings 
 **Storage rules**
 
 - Grant the app's DB user only INSERT and SELECT on audit_entries, and no DELETE on incidents or evidence (REQ-22). This is what the AC-23 permission demo shows.
-- Create tables at startup with `Base.metadata.create_all`; decide on migrations before the first deploy.
 - Use a persistent, managed database so data survives redeploys.
+
+**Database roles**
+
+Two roles keep the REQ-22 grants enforceable: a table's owner can always grant itself more, and a superuser skips permission checks, so the service must never connect as either.
+
+| Role | Connects via | Owns the tables | Used by |
+| --- | --- | --- | --- |
+| Owner (e.g. `tracer_owner`) | `ADMIN_DATABASE_URL` | Yes | `scripts/setup_db.py` only |
+| App (`tracer_app`) | `DATABASE_URL` | No | The service and tests |
+
+- `scripts/setup_db.py` runs as the owner and is safe to re-run. It creates the app role from the user and password in `DATABASE_URL` if missing, runs `Base.metadata.create_all`, then applies the grants.
+- Grant the app role exactly:
+  - USAGE on the schema.
+  - `incidents`: SELECT, INSERT, UPDATE.
+  - `evidence`: SELECT, INSERT (Phase 4 adds UPDATE for tagging).
+  - `determinations`: SELECT, INSERT.
+  - `audit_entries`: SELECT, INSERT.
+- Nothing else: no DELETE or TRUNCATE anywhere, and no UPDATE on evidence, determinations or audit_entries.
+- The service never creates tables at startup; the app role can't.
+- The owner role needs permission to create tables and roles. Locally that's the container's superuser; on the host, use the managed database's admin user.
+- Use the setup script in place of migrations for Phase 3; move to Alembic once the schema starts changing.
 
 ## Incidents (REQ-01, REQ-22)
 
@@ -309,10 +332,10 @@ Anything not built returns 501 `NOT_IMPLEMENTED` using the `Error` schema.
 The service needs a stable HTTPS base URL and a database that keeps its data across redeploys.
 
 - Deploy behind HTTPS at a URL that won't change for the rest of the semester.
-- Store `DATABASE_URL` and any other secrets in the host's settings, never in the repo.
+- Store `DATABASE_URL`, `ADMIN_DATABASE_URL` and any other secrets in the host's settings, never in the repo.
 - Use a persistent database that survives redeploys.
 - Run the server clock in UTC with NTP sync (AC-02's ±5 s).
-- Apply the audit-table grants as part of deploy.
+- Run `scripts/setup_db.py` as the owner as part of deploy, which applies the grants.
 
 ## Decisions settled by the Phase 3 plan
 
