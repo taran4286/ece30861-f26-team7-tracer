@@ -368,8 +368,10 @@ Phase 3 is done for Team 7 when the deployed service does all of the following.
 - Leaves stored data unchanged on every error.
 - Is ready to demo the audit table's DB permissions (AC-23).
 
-## Commits and pull requests
+## Branches, commits and pull requests
 
+- Name branches per [Conventional Branch 1.1.0](https://conventionalbranch.org), e.g. `feature/group-a-contracts` or `chore/conventional-skills`; the `conventional-branch` skill holds the spec.
+- Don't put usernames in branch names.
 - Follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/); the `conventional-commits` skill holds the spec.
 - On top of the spec, every commit message and PR title must include a scope: `type(scope): description`, e.g. `feat(db): add audit_entries table` or `docs(agents): add database roles`.
 - `type: description` without a scope is valid under the spec but not in this repo.
