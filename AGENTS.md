@@ -18,9 +18,12 @@ The business logic is built first, independent of the web framework; the FastAPI
 - `app/db.py`: engine, `Base`, and one transaction per operation.
 - `app/models.py`: the tables in Data model and storage.
 - `app/errors.py`: a `TracerError` exception carrying the error code, message and field; the API layer maps it to HTTP responses later.
+- `app/roles.py`: the `Role` enum, the permission map and `require_role()`.
+- `app/clock.py`: `today()` for every date rule and `utcnow()` for stored timestamps.
 - `app/audit.py`: the `audit()` helper.
 - `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination and transitions), callable without any web framework. Each operation takes the acting user's ID and role as arguments.
 - `scripts/setup_db.py`: creates the app role, the tables and the grants (see Database roles).
+- `docker-compose.yml`: the local Postgres (see Local database).
 - `tests/`: one test file per service module.
 
 **Config** (environment variables, loaded from a git-ignored `.env`)
@@ -327,7 +330,7 @@ Only five moves succeed in Phase 3; every other pair, including staying in the s
 
 Every successful create, import request, determination and transition writes exactly one append-only entry; failed requests write none.
 
-- Write one helper `audit(tx, action, target_id, before, after)` and call it inside the same transaction as the change.
+- Write one helper `audit(tx, action, target_id, before, after, *, user_id)` and call it inside the same transaction as the change.
 - Fill `entry_id`, `user_id` from `X-User-Id`, `timestamp` as server time, `action`, `target_id`, `before` and `after`.
 - Include `version` in `before` and `after` for incident changes.
 - Use the shapes defined above: `create_incident`, `import_evidence` (one per request), `record_determination`, `transition`.
