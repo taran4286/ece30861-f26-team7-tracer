@@ -18,9 +18,12 @@ The business logic is built first, independent of the web framework; the FastAPI
 - `app/db.py`: engine, `Base`, and one transaction per operation.
 - `app/models.py`: the tables in Data model and storage.
 - `app/errors.py`: a `TracerError` exception carrying the error code, message and field; the API layer maps it to HTTP responses later.
+- `app/roles.py`: the `Role` enum, the permission map and `require_role()`.
+- `app/clock.py`: `today()` for every date rule and `utcnow()` for stored timestamps.
 - `app/audit.py`: the `audit()` helper.
 - `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination and transitions), callable without any web framework. Each operation takes the acting user's ID and role as arguments.
 - `scripts/setup_db.py`: creates the app role, the tables and the grants (see Database roles).
+- `docker-compose.yml`: the local Postgres (see Local database).
 - `tests/`: one test file per service module.
 
 **Config** (environment variables, loaded from a git-ignored `.env`)
@@ -32,13 +35,26 @@ The business logic is built first, independent of the web framework; the FastAPI
 
 **Local database (Docker)**
 
-Planned: Group A adds `docker-compose.yml` and `scripts/setup_db.py`. Until they land, the commands below won't run.
-
 - Run Postgres locally with `docker compose up -d` from a committed `docker-compose.yml`; everyone in every group uses it, so tests run against the same Postgres version.
 - Use the `postgres:18` image, publish port 5432 on loopback only (`127.0.0.1:5432:5432`; Docker otherwise listens on every host address), and keep data in a named volume so it survives restarts; `docker compose down -v` wipes it.
 - Read `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` from `.env`, with placeholders in `.env.example`.
 - The container's `POSTGRES_USER` is the owner role: point `ADMIN_DATABASE_URL` at it, then run `python scripts/setup_db.py` to create `tracer_app`, the tables and the grants.
 - Point `DATABASE_URL` at the container as `tracer_app`, never as `POSTGRES_USER`; it's a superuser and skips every permission check.
+
+**Local setup steps**
+
+Run these in order when someone asks to set up the project or the local database.
+
+1. Check Docker Desktop is installed and running: `docker version` must show a Server section. If `docker` isn't found right after an install, open a new terminal; old ones keep the old PATH.
+2. Install the project into a virtual environment: `python -m venv .venv`, activate it, then `pip install -e ".[dev]"`.
+3. If `.env` doesn't exist, copy `.env.example` to `.env` and replace each `change-me-*` placeholder with a random value, e.g. `python -c "import secrets; print(secrets.token_urlsafe(24))"`. The owner password appears twice (`POSTGRES_PASSWORD` and `ADMIN_DATABASE_URL`) and must match; URL-safe values need no escaping. Never print, commit or overwrite an existing `.env`.
+4. Start the database with `docker compose up -d` and wait until `docker compose ps` shows `healthy`.
+5. Run `python scripts/setup_db.py`. It prints the app role's privileges; judge the result by the exit code. 0 is success, and the last line starts with `setup_db: done;`. 1 is failure, and the error message says what went wrong and whether anything was changed.
+
+- Re-run `scripts/setup_db.py` after adding a table or changing the grants; it is safe to re-run.
+- A re-run only creates missing tables and types; it doesn't alter existing ones. After changing a column or an enum's values in `app/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Database roles).
+- `docker compose stop` keeps the data; `docker compose down -v` wipes it, after which steps 4 and 5 rebuild it.
+- The image reads `POSTGRES_PASSWORD` only when it initializes an empty volume, so changing it later has no effect: wipe with `docker compose down -v` and redo steps 4 and 5.
 
 ## Scope
 
@@ -315,7 +331,7 @@ Only five moves succeed in Phase 3; every other pair, including staying in the s
 
 Every successful create, import request, determination and transition writes exactly one append-only entry; failed requests write none.
 
-- Write one helper `audit(tx, action, target_id, before, after)` and call it inside the same transaction as the change.
+- Write one helper `audit(tx, action, target_id, before, after, *, user_id)` and call it inside the same transaction as the change.
 - Fill `entry_id`, `user_id` from `X-User-Id`, `timestamp` as server time, `action`, `target_id`, `before` and `after`.
 - Include `version` in `before` and `after` for incident changes.
 - Use the shapes defined above: `create_incident`, `import_evidence` (one per request), `record_determination`, `transition`.
