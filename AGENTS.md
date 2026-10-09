@@ -38,6 +38,20 @@ The business logic is built first, independent of the web framework; the FastAPI
 - The container's `POSTGRES_USER` is the owner role: point `ADMIN_DATABASE_URL` at it, then run `python scripts/setup_db.py` to create `tracer_app`, the tables and the grants.
 - Point `DATABASE_URL` at the container as `tracer_app`, never as `POSTGRES_USER`; it's a superuser and skips every permission check.
 
+**Local setup steps**
+
+Run these in order when someone asks to set up the project or the local database.
+
+1. Check Docker Desktop is installed and running: `docker version` must show a Server section. If `docker` isn't found right after an install, open a new terminal; old ones keep the old PATH.
+2. Install the project into a virtual environment: `python -m venv .venv`, activate it, then `pip install -e ".[dev]"`.
+3. If `.env` doesn't exist, copy `.env.example` to `.env` and replace each `change-me-*` placeholder with a random value, e.g. `python -c "import secrets; print(secrets.token_urlsafe(24))"`. The owner password appears twice (`POSTGRES_PASSWORD` and `ADMIN_DATABASE_URL`) and must match; URL-safe values need no escaping. Never print, commit or overwrite an existing `.env`.
+4. Start the database with `docker compose up -d` and wait until `docker compose ps` shows `healthy`.
+5. Run `python scripts/setup_db.py`. It prints the app role's privileges and ends with `setup_db: done`; any other ending is a failure, and nothing was changed.
+
+- Re-run `scripts/setup_db.py` after any change to `app/models.py` or the grants; it is safe to re-run.
+- `docker compose stop` keeps the data; `docker compose down -v` wipes it, after which steps 4 and 5 rebuild it.
+- The image reads `POSTGRES_PASSWORD` only when it initializes an empty volume, so changing it later has no effect: wipe with `docker compose down -v` and redo steps 4 and 5.
+
 ## Scope
 
 Phase 3 builds Team 7's Tracer service covering REQ-01, 02, 03, 06, 07, 08, 19, 22 and 23. The Phase 3 implementation plan is the source of truth until the final API arrives; then paths, schemas and error codes get rewired against it.
