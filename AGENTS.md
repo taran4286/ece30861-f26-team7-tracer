@@ -415,7 +415,8 @@ Phase 3 is done for Team 7 when the deployed service does all of the following.
 - `type: description` without a scope is valid under the spec but not in this repo.
 - Use a short lowercase noun for the area changed, e.g. `agents`, `skills`, `config`, `db`, `models`, `roles`, `audit`, `incidents`, `evidence`, `workflow`, `api`.
 - Write PR descriptions per the `pull-requests` skill.
-- End every PR description with a usage line naming the model and the session's tokens, e.g. `Model: Claude Opus 5.5 · Tokens: 48213` or `Model: GPT 6 Astra · Tokens: 48213`. The `PR stats` workflow adds it to the author's totals in the pinned "PR stats" issue.
+- End every PR description with a usage line naming the model, its effort level and the session's tokens, e.g. `Model: Claude Opus 5.5 · Effort: high · Tokens: 48213` or `Model: GPT 6 Astra · Effort: medium · Tokens: 48213`. The `PR stats` workflow adds it to the author's totals in the pinned "PR stats" issue.
   - Tokens = input + output + cache writes, leaving out cache reads (the conversation history re-read on every call).
-  - If you can't read the token count, ask the user rather than estimating.
+  - Effort = the reasoning effort the session ran at, as the tool names it (e.g. `low`, `medium`, `high`, `xhigh`).
+  - If you can't read the token count or effort level, ask the user rather than estimating.
 - Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together.
