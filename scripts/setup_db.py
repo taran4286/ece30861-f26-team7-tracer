@@ -6,14 +6,19 @@ Reads ADMIN_DATABASE_URL (owner) and DATABASE_URL (app role) from the environmen
 or .env. Runs in one transaction and is safe to re-run: each run resets the app
 role so leftover privileges don't survive, then checks the app role's effective
 privileges and fails if any differ from GRANTS. The printed grid is the AC-23 demo.
+Finally it logs in through DATABASE_URL to confirm the app reaches the same server.
+
+Exits 0 on success and 1 on failure. It only creates missing tables and types, so
+changes to an existing table need a wiped local database or a migration.
 """
 
 import sys
 from pathlib import Path
+from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import Connection, Enum, create_engine, text
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -199,7 +204,40 @@ def _yn(value: bool) -> str:
     return "yes" if value else "no"
 
 
-def setup(conn: Connection, app_role: str, app_password: str) -> None:
+def _server_fingerprint(conn: Connection, role: str) -> tuple[Any, ...]:
+    """Identifies the server and database a connection reached.
+
+    Compared across the owner's and the app's connections instead of their URLs, which
+    can differ for the same server (localhost vs 127.0.0.1, a host's pooled endpoint).
+    """
+    return tuple(
+        conn.execute(
+            text(
+                "SELECT r.oid, pg_postmaster_start_time(), current_database() "
+                "FROM pg_roles r WHERE r.rolname = :r"
+            ),
+            {"r": role},
+        ).one()
+    )
+
+
+def _check_app_connection(app_url: URL, expected: tuple[Any, ...]) -> str | None:
+    """Log in through DATABASE_URL and confirm it reaches the server setup just changed."""
+    engine = create_engine(app_url)
+    try:
+        with engine.connect() as conn:
+            actual = _server_fingerprint(conn, app_url.username)
+    except DBAPIError as error:
+        return f"{app_url.username} can't connect through DATABASE_URL: {error.orig}"
+    finally:
+        engine.dispose()
+    if actual != expected:
+        return "DATABASE_URL reaches a different server or database than ADMIN_DATABASE_URL"
+    return None
+
+
+def setup(conn: Connection, app_role: str, app_password: str) -> tuple[Any, ...]:
+    """Apply everything in one transaction; returns the server fingerprint for the app check."""
     if set(Base.metadata.tables) != set(GRANTS):
         raise SetupError(f"GRANTS must list exactly the tables in app.models: {sorted(Base.metadata.tables)}")
 
@@ -219,6 +257,7 @@ def setup(conn: Connection, app_role: str, app_password: str) -> None:
     Base.metadata.create_all(conn)
     _apply_grants(conn, owner, app_role)
     _verify(conn, app_role)
+    return _server_fingerprint(conn, app_role)
 
 
 def main() -> int:
@@ -235,7 +274,7 @@ def main() -> int:
     engine = create_engine(admin_url)
     try:
         with engine.begin() as conn:
-            setup(conn, app_url.username, app_url.password)
+            fingerprint = setup(conn, app_url.username, app_url.password)
     except SetupError as error:
         print(f"setup_db: {error}; nothing was changed", file=sys.stderr)
         return 1
@@ -244,6 +283,14 @@ def main() -> int:
         return 1
     finally:
         engine.dispose()
+
+    # Setup is committed by now, so a failure here can't say "nothing was changed".
+    if problem := _check_app_connection(app_url, fingerprint):
+        print(
+            f"setup_db: setup finished on the ADMIN_DATABASE_URL server, but {problem}",
+            file=sys.stderr,
+        )
+        return 1
 
     print(f"setup_db: done; {app_url.username} has exactly the expected privileges")
     return 0
