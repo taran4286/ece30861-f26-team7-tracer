@@ -1,0 +1,24 @@
+# Local Postgres for development and tests. Reads POSTGRES_* from .env.
+# POSTGRES_USER is the owner role; run scripts/setup_db.py after first start.
+# `docker compose down -v` wipes the data volume.
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      # Loopback only; Docker otherwise listens on every host address.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # postgres:18 keeps PGDATA in a versioned folder under /var/lib/postgresql.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+volumes:
+  pgdata:
