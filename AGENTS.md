@@ -49,9 +49,10 @@ Run these in order when someone asks to set up the project or the local database
 2. Install the project into a virtual environment: `python -m venv .venv`, activate it, then `pip install -e ".[dev]"`.
 3. If `.env` doesn't exist, copy `.env.example` to `.env` and replace each `change-me-*` placeholder with a random value, e.g. `python -c "import secrets; print(secrets.token_urlsafe(24))"`. The owner password appears twice (`POSTGRES_PASSWORD` and `ADMIN_DATABASE_URL`) and must match; URL-safe values need no escaping. Never print, commit or overwrite an existing `.env`.
 4. Start the database with `docker compose up -d` and wait until `docker compose ps` shows `healthy`.
-5. Run `python scripts/setup_db.py`. It prints the app role's privileges and ends with `setup_db: done`; any other ending is a failure, and nothing was changed.
+5. Run `python scripts/setup_db.py`. It prints the app role's privileges; judge the result by the exit code. 0 is success, and the last line starts with `setup_db: done;`. 1 is failure, and the error message says what went wrong and whether anything was changed.
 
-- Re-run `scripts/setup_db.py` after any change to `app/models.py` or the grants; it is safe to re-run.
+- Re-run `scripts/setup_db.py` after adding a table or changing the grants; it is safe to re-run.
+- A re-run only creates missing tables and types; it doesn't alter existing ones. After changing a column or an enum's values in `app/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Database roles).
 - `docker compose stop` keeps the data; `docker compose down -v` wipes it, after which steps 4 and 5 rebuild it.
 - The image reads `POSTGRES_PASSWORD` only when it initializes an empty volume, so changing it later has no effect: wipe with `docker compose down -v` and redo steps 4 and 5.
 
