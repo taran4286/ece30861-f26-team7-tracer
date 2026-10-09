@@ -415,4 +415,5 @@ Phase 3 is done for Team 7 when the deployed service does all of the following.
 - `type: description` without a scope is valid under the spec but not in this repo.
 - Use a short lowercase noun for the area changed, e.g. `agents`, `skills`, `config`, `db`, `models`, `roles`, `audit`, `incidents`, `evidence`, `workflow`, `api`.
 - Write PR descriptions per the `pull-requests` skill.
+- End every PR description with a usage line naming the agent and the session's total tokens, e.g. `Model: claude · Tokens: 48213` (`claude` or `codex`). The `PR stats` workflow adds it to the author's totals in the pinned "PR stats" issue. If you can't read the token count, ask the user rather than estimating.
 - Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together.
