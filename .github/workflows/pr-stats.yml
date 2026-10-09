@@ -1,11 +1,14 @@
 name: PR stats
 
-# pull_request_target runs the workflow and script from main with a token that
-# can write issues, even for PRs from forks. It only reads PR descriptions
-# through the API; never check out or run the PR's code here.
+# pull_request_target and issue_comment run the workflow and script from main
+# with a token that can write issues, even for PRs from forks. The script only
+# reads pull requests and comments through the API; never check out or run a
+# PR's code here.
 on:
   pull_request_target:
-    types: [opened, edited]
+    types: [opened, closed, reopened]
+  issue_comment:
+    types: [created, edited, deleted]
   workflow_dispatch:
 
 permissions:
@@ -13,8 +16,8 @@ permissions:
   issues: write
   pull-requests: read
 
-# One run at a time; each run rebuilds the table from every pull request, so a
-# run that gets skipped while another waits loses nothing.
+# One run at a time; each run rebuilds the table from scratch, so a run that
+# gets skipped while another waits loses nothing.
 concurrency:
   group: pr-stats
   cancel-in-progress: false
@@ -22,6 +25,8 @@ concurrency:
 jobs:
   update:
     name: Update PR stats issue
+    # Comments only matter on the stats issue itself.
+    if: github.event_name != 'issue_comment' || (!github.event.issue.pull_request && startsWith(github.event.issue.body, '<!-- pr-stats -->'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
