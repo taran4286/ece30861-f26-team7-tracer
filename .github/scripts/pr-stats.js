@@ -2,21 +2,19 @@
 // Run by .github/workflows/pr-stats.yml through actions/github-script.
 //
 // A description reports its usage with a line like:
-//   Model: claude · Tokens: 48213
+//   Model: Claude Opus 5.5 · Tokens: 48213
 // Every PR counts toward its author's total; tokens count only when the line
-// names a known model.
+// names both a model and a token count.
 
 const MARKER = '<!-- pr-stats -->';
 const TITLE = 'PR stats';
-const MODELS = ['claude', 'codex'];
 
 function parseUsage(body) {
   const text = body || '';
-  const model = text.match(/\bModel:\s*([a-z]+)/i);
+  const model = text.match(/^[^\S\n]*Model:[^\S\n]*([^·|\n]*[^\s·|])/im);
   const tokens = text.match(/\bTokens:\s*(\d[\d,]*)/i);
-  const name = model && model[1].toLowerCase();
-  if (!MODELS.includes(name) || !tokens) return null;
-  return { model: name, tokens: Number(tokens[1].replace(/,/g, '')) };
+  if (!model || !tokens) return null;
+  return { model: model[1].replace(/\s+/g, ' '), tokens: Number(tokens[1].replace(/,/g, '')) };
 }
 
 function tally(pulls) {
@@ -24,33 +22,47 @@ function tally(pulls) {
   for (const pr of pulls) {
     if (!pr.user || pr.user.type === 'Bot') continue;
     const login = pr.user.login;
-    if (!users.has(login)) {
-      users.set(login, { prs: 0, tokens: Object.fromEntries(MODELS.map((m) => [m, 0])) });
-    }
-    const row = users.get(login);
-    row.prs += 1;
+    if (!users.has(login)) users.set(login, { prs: 0, tokens: 0, models: new Map() });
+    const user = users.get(login);
+    user.prs += 1;
     const usage = parseUsage(pr.body);
-    if (usage) row.tokens[usage.model] += usage.tokens;
+    if (!usage) continue;
+    // Group "claude opus 5.5" with "Claude Opus 5.5", keeping the first spelling seen.
+    const key = usage.model.toLowerCase();
+    if (!user.models.has(key)) user.models.set(key, { name: usage.model, prs: 0, tokens: 0 });
+    const model = user.models.get(key);
+    model.prs += 1;
+    model.tokens += usage.tokens;
+    user.tokens += usage.tokens;
   }
   return users;
 }
 
 function render(users) {
   const n = (x) => x.toLocaleString('en-US');
-  const label = (m) => m[0].toUpperCase() + m.slice(1);
-  const rows = [...users]
-    .map(([login, row]) => ({ login, ...row, total: MODELS.reduce((s, m) => s + row.tokens[m], 0) }))
-    .sort((a, b) => b.prs - a.prs || b.total - a.total || a.login.localeCompare(b.login))
-    .map((r) => `| ${r.login} | ${r.prs} | ${MODELS.map((m) => n(r.tokens[m])).join(' | ')} | ${n(r.total)} |`);
+  const byLogin = [...users]
+    .map(([login, user]) => ({ login, ...user }))
+    .sort((a, b) => b.prs - a.prs || b.tokens - a.tokens || a.login.localeCompare(b.login));
+  const byModel = byLogin.flatMap((u) =>
+    [...u.models.values()]
+      .sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name))
+      .map((m) => `| ${u.login} | ${m.name} | ${m.prs} | ${n(m.tokens)} |`),
+  );
   return [
     MARKER,
     'Pull requests and tokens per author, rebuilt by the `PR stats` workflow whenever a pull request is opened or edited. Edits to this issue are overwritten.',
     '',
-    `| Author | PRs | ${MODELS.map((m) => `${label(m)} tokens`).join(' | ')} | Total tokens |`,
-    `| --- | ---: | ${MODELS.map(() => '---:').join(' | ')} | ---: |`,
-    ...rows,
+    '| Author | PRs | Tokens |',
+    '| --- | ---: | ---: |',
+    ...byLogin.map((u) => `| ${u.login} | ${u.prs} | ${n(u.tokens)} |`),
     '',
-    'Tokens come from a `Model: claude · Tokens: 48213` line in the pull request description (`claude` or `codex`). A pull request without it still counts, with no tokens.',
+    '**By model**',
+    '',
+    '| Author | Model | PRs | Tokens |',
+    '| --- | --- | ---: | ---: |',
+    ...byModel,
+    '',
+    'Tokens come from a `Model: Claude Opus 5.5 · Tokens: 48213` line in the pull request description. A pull request without it still counts, with no tokens.',
   ].join('\n');
 }
 
