@@ -1,0 +1,31 @@
+name: PR stats
+
+on:
+  pull_request:
+    types: [opened, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+# One run at a time; each run rebuilds the table from every pull request, so a
+# run that gets skipped while another waits loses nothing.
+concurrency:
+  group: pr-stats
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update PR stats issue
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const run = require('./.github/scripts/pr-stats.js');
+            await run({ github, context, core });
