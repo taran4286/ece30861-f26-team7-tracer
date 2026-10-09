@@ -3,18 +3,18 @@
 //
 // A description reports its usage with a line like:
 //   Model: Claude Opus 5.5 · Tokens: 48213
-// Every PR counts toward its author's total; tokens count only when the line
-// names both a model and a token count.
+// Every PR counts toward its author's total; tokens count only when one line
+// names both a model and a token count. The last such line wins, so an example
+// earlier in the description isn't counted.
 
 const MARKER = '<!-- pr-stats -->';
 const TITLE = 'PR stats';
+const USAGE_LINE = /^[^\S\n]*Model:[^\S\n]*([^·|\n]*[^\s·|])[^\S\n]*[·|][^\S\n]*Tokens:[^\S\n]*(\d[\d,]*)[^\S\n]*$/gim;
 
 function parseUsage(body) {
-  const text = body || '';
-  const model = text.match(/^[^\S\n]*Model:[^\S\n]*([^·|\n]*[^\s·|])/im);
-  const tokens = text.match(/\bTokens:\s*(\d[\d,]*)/i);
-  if (!model || !tokens) return null;
-  return { model: model[1].replace(/\s+/g, ' '), tokens: Number(tokens[1].replace(/,/g, '')) };
+  const match = [...(body || '').matchAll(USAGE_LINE)].pop();
+  if (!match) return null;
+  return { model: match[1].replace(/\s+/g, ' '), tokens: Number(match[2].replace(/,/g, '')) };
 }
 
 function tally(pulls) {
