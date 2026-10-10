@@ -1,0 +1,26 @@
+name: AGENTS.md
+
+# Fails a PR unless the nearest AGENTS.md of every changed file changed too.
+# Runs the PR's own code with a read-only token, so pull_request (not _target).
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: AGENTS.md updated
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needs the base branch to diff against
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check AGENTS.md updates
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python .github/scripts/check_agents_md.py "origin/$BASE_REF"
