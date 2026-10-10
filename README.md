@@ -8,6 +8,8 @@ Tracer brings that evidence into one incident record and records each human mate
 
 This is Team 7's implementation of Tracer, developed in parallel with Team 10 in ECE 30861 (Fall 2026) at Purdue University. Team 7 and Team 10 are both part of Pod M.
 
+The class meets Tuesdays and Thursdays at 1:30 PM.
+
 Team 7 Members:
 
 - Taran Kondamuru
