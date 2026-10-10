@@ -1,0 +1,35 @@
+# app/: foundation modules
+
+The building blocks every service uses; group A owns them. Business logic lives in `services/` (see `services/AGENTS.md`). The root `AGENTS.md` holds the spec these modules implement and wins wherever this file disagrees.
+
+## Modules
+
+| Module | Provides |
+| --- | --- |
+| `config.py` | `Settings` (`database_url`, `registrant_type`) through the cached `get_settings()`, and `RegistrantType` |
+| `db.py` | `Base`, the cached `get_engine()`, and `transaction()`: one session per operation, committed on success and rolled back on any error |
+| `models.py` | The four tables, their enums and `new_id(prefix)` |
+| `errors.py` | `ErrorCode` and `TracerError(code, message, field=None)`; `to_dict()` returns the Error schema |
+| `roles.py` | `Role`, `Operation`, the `PERMISSIONS` map and `require_role(role, operation)` |
+| `clock.py` | `today()` for every date rule and `utcnow()` for stored timestamps |
+| `audit.py` | `audit(tx, action, target_id, before, after, *, user_id)`, which adds one entry inside the caller's transaction |
+
+## Rules
+
+- Keep `app/` free of web framework imports, apart from a future `app/api/` package; services must stay callable without one.
+- Never call `datetime.now()` or `date.today()`; use `clock`. `today()` switches to the test run's `test_now` once test control is added.
+- Raise only `TracerError`, with a path-style `field` on validation errors; the API layer maps codes to HTTP statuses.
+- Make IDs with `new_id()`. Prefixes in use: `inc`, `ev`, `aud`.
+- `config.py` never reads `ADMIN_DATABASE_URL`; only `scripts/setup_db.py` does.
+- `get_settings()` and `get_engine()` are cached; a test that changes environment variables must call `cache_clear()` on both.
+- JSON columns accept `date` and `datetime` values directly; `db.py` stores them as ISO-8601 strings.
+- Enums are stored by value (`"8-K Item 1.05"`), not by member name, through `_db_enum()`.
+- `AuditEntry.before` stores Python `None` as SQL `NULL`, not JSON `null`.
+- Nothing here creates tables; the app role can't. `scripts/setup_db.py` does.
+
+## When you change `models.py`
+
+- Update the root "Data model and storage" section to match.
+- Adding a table: add it to `GRANTS` in `scripts/setup_db.py` (the script refuses to run otherwise) and re-run the script.
+- Changing a column or an enum's values: the setup script doesn't alter existing tables, so wipe the local database with `docker compose down -v` and redo local setup steps 4 and 5. A deployed database needs a migration.
+- Adding an `AuditAction`: document its `before` and `after` shapes in the root "Audit trail" section.
