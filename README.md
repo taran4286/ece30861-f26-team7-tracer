@@ -10,4 +10,9 @@ This is Team 7's implementation of Tracer, developed in parallel with Team 10 in
 
 The class meets Tuesdays and Thursdays at 1:30 PM.
 
-Team 7 Members: Taran Kondamuru, Olesia Lazuta, Ashley Rashidian, Kira Sun
+Team 7 Members:
+
+- Taran Kondamuru
+- Olesia Lazuta
+- Ashley Rashidian
+- Kira Sun
