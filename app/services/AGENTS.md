@@ -1,6 +1,6 @@
 # app/services/: business logic
 
-One module per area, callable without any web framework. The root `AGENTS.md` sections for each endpoint hold the exact rules; this file covers how every operation is built.
+One module per area, callable without any web framework. The root `AGENTS.md` holds the rules for each endpoint, and its Cross-cutting rules and Audit trail sections cover transactions, audit entries and versions; this file covers how an operation is built.
 
 | Module | Owner | Operations | Tests |
 | --- | --- | --- | --- |
@@ -12,21 +12,23 @@ The table lists the planned modules; add a row for any new one.
 
 ## Shape of every operation
 
-Each operation takes the acting user's ID and role as arguments and runs these steps in this order, so errors come out in the order the root file requires:
+Each operation takes the acting user's ID and role as arguments and runs these steps in this order, which gives the root file's error order:
 
-1. `require_role(role, Operation.X)`: 403 before anything else.
-2. Load the incident (and evidence, if referenced): 404 if unknown.
+1. `require_role(role, Operation.X)`: 403.
+2. Load the incident, and any evidence named in the path: 404 if unknown.
 3. Validate the whole body: 400 on the first bad field, before anything is written.
 4. Check the state: 409 `INVALID_TRANSITION`.
-5. Write the change and call `audit()` in the same `transaction()`.
+5. Write the change and call `audit()` in the same `transaction()`. Any error raised inside it rolls back everything, including the audit entry.
 
 ```python
 def record_determination(incident_id: str, body: dict, *, user_id: str, role: Role | str):
     require_role(role, Operation.RECORD_DETERMINATION)
     with transaction() as tx:
-        incident = ...  # 404 if missing
-        ...  # validate every field; raise TracerError(VALIDATION_ERROR, ..., field=...)
-        if incident.state is not State.UNDER_ASSESSMENT:
+        incident = tx.get(Incident, incident_id, with_for_update=True)
+        if incident is None:
+            raise TracerError(ErrorCode.NOT_FOUND, ...)
+        ...  # validate every field; raise TracerError(ErrorCode.VALIDATION_ERROR, ..., field=...)
+        if incident.state != State.UNDER_ASSESSMENT:
             raise TracerError(ErrorCode.INVALID_TRANSITION, ...)
         ...  # write
         audit(tx, AuditAction.RECORD_DETERMINATION, incident_id, before, after, user_id=user_id)
@@ -36,10 +38,8 @@ Header checks (missing `X-User-Id` or `X-User-Role`) come before step 1 and belo
 
 ## Rules
 
-- One `transaction()` per mutating operation, with its `audit()` call inside; never commit partway through. Any raised error rolls back everything, including the audit entry.
-- Exactly one audit entry per successful create, import request, determination and transition; none for reads or rejected requests.
-- `version` goes up by 1 on each determination and transition, never on import. Include it in `before` and `after`.
-- Only the determination operation in `workflow.py` writes `Determination` rows or `required_form`. A test guards this (AC-09); keep it passing.
-- Keep the allowed transitions as a data set in `workflow.py`, not as `if` chains.
-- Read the registrant type from `get_settings().registrant_type` and dates from `clock`.
-- Until import and determination are merged, group C tests insert incidents and evidence directly into the database.
+- Services take the raw request body and do all body validation themselves. A 400 must come after the 404 check, so API request models must not reject a body before the service runs.
+- Unknown IDs inside a body, like `evidence_refs`, are 400s on that field; only IDs in the path are 404s.
+- When an operation changes the incident (determination, transition), load it with `with_for_update=True`, so two concurrent requests can't both pass the state check or bump `version` from the same value.
+- Keep materiality writes in `workflow.py`'s determination operation, and the allowed transitions as a data set in `workflow.py`.
+- Call `get_settings()` inside the operation, not at import time, so a test can switch the registrant type.

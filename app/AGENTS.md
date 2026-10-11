@@ -21,7 +21,7 @@ The building blocks every service uses; group A owns them. Business logic lives 
 - Raise only `TracerError`, with a path-style `field` on validation errors; the API layer maps codes to HTTP statuses.
 - Make IDs with `new_id()`. Prefixes in use: `inc`, `ev`, `aud`.
 - `config.py` never reads `ADMIN_DATABASE_URL`; only `scripts/setup_db.py` does.
-- `get_settings()` and `get_engine()` are cached; a test that changes environment variables must call `cache_clear()` on both.
+- `get_settings()`, `get_engine()` and the session factory behind `transaction()` are cached. A test that changes a setting such as `REGISTRANT_TYPE` must call `get_settings.cache_clear()`. Don't change `DATABASE_URL` mid-run; the cached engine and session factory keep the old one.
 - JSON columns accept `date` and `datetime` values directly; `db.py` stores them as ISO-8601 strings.
 - Enums are stored by value (`"8-K Item 1.05"`), not by member name, through `_db_enum()`.
 - `AuditEntry.before` stores Python `None` as SQL `NULL`, not JSON `null`.

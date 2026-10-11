@@ -6,7 +6,7 @@ Oct 4, 2026 · @t
 
 Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees.
 
-- Before changing a file, read the `AGENTS.md` in its folder and in each parent folder up to the root. Not every tool loads nested guides on its own, so read them explicitly.
+- Before changing or explaining a file, read the `AGENTS.md` in its folder and in each parent folder up to the root. Not every tool loads nested guides on its own, so read them explicitly.
 - Rules that must never be missed stay in this file; folder guides hold local details.
 - Guides describe the code, not progress; whoever implements a piece tracks its status.
 - Guides only match what you have checked out, so start from the latest `main` (see Branches, commits and pull requests).
@@ -22,8 +22,10 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 
 - Every PR updates the relevant `AGENTS.md` for each file it changes: the nearest one in the file's folder or a parent folder. Files outside a guided folder, such as `README.md` or `pyproject.toml`, map to this root file.
 - Make the update in the same PR as the change, so each guide describes the code as merged: new modules, rules, decisions and anything the next person needs to know.
+- Write guides as the current state, and fix or delete what the change made wrong. Never add history or "changed X" notes; `git log` holds history, and a guide that grows into a changelog buries the rules.
+- Don't restate this file's rules in a folder guide; point to the section instead, so the two can't drift apart.
 - Every top-level folder except `.claude/` and `.agents/` (covered here), and every Python package under `app/`, needs its own `AGENTS.md`. Add it, and a row in the table above, in the PR that creates the folder, e.g. `tests/AGENTS.md` and later `app/api/AGENTS.md`.
-- The `AGENTS.md updated` CI check (`.github/workflows/agents-md.yml`) enforces both rules and fails the PR otherwise; whitespace-only edits don't count. Run it locally after committing with `python .github/scripts/check_agents_md.py`.
+- The `AGENTS.md updated` CI check (`.github/workflows/agents-md.yml`) enforces the update rule and the own-guide rule above, failing the PR otherwise; whitespace-only edits don't count. Run it locally before pushing (see Branches, commits and pull requests).
 - The check proves a guide changed, not that it's right; reviewers check the content.
 - A guide doesn't guarantee a rule is followed. Where a test or script can check a rule (like the AC-09 test or `setup_db.py`'s privilege check), add one.
 
@@ -459,4 +461,6 @@ Phase 3 is done for Team 7 when the deployed service does all of the following.
 - Use a short lowercase noun for the area changed, e.g. `agents`, `skills`, `config`, `db`, `models`, `roles`, `audit`, `incidents`, `evidence`, `workflow`, `api`.
 - Write PR descriptions per the `pull-requests` skill.
 - Every PR updates the relevant `AGENTS.md` files (see Directory guides); the `AGENTS.md updated` check fails it otherwise.
-- The `Branch, title and commits` CI check (`.github/workflows/conventions.yml`) fails a PR whose branch name, title or any non-merge commit breaks these rules. Check the branch and commits locally with `python .github/scripts/check_conventions.py`, and a title with `--title "..."`.- Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together.
+- The `Branch, title and commits` CI check (`.github/workflows/conventions.yml`) fails a PR whose branch name, title or any non-merge commit breaks these rules.
+- Before pushing, commit and run both checks: `python .github/scripts/check_agents_md.py` and `python .github/scripts/check_conventions.py --title "<PR title>"`.
+- Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together.
