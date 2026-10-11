@@ -17,10 +17,7 @@ jobs:
         with:
           fetch-depth: 0 # needs the base branch to diff against
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - name: Check AGENTS.md updates
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: python .github/scripts/check_agents_md.py "origin/$BASE_REF"
+        run: python3 .github/scripts/check_agents_md.py "origin/$BASE_REF"
