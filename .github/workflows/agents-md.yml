@@ -1,0 +1,26 @@
+name: AGENTS.md
+
+# Fails a PR unless the nearest AGENTS.md of every changed file changed too, or the
+# PR description gives a reason it needs no change. Re-runs when the description is
+# edited. Runs the PR's own code with a read-only token, so pull_request (not _target).
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: AGENTS.md updated
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needs the base branch to diff against
+          persist-credentials: false
+      - name: Check AGENTS.md updates
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 .github/scripts/check_agents_md.py "origin/$BASE_REF" --body "$PR_BODY"

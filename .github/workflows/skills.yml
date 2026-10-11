@@ -1,0 +1,20 @@
+name: Skills
+
+# Claude Code reads .claude/skills/ and Codex reads .agents/skills/; fails a PR if
+# their contents differ, so both tools follow the same skills.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Skills in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compare skill folders
+        run: git diff --no-index --exit-code .claude/skills .agents/skills
