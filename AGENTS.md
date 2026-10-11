@@ -462,9 +462,7 @@ Phase 3 is done for Team 7 when the deployed service does all of the following.
 - Use a short lowercase noun for the area changed, e.g. `agents`, `skills`, `config`, `db`, `models`, `roles`, `audit`, `incidents`, `evidence`, `workflow`, `api`.
 - Write PR descriptions per the `pull-requests` skill.
 - Every PR updates the relevant `AGENTS.md` files or gives a skip line for each (see Directory guides); the `AGENTS.md updated` check fails it otherwise.
-- The `Branch, title and commits` CI check (`.github/workflows/conventions.yml`) fails a PR whose branch name, title or any non-merge commit breaks these rules.
 - Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together; the `Skills in sync` CI check (`.github/workflows/skills.yml`) fails a PR when they differ.
-- Before pushing, commit and run all three checks:
+- Before pushing, commit and run both checks:
   - `python .github/scripts/check_agents_md.py --body "<PR description>"` (the body is only needed for skip lines)
-  - `python .github/scripts/check_conventions.py --title "<PR title>"`
   - `git diff --no-index --exit-code .claude/skills .agents/skills`
