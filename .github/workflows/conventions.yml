@@ -1,0 +1,32 @@
+name: Conventions
+
+# Checks the PR's branch name, title and commit messages. Re-runs when the title
+# is edited. Runs the PR's own code with a read-only token, so pull_request.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Branch, title and commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needs the PR's commits and the base branch
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check naming conventions
+        env:
+          BRANCH: ${{ github.head_ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python .github/scripts/check_conventions.py \
+            --branch "$BRANCH" --title "$TITLE" --commits "$BASE_SHA..$HEAD_SHA"

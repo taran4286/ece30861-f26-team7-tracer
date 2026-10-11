@@ -458,4 +458,5 @@ Phase 3 is done for Team 7 when the deployed service does all of the following.
 - `type: description` without a scope is valid under the spec but not in this repo.
 - Use a short lowercase noun for the area changed, e.g. `agents`, `skills`, `config`, `db`, `models`, `roles`, `audit`, `incidents`, `evidence`, `workflow`, `api`.
 - Write PR descriptions per the `pull-requests` skill.
-- Every PR updates the relevant `AGENTS.md` files (see Directory guides); the `AGENTS.md updated` check fails it otherwise.- Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together.
+- Every PR updates the relevant `AGENTS.md` files (see Directory guides); the `AGENTS.md updated` check fails it otherwise.
+- The `Branch, title and commits` CI check (`.github/workflows/conventions.yml`) fails a PR whose branch name, title or any non-merge commit breaks these rules. Check the branch and commits locally with `python .github/scripts/check_conventions.py`, and a title with `--title "..."`.- Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together.
