@@ -8,7 +8,7 @@ One module per area, callable without any web framework. The root `AGENTS.md` se
 | `evidence.py` | Group B | Import evidence | `tests/test_evidence.py` |
 | `workflow.py` | Group C | Record a determination, transitions, list audit entries | `tests/test_workflow.py` |
 
-None of the modules exist yet; add each one's status here when it lands.
+The table lists the planned modules; add a row for any new one.
 
 ## Shape of every operation
 

@@ -8,6 +8,8 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 
 - Before changing a file, read the `AGENTS.md` in its folder and in each parent folder up to the root. Not every tool loads nested guides on its own, so read them explicitly.
 - Rules that must never be missed stay in this file; folder guides hold local details.
+- Guides describe the code, not progress; whoever implements a piece tracks its status.
+- Guides only match what you have checked out, so start from the latest `main` (see Branches, commits and pull requests).
 
 | Guide | Covers |
 | --- | --- |
@@ -448,6 +450,7 @@ Phase 3 is done for Team 7 when the deployed service does all of the following.
 
 ## Branches, commits and pull requests
 
+- Start each piece of work from the latest `main`: `git switch main`, `git pull`, then create the branch. On a branch that has been open a while, merge the latest `main` in before relying on the guides.
 - Name branches per [Conventional Branch 1.1.0](https://conventionalbranch.org), e.g. `feature/group-a-contracts` or `chore/conventional-skills`; the `conventional-branch` skill holds the spec.
 - Don't put usernames in branch names.
 - Follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/); the `conventional-commits` skill holds the spec.
@@ -455,5 +458,4 @@ Phase 3 is done for Team 7 when the deployed service does all of the following.
 - `type: description` without a scope is valid under the spec but not in this repo.
 - Use a short lowercase noun for the area changed, e.g. `agents`, `skills`, `config`, `db`, `models`, `roles`, `audit`, `incidents`, `evidence`, `workflow`, `api`.
 - Write PR descriptions per the `pull-requests` skill.
-- Every PR updates the relevant `AGENTS.md` files (see Directory guides); the `AGENTS.md updated` check fails it otherwise.
-- Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together.
+- Every PR updates the relevant `AGENTS.md` files (see Directory guides); the `AGENTS.md updated` check fails it otherwise.- Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together.
