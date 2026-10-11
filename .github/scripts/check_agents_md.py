@@ -1,18 +1,25 @@
 """Fail unless every changed file's nearest AGENTS.md changed in the same PR.
 
-Usage: python .github/scripts/check_agents_md.py [BASE]
+Usage: python .github/scripts/check_agents_md.py [BASE] [--body PR_DESCRIPTION]
 
 BASE defaults to origin/main. Compares committed changes (BASE...HEAD), so commit
 before running it locally. A file's nearest AGENTS.md is the first one found in its
 folder or a parent folder; files outside a guided folder map to the root AGENTS.md.
 Whitespace-only edits to an AGENTS.md don't count.
 
+A guide that truly needs no change can be skipped with a line in the PR description
+(--body), naming the guide and giving a reason:
+
+    app/AGENTS.md: no change needed because the edit only renames a local variable
+
 Also fails if a guided folder has no AGENTS.md: every top-level folder except the
-skill folders, and every Python package under app/.
+skill folders, and every Python package under app/. A reason can't skip this.
 
 Exits 0 on success and 1 on failure.
 """
 
+import argparse
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -21,6 +28,8 @@ from pathlib import PurePosixPath
 GUIDE = "AGENTS.md"
 # The skill folders are covered by the root AGENTS.md.
 UNGUIDED_TOP_LEVEL = {".agents", ".claude"}
+# One skip line in the PR description, optionally as a list item or with the path in backticks.
+SKIP = re.compile(r"^(?:- )?`?([\w./-]*AGENTS\.md)`?: no change needed because \S", re.MULTILINE)
 
 
 def git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -50,10 +59,14 @@ def guided_folders(tracked: list[PurePosixPath]) -> set[PurePosixPath]:
 
 
 def main() -> int:
-    base = sys.argv[1] if len(sys.argv) > 1 else "origin/main"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("base", nargs="?", default="origin/main")
+    parser.add_argument("--body", default="", help="the PR description, for skip lines")
+    args = parser.parse_args()
     tracked = git_paths("ls-tree", "-r", "-z", "--name-only", "HEAD")
-    changed = git_paths("diff", "--name-only", "-z", "--no-renames", f"{base}...HEAD")
+    changed = git_paths("diff", "--name-only", "-z", "--no-renames", f"{args.base}...HEAD")
     guide_dirs = {p.parent for p in tracked if p.name == GUIDE}
+    skipped = {PurePosixPath(m.group(1)) for m in SKIP.finditer(args.body)}
     failed = False
 
     missing_guides = sorted(guided_folders(tracked) - guide_dirs)
@@ -73,17 +86,22 @@ def main() -> int:
             return 1
         needed[guide].append(path)
 
-    stale = {g: files for g, files in needed.items() if not guide_changed(base, g)}
+    stale = {
+        g: files for g, files in needed.items() if g not in skipped and not guide_changed(args.base, g)
+    }
     if stale:
         failed = True
         print("check_agents_md: update these AGENTS.md files in this PR:")
         for guide, files in sorted(stale.items()):
             print(f"  {guide} (for {', '.join(map(str, files))})")
+        print("If a guide truly needs no change, add a line to the PR description instead, e.g.")
+        print(f"  {min(stale)}: no change needed because <reason>")
 
     if failed:
         return 1
-    updated = ", ".join(str(g) for g in sorted(needed)) or "none needed"
-    print(f"check_agents_md: ok; {len(changed)} changed files; guides updated: {updated}")
+    updated = ", ".join(str(g) for g in sorted(set(needed) - skipped)) or "none"
+    reasons = ", ".join(str(g) for g in sorted(skipped & set(needed))) or "none"
+    print(f"check_agents_md: ok; {len(changed)} changed files; updated: {updated}; skipped: {reasons}")
     return 0
 
 
