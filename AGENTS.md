@@ -38,6 +38,7 @@ The business logic is built first, independent of the web framework; the FastAPI
 
 - Python 3.12, PostgreSQL, SQLAlchemy 2.0 with psycopg 3, pydantic-settings and pytest.
 - FastAPI for the API layer, once the API is confirmed.
+- Vercel runs the deployed service and Neon hosts its Postgres (see Deployment).
 - Dependencies are declared in `pyproject.toml`.
 
 **Repo layout**
@@ -254,7 +255,7 @@ Two roles keep the REQ-22 grants enforceable: a table's owner can always grant i
 - Nothing else: no DELETE or TRUNCATE anywhere, and no UPDATE on evidence, determinations or audit_entries.
 - Declare `audit_entries.seq` with SQLAlchemy `Identity()`, not a plain autoincrement column; if it ends up as a serial, the app role also needs USAGE on its sequence.
 - The service never creates tables at startup; the app role can't.
-- The owner role needs permission to create tables and roles. Locally that's the container's superuser; on the host, use the managed database's admin user.
+- The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
 - Use the setup script in place of migrations for Phase 3; move to Alembic once the schema starts changing.
 
 ## Incidents (REQ-01, REQ-22)
@@ -381,14 +382,33 @@ Anything not built returns 501 `NOT_IMPLEMENTED` using the `Error` schema.
 
 ## Deployment
 
-The service needs a stable HTTPS base URL and a database that keeps its data across redeploys.
+Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an HTTPS URL that stays the same for the semester, and Neon keeps the data across redeploys. Vercel builds the FastAPI app in the API layer; Neon and `scripts/setup_db.py` don't depend on it.
 
-- Deploy behind HTTPS at a URL that won't change for the rest of the semester.
-- Store `DATABASE_URL` and any other secrets in the host's settings, never in the repo.
-- Never expose `ADMIN_DATABASE_URL` to the running service. Set it only on a release or setup step if the host supports one; otherwise don't store it on the host and run `scripts/setup_db.py` from a dev machine.
-- Use a persistent database that survives redeploys.
-- Run the server clock in UTC with NTP sync (AC-02's ±5 s).
-- Run `scripts/setup_db.py` as the owner before the service first starts and whenever the tables or grants change.
+**Neon (database)**
+
+- Create the project on neon.com, not through Vercel's Neon integration. The integration sets its own `DATABASE_URL` that logs in as the owner, and gives each preview deployment a database branch whose URL does too.
+- Use Postgres 18, matching the local image, in AWS US East (N. Virginia), next to Vercel's default function region `iad1`.
+- The project's `neondb_owner` role is the owner: point `ADMIN_DATABASE_URL` at it. It can create roles but isn't a superuser, so `setup_db.py` can't clear forbidden attributes here and fails instead (see Database roles).
+- Let `setup_db.py` create `tracer_app`; never create it in the Neon console. Roles made there join `neon_superuser`, which brings BYPASSRLS, so the run fails.
+- Use the direct connection string (the host without `-pooler`). Change its scheme from `postgresql://` to `postgresql+psycopg://` and keep its query parameters, including `sslmode=require`. Our traffic is far below the direct connection limit, and it keeps psycopg's prepared statements away from the pooler.
+- Neon rejects passwords with less than 60 bits of entropy; one from `secrets.token_urlsafe(24)` passes.
+- The free plan pauses the database after 5 idle minutes and drops its connections. The first request after a pause is slower, and `app/db.py` replaces the dropped connections.
+- A schema change here needs a migration, not a wipe; try it on a Neon branch first.
+
+**Running `setup_db.py` against Neon**
+
+- Run it from a dev machine before the service first starts and whenever the tables or grants change. Vercel has no separate setup step, so `ADMIN_DATABASE_URL` never goes on Vercel.
+- Set `ADMIN_DATABASE_URL` and `DATABASE_URL` to the Neon URLs as environment variables for that one run, then clear them. Environment variables override `.env`, so `.env` keeps pointing at the local database.
+- Set both: with only one set, the other still comes from `.env` and points at the local database.
+- Judge the result by the exit code, as in local setup step 5.
+
+**Vercel (service)**
+
+- Import this GitHub repo as a Vercel project. Production deploys from `main`, and the production URL (`<project>.vercel.app`) is the base URL.
+- Set `DATABASE_URL` (as `tracer_app`) and `REGISTRANT_TYPE` in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and the app role can't delete them.
+- Never set `ADMIN_DATABASE_URL` on Vercel: every variable there reaches the running function.
+- Vercel uses Python 3.12 by default and installs from `pyproject.toml`. The API layer adds `fastapi` there and a `[tool.vercel]` `entrypoint` naming the FastAPI app (`module:app`).
+- The server clock (UTC, NTP-synced, for AC-02's ±5 s) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 
 ## Decisions settled by the Phase 3 plan
 
