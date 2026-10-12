@@ -30,7 +30,10 @@ def _json_dumps(value: Any) -> str:
 
 @lru_cache
 def get_engine() -> Engine:
-    return create_engine(get_settings().database_url, json_serializer=_json_dumps)
+    # pool_pre_ping replaces connections the server dropped while idle, e.g. when Neon pauses.
+    return create_engine(
+        get_settings().database_url, json_serializer=_json_dumps, pool_pre_ping=True
+    )
 
 
 @lru_cache
