@@ -14,7 +14,10 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 | Guide | Covers |
 | --- | --- |
 | `app/AGENTS.md` | Foundation modules: config, db, models, errors, roles, clock and audit |
+| `app/api/AGENTS.md` | The system's FastAPI app: the health check and the 501 stub |
 | `app/services/AGENTS.md` | Business logic and the steps every operation follows |
+| `tester/AGENTS.md` | Our tester's FastAPI app and the rule that it never imports `app` |
+| `tests/AGENTS.md` | The pytest suite: its files and how to run it |
 | `scripts/AGENTS.md` | `setup_db.py`, the database roles and grants |
 | `.github/AGENTS.md` | CI workflows, their scripts and `CODEOWNERS` |
 
@@ -25,19 +28,19 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 - If a change truly alters nothing a guide says, don't add a filler edit. Put one line per guide in the PR description instead, naming the guide and the reason, e.g. `AGENTS.md: no change needed because the README edit only fixes a typo`. Reviewers judge whether the reason holds.
 - Write guides as the current state, and fix or delete what the change made wrong. Never add history or "changed X" notes; `git log` holds history, and a guide that grows into a changelog buries the rules.
 - Don't restate this file's rules in a folder guide; point to the section instead, so the two can't drift apart.
-- Every top-level folder except `.claude/` and `.agents/` (covered here), and every Python package under `app/`, needs its own `AGENTS.md`. Add it, and a row in the table above, in the PR that creates the folder, e.g. `tests/AGENTS.md` and later `app/api/AGENTS.md`.
+- Every top-level folder except `.claude/` and `.agents/` (covered here), and every Python package under `app/`, needs its own `AGENTS.md`. Add it, and a row in the table above, in the PR that creates the folder.
 - The `AGENTS.md updated` CI check (`.github/workflows/agents-md.yml`) enforces the update rule (accepting a skip line in its place) and the own-guide rule above, failing the PR otherwise; whitespace-only edits don't count, and a skip line can't stand in for a missing guide. Run it locally before pushing (see Branches, commits and pull requests).
 - The check proves a guide changed, not that it's right; reviewers check the content.
 - A guide doesn't guarantee a rule is followed. Where a test or script can check a rule (like the AC-09 test or `setup_db.py`'s privilege check), add one.
 
 ## Stack, repo layout and config
 
-The business logic is built first, independent of the web framework; the FastAPI layer (routes, request and response models, error handlers) is added once the API is confirmed.
+The business logic stays independent of the web framework; the FastAPI layer (routes, request and response models, error handlers) lives in `app/api/`.
 
 **Stack**
 
 - Python 3.12, PostgreSQL, SQLAlchemy 2.0 with psycopg 3, pydantic-settings and pytest.
-- FastAPI for the API layer, once the API is confirmed.
+- FastAPI for the system's API layer and for the tester, both served by `server.py`.
 - Vercel runs the deployed service and Neon hosts its Postgres (see Deployment).
 - Dependencies are declared in `pyproject.toml`.
 
@@ -50,10 +53,13 @@ The business logic is built first, independent of the web framework; the FastAPI
 - `app/roles.py`: the `Role` enum, the permission map and `require_role()`.
 - `app/clock.py`: `today()` for every date rule and `utcnow()` for stored timestamps.
 - `app/audit.py`: the `audit()` helper.
+- `app/api/`: the system's FastAPI app, `system_app`.
 - `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination and transitions), callable without any web framework. Each operation takes the acting user's ID and role as arguments.
+- `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester` (see Deployment).
+- `tester/`: our tester's FastAPI app, `tester_app`; it never imports `app`.
 - `scripts/setup_db.py`: creates the app role, the tables and the grants (see Database roles).
 - `docker-compose.yml`: the local Postgres (see Local database).
-- `tests/`: one test file per service module.
+- `tests/`: one test file per service module, plus `test_server.py` and `test_tester.py` for the deployed apps.
 - `.github/`: CI workflows and their scripts, including the `AGENTS.md` check.
 
 **Config** (environment variables, loaded from a git-ignored `.env`)
@@ -382,7 +388,7 @@ Anything not built returns 501 `NOT_IMPLEMENTED` using the `Error` schema.
 
 ## Deployment
 
-Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an HTTPS URL that stays the same for the semester, and Neon keeps the data across redeploys. Vercel builds the FastAPI app in the API layer; Neon and `scripts/setup_db.py` don't depend on it.
+Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an HTTPS URL that stays the same for the semester, and Neon keeps the data across redeploys. Vercel builds the FastAPI app in `server.py`; Neon and `scripts/setup_db.py` don't depend on it.
 
 **Neon (database)**
 
@@ -404,10 +410,13 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 
 **Vercel (service)**
 
-- Import this GitHub repo as a Vercel project. Production deploys from `main`, and the production URL (`<project>.vercel.app`) is the base URL.
+- Import this GitHub repo as a Vercel project. Production deploys from `main`. The system's base URL is `https://<project>.vercel.app/system` and the tester's is `https://<project>.vercel.app/tester`.
 - Set `DATABASE_URL` (as `tracer_app`) and `REGISTRANT_TYPE` in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and the app role can't delete them.
 - Never set `ADMIN_DATABASE_URL` on Vercel: every variable there reaches the running function.
-- Vercel uses Python 3.12 by default and installs from `pyproject.toml`. The API layer adds `fastapi` there and a `[tool.vercel]` `entrypoint` naming the FastAPI app (`module:app`).
+- Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
+- Leave Deployment Protection at Standard: the production domain stays public for testers, while preview and deployment-specific URLs need a Vercel login.
+- No `vercel.json` is needed: the Hobby plan's default function limit of 300 s already covers the tester's longest request.
+- After a deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means `DATABASE_URL` is missing or wrong; preview deployments always get it.
 - The server clock (UTC, NTP-synced, for AC-02's ±5 s) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 
 ## Decisions settled by the Phase 3 plan

@@ -1,6 +1,6 @@
 # app/: foundation modules
 
-The building blocks every service uses; group A owns them. Business logic lives in `services/` (see `services/AGENTS.md`). The root `AGENTS.md` holds the spec these modules implement and wins wherever this file disagrees.
+The building blocks every service uses; group A owns them. Business logic lives in `services/` (see `services/AGENTS.md`) and the FastAPI app in `api/` (see `api/AGENTS.md`). The root `AGENTS.md` holds the spec these modules implement and wins wherever this file disagrees.
 
 ## Modules
 
@@ -16,7 +16,7 @@ The building blocks every service uses; group A owns them. Business logic lives 
 
 ## Rules
 
-- Keep `app/` free of web framework imports, apart from a future `app/api/` package; services must stay callable without one.
+- Keep `app/` free of web framework imports, apart from `app/api/`; services must stay callable without one.
 - Never call `datetime.now()` or `date.today()`; use `clock`. `today()` switches to the test run's `test_now` once test control is added.
 - Raise only `TracerError`, with a path-style `field` on validation errors; the API layer maps codes to HTTP statuses.
 - Make IDs with `new_id()`. Prefixes in use: `inc`, `ev`, `aud`.
