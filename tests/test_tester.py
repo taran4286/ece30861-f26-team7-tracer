@@ -18,7 +18,6 @@ client = TestClient(server_app)
     [("POST", "/tester/test/setup"), ("POST", "/tester/test/run"), ("GET", "/tester/test/report")],
 )
 def test_tester_paths_return_501(method, path):
-    """Verify tester stubs return 501 with a message and the tester source."""
     response = client.request(method, path)
     assert response.status_code == 501
     body = response.json()
@@ -27,7 +26,6 @@ def test_tester_paths_return_501(method, path):
 
 
 def _imported_modules(source: Path) -> list[str]:
-    """List modules named by import and absolute from-import statements in a source file."""
     modules = []
     for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"), filename=str(source))):
         if isinstance(node, ast.Import):
@@ -38,7 +36,6 @@ def _imported_modules(source: Path) -> list[str]:
 
 
 def test_tester_never_imports_app():
-    """Verify all tester Python files avoid importing the system's app package."""
     sources = sorted(TESTER_DIR.rglob("*.py"))
     assert sources
     for source in sources:
