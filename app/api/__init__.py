@@ -37,6 +37,7 @@ def health() -> JSONResponse:
 # Declared last: it matches every path, so a route declared after it never runs.
 @system_app.api_route("/{path:path}", methods=ALL_METHODS)
 def not_implemented(path: str) -> JSONResponse:
+    """Return a 501 response in the system error format for an unimplemented path."""
     # The Error schema types `field` as a string, so it's left out rather than sent as null.
     return JSONResponse(
         {"error": ErrorCode.NOT_IMPLEMENTED.value, "message": f"/{path} is not implemented"},
