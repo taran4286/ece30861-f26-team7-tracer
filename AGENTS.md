@@ -392,13 +392,13 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 
 **Neon (database)**
 
-- Create the project on neon.com, not through Vercel's Neon integration. The integration sets its own `DATABASE_URL` that logs in as the owner, and gives each preview deployment a database branch whose URL does too.
+- Create the project on neon.com, not through Vercel's Neon integration. The integration sets its own `DATABASE_URL`, pooled and possibly logging in as the owner, and can give each preview deployment its own database branch.
 - Use Postgres 18, matching the local image, in AWS US East (N. Virginia), next to Vercel's default function region `iad1`.
-- The project's `neondb_owner` role is the owner: point `ADMIN_DATABASE_URL` at it. It can create roles but isn't a superuser, so `setup_db.py` can't clear forbidden attributes here and fails instead (see Database roles).
-- Let `setup_db.py` create `tracer_app`; never create it in the Neon console. Roles made there join `neon_superuser`, which brings BYPASSRLS, so the run fails.
-- Use the direct connection string (the host without `-pooler`). Change its scheme from `postgresql://` to `postgresql+psycopg://` and keep its query parameters, including `sslmode=require`. Our traffic is far below the direct connection limit, and it keeps psycopg's prepared statements away from the pooler.
+- The project's `neondb_owner` role is the owner: point `ADMIN_DATABASE_URL` at it. It can create roles but isn't a superuser, so `setup_db.py` can't clear forbidden attributes here and fails instead (see Database roles). It belongs to `neon_superuser`, so it can delete rows in every table; the REQ-22 grants restrict only `tracer_app`.
+- Let `setup_db.py` create `tracer_app`; never create it in the Neon console. Roles made there join `neon_superuser`, which brings BYPASSRLS and write access, including DELETE, to every table, and `neondb_owner` can't alter them, so the run fails. Don't create helper roles there either.
+- Use the direct connection string (the host without `-pooler`). Neon's Connect dialog shows the pooled one by default, so turn off "Connection pooling" there. Change its scheme from `postgresql://` to `postgresql+psycopg://` and keep its query parameters, including `sslmode=require` and `channel_binding=require` when present; with the bare scheme, SQLAlchemy looks for psycopg2, which isn't installed. Our traffic is far below the direct connection limit, and Neon recommends direct connections for schema changes such as `setup_db.py`'s.
 - Neon rejects passwords with less than 60 bits of entropy; one from `secrets.token_urlsafe(24)` passes.
-- The free plan pauses the database after 5 idle minutes and drops its connections. The first request after a pause is slower, and `app/db.py` replaces the dropped connections.
+- The free plan pauses the database after 5 idle minutes and drops its connections. The first request after a pause waits a few hundred milliseconds for it to wake, and `app/db.py` replaces the dropped connections.
 - A schema change here needs a migration, not a wipe; try it on a Neon branch first.
 
 **Running `setup_db.py` against Neon**
@@ -410,13 +410,15 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 
 **Vercel (service)**
 
-- Import this GitHub repo as a Vercel project. Production deploys from `main`. The system's base URL is `https://<project>.vercel.app/system` and the tester's is `https://<project>.vercel.app/tester`.
+- Import this GitHub repo as a Vercel project. Production deploys from `main`. The system's base URL is `https://<project>.vercel.app/system` and the tester's is `https://<project>.vercel.app/tester`. Vercel names the production domain after the project, first come first served, so read the actual domain from Settings → Domains.
 - Set `DATABASE_URL` (as `tracer_app`) and `REGISTRANT_TYPE` in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and the app role can't delete them.
+- Make `DATABASE_URL` a Secret variable (write-only after saving), and redeploy after setting or changing any variable; changes only reach new deployments.
 - Never set `ADMIN_DATABASE_URL` on Vercel: every variable there reaches the running function.
+- On the Hobby plan, only the project's owner sees its variables and logs, and runtime logs are kept for 1 hour.
 - Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
 - Leave Deployment Protection at Standard: the production domain stays public for testers, while preview and deployment-specific URLs need a Vercel login.
 - No `vercel.json` is needed: the Hobby plan's default function limit of 300 s already covers the tester's longest request.
-- After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means `DATABASE_URL` is missing or wrong, so on preview deployments, which have no `DATABASE_URL`, it always returns 503.
+- After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached or a setting such as `DATABASE_URL` or `REGISTRANT_TYPE` is missing or invalid; the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
 - The server clock (UTC, NTP-synced, for AC-02's ±5 s) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 
 ## Decisions settled by the Phase 3 plan
