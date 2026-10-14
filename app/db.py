@@ -28,11 +28,18 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, default=_json_default)
 
 
+# Seconds to wait while opening a connection; libpq otherwise waits forever on a silent server.
+CONNECT_TIMEOUT_SECONDS = 10
+
+
 @lru_cache
 def get_engine() -> Engine:
     # pool_pre_ping replaces connections the server dropped while idle, e.g. when Neon pauses.
     return create_engine(
-        get_settings().database_url, json_serializer=_json_dumps, pool_pre_ping=True
+        get_settings().database_url,
+        json_serializer=_json_dumps,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
     )
 
 

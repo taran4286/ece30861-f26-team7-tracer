@@ -23,6 +23,7 @@ The building blocks every service uses; group A owns them. Business logic lives 
 - `config.py` never reads `ADMIN_DATABASE_URL`; only `scripts/setup_db.py` does.
 - `get_settings()`, `get_engine()` and the session factory behind `transaction()` are cached. A test that changes a setting such as `REGISTRANT_TYPE` must call `get_settings.cache_clear()`. Don't change `DATABASE_URL` mid-run; the cached engine and session factory keep the old one.
 - `get_engine()` sets `pool_pre_ping`, so a pooled connection the server dropped while idle is replaced before use instead of failing the operation. Neon drops them whenever it pauses (see the root "Deployment" section); keep it on.
+- `get_engine()` also passes `connect_timeout` (`CONNECT_TIMEOUT_SECONDS`, 10 s), so opening a connection to a database that stops answering fails within 10 s instead of hanging until Vercel ends the function. `pool_pre_ping` doesn't bound that wait.
 - JSON columns accept `date` and `datetime` values directly; `db.py` stores them as ISO-8601 strings.
 - Enums are stored by value (`"8-K Item 1.05"`), not by member name, through `_db_enum()`.
 - `AuditEntry.before` stores Python `None` as SQL `NULL`, not JSON `null`.

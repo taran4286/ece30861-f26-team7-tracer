@@ -1,10 +1,14 @@
 """server.py's mounts, the system's health check and its 501 stub."""
 
+import socket
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
 import app.api as system_api
+import app.db as db
 from app.config import get_settings
 from app.db import get_engine
 from server import app as server_app
@@ -41,6 +45,28 @@ def test_health_without_database_url(monkeypatch, tmp_path):
         get_engine.cache_clear()
     assert response.status_code == 503
     assert response.json()["database"] == "unavailable"
+
+
+def test_health_gives_up_on_a_silent_database(monkeypatch):
+    # A socket that accepts connections but never answers, like a database that stopped responding.
+    with socket.socket() as silent:
+        silent.bind(("127.0.0.1", 0))
+        silent.listen()
+        port = silent.getsockname()[1]
+        monkeypatch.setenv("DATABASE_URL", f"postgresql+psycopg://tracer_app:x@127.0.0.1:{port}/tracer")
+        # libpq treats anything under 2 seconds as 2.
+        monkeypatch.setattr(db, "CONNECT_TIMEOUT_SECONDS", 2)
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        try:
+            started = time.monotonic()
+            response = client.get("/system/health")
+            elapsed = time.monotonic() - started
+        finally:
+            get_settings.cache_clear()
+            get_engine.cache_clear()
+    assert response.status_code == 503
+    assert elapsed < 8
 
 
 @pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])
