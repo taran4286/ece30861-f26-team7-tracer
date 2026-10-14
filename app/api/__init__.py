@@ -27,8 +27,9 @@ def health() -> JSONResponse:
     try:
         with get_engine().connect() as conn:
             conn.execute(text("SELECT 1"))
-    except (ValidationError, SQLAlchemyError):
-        # ValidationError: DATABASE_URL is unset, as on preview deployments.
+    except (ValidationError, ImportError, SQLAlchemyError):
+        # ValidationError: a setting is missing or invalid, e.g. no DATABASE_URL on a preview.
+        # ImportError: the URL names a driver we don't install, e.g. a bare postgresql:// scheme.
         logger.warning("health: database unavailable", exc_info=True)
         return JSONResponse({"status": "unavailable", "database": "unavailable"}, status_code=503)
     return JSONResponse({"status": "ok", "database": "ok"})

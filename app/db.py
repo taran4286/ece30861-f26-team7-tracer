@@ -28,8 +28,9 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, default=_json_default)
 
 
-# Seconds to wait while opening a connection; libpq otherwise waits forever on a silent server.
-CONNECT_TIMEOUT_SECONDS = 10
+# Seconds psycopg waits on each address a host resolves to while connecting (its default
+# is 130). Neon hosts resolve to three, so a silent database fails in about 15 s.
+CONNECT_TIMEOUT_SECONDS = 5
 
 
 @lru_cache

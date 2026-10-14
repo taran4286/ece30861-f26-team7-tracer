@@ -15,5 +15,5 @@ The root "Tests to write" section lists what each area must cover; this file cov
 
 ## Rules
 
-- A test that changes a setting or the environment clears `get_settings` and `get_engine` before and after (see `app/AGENTS.md`).
+- A test that changes a setting or the environment clears the three cached objects before and after (see `app/AGENTS.md`); in `test_server.py`, the `fresh_settings` fixture does it.
 - Add a row to the table for each new test file.
