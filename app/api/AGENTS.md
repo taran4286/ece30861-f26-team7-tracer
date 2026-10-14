@@ -7,7 +7,10 @@ The system's web layer; group A owns it. `server.py` mounts `system_app` at `/sy
 | Route | Response |
 | --- | --- |
 | `GET /health` | 200 `{"status": "ok", "database": "ok"}` after a `SELECT 1` through `get_engine()`; 503 with `"database": "unavailable"` when `DATABASE_URL` is unset or the query fails |
-| Any other path, any method | 501 `{"error": "NOT_IMPLEMENTED", "message": …}` |
+| Any other path, with GET, POST, PUT, PATCH or DELETE | 501 `{"error": "NOT_IMPLEMENTED", "message": …}` |
+| `/docs`, `/redoc`, `/openapi.json` | FastAPI's generated docs for the stub; outside the spec |
+
+Other methods, such as `HEAD` and `OPTIONS`, get FastAPI's 405; no operation in the spec uses them.
 
 ## Rules
 

@@ -416,7 +416,7 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 - Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
 - Leave Deployment Protection at Standard: the production domain stays public for testers, while preview and deployment-specific URLs need a Vercel login.
 - No `vercel.json` is needed: the Hobby plan's default function limit of 300 s already covers the tester's longest request.
-- After a deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means `DATABASE_URL` is missing or wrong; preview deployments always get it.
+- After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means `DATABASE_URL` is missing or wrong, so on preview deployments, which have no `DATABASE_URL`, it always returns 503.
 - The server clock (UTC, NTP-synced, for AC-02's ±5 s) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 
 ## Decisions settled by the Phase 3 plan

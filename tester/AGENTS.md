@@ -4,7 +4,8 @@ Our tester service from the shared Tester API; group A owns it. `server.py` moun
 
 ## What it serves
 
-- Every path and method returns 501 with `{"message": …, "source": "tester"}`, the test-control error shape.
+- Every path returns 501 for GET, POST, PUT, PATCH and DELETE, with `{"message": …, "source": "tester"}`, the test-control error shape.
+- FastAPI's generated `/docs`, `/redoc` and `/openapi.json` also answer, and other methods such as `HEAD` and `OPTIONS` get FastAPI's 405; both are outside the spec.
 
 ## Rules
 
