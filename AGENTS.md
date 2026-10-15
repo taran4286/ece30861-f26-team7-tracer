@@ -2,6 +2,35 @@
 
 Oct 4, 2026 · @t
 
+## Directory guides
+
+Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees; `system-openapi.yaml`, the shared API contract, wins over both (see Scope).
+
+- Before changing or explaining a file, read the `AGENTS.md` in its folder and in each parent folder up to the root. Not every tool loads nested guides on its own, so read them explicitly.
+- Rules that must never be missed stay in this file; folder guides hold local details.
+- Guides describe the code, not progress; whoever implements a piece tracks its status.
+- Guides only match what you have checked out, so start from the latest `main` (see Branches, commits and pull requests).
+
+| Guide | Covers |
+| --- | --- |
+| `app/AGENTS.md` | Foundation modules: config, db, models, errors, roles, clock and audit |
+| `app/services/AGENTS.md` | Business logic and the steps every operation follows |
+| `scripts/AGENTS.md` | `setup_db.py`, the database roles and grants |
+| `tests/AGENTS.md` | How the pytest suite runs, its shared helpers and fixtures |
+| `.github/AGENTS.md` | CI workflows, their scripts and `CODEOWNERS` |
+
+**Keeping the guides current (mandatory)**
+
+- Every PR updates the relevant `AGENTS.md` for each file it changes: the nearest one in the file's folder or a parent folder. Files outside a guided folder, such as `README.md` or `pyproject.toml`, map to this root file.
+- Make the update in the same PR as the change, so each guide describes the code as merged: new modules, rules, decisions and anything the next person needs to know.
+- If a change truly alters nothing a guide says, don't add a filler edit. Put one line per guide in the PR description instead, naming the guide and the reason, e.g. `AGENTS.md: no change needed because the README edit only fixes a typo`. Reviewers judge whether the reason holds.
+- Write guides as the current state, and fix or delete what the change made wrong. Never add history or "changed X" notes; `git log` holds history, and a guide that grows into a changelog buries the rules.
+- Don't restate this file's rules in a folder guide; point to the section instead, so the two can't drift apart.
+- Every top-level folder except `.claude/` and `.agents/` (covered here), and every Python package under `app/`, needs its own `AGENTS.md`. Add it, and a row in the table above, in the PR that creates the folder, e.g. `tests/AGENTS.md` and later `app/api/AGENTS.md`.
+- The `AGENTS.md updated` CI check (`.github/workflows/agents-md.yml`) enforces the update rule (accepting a skip line in its place) and the own-guide rule above, failing the PR otherwise; whitespace-only edits don't count, and a skip line can't stand in for a missing guide. Run it locally before pushing (see Branches, commits and pull requests).
+- The check proves a guide changed, not that it's right; reviewers check the content.
+- A guide doesn't guarantee a rule is followed. Where a test or script can check a rule (like the AC-09 test or `setup_db.py`'s privilege check), add one.
+
 ## Stack, repo layout and config
 
 The business logic is built first, independent of the web framework; the FastAPI layer (routes, request and response models, error handlers) is added once the API is confirmed.
@@ -14,6 +43,7 @@ The business logic is built first, independent of the web framework; the FastAPI
 
 **Repo layout**
 
+- `system-openapi.yaml`: the Tracer Shared System API that our service implements, copied verbatim from the version shared with Team 10 (its `info.version` names it). Don't edit it here; when the pod agrees on a new version, replace the whole file and update the guides to match.
 - `app/config.py`: settings read from environment variables.
 - `app/db.py`: engine, `Base`, and one transaction per operation.
 - `app/models.py`: the tables in Data model and storage.
@@ -25,6 +55,7 @@ The business logic is built first, independent of the web framework; the FastAPI
 - `scripts/setup_db.py`: creates the app role, the tables and the grants (see Database roles).
 - `docker-compose.yml`: the local Postgres (see Local database).
 - `tests/`: one test file per service module.
+- `.github/`: CI workflows and their scripts, including the `AGENTS.md` check.
 
 **Config** (environment variables, loaded from a git-ignored `.env`)
 
@@ -58,10 +89,10 @@ Run these in order when someone asks to set up the project or the local database
 
 ## Scope
 
-Phase 3 builds Team 7's Tracer service covering REQ-01, 02, 03, 06, 07, 08, 19, 22 and 23. The Phase 3 implementation plan is the source of truth until the final API arrives; then paths, schemas and error codes get rewired against it.
+Phase 3 builds Team 7's Tracer service covering REQ-01, 02, 03, 06, 07, 08, 19, 22 and 23. `system-openapi.yaml` is the source of truth for paths, schemas, error codes and behavior. Where this file or a folder guide disagrees with it, the spec wins; fix the guide.
 
-- In scope: incident creation, evidence import, the five-state machine, materiality determinations, the audit trail, deployment, and 405/501 stubs.
-- Out of scope for now: test control (`/test/setup`, `/test/report`, `X-Test-Run`), shared fixtures and the cross-team test suite. These get their own plan.
+- In scope: incident creation, evidence import, the five-state machine, materiality determinations, the audit trail, test control (`/test/setup`, the coverage report and `X-Test-Run` sessions), deployment, and 405/501 stubs.
+- Out of scope for now: shared fixtures and the cross-team test suite. These get their own plan.
 - Out of scope (Phase 4): due dates, flags, filings, LLM drafts, stale-version rejection (REQ-21), and re-determination of DeterminedNotMaterial.
 
 ## Build order and work split
@@ -424,6 +455,7 @@ Phase 3 is done for Team 7 when the deployed service does all of the following.
 
 ## Branches, commits and pull requests
 
+- Start each piece of work from the latest `main`: `git switch main`, `git pull`, then create the branch. On a branch that has been open a while, merge the latest `main` in before relying on the guides.
 - Name branches per [Conventional Branch 1.1.0](https://conventionalbranch.org), e.g. `feature/group-a-contracts` or `chore/conventional-skills`; the `conventional-branch` skill holds the spec.
 - Don't put usernames in branch names.
 - Follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/); the `conventional-commits` skill holds the spec.
@@ -431,4 +463,8 @@ Phase 3 is done for Team 7 when the deployed service does all of the following.
 - `type: description` without a scope is valid under the spec but not in this repo.
 - Use a short lowercase noun for the area changed, e.g. `agents`, `skills`, `config`, `db`, `models`, `roles`, `audit`, `incidents`, `evidence`, `workflow`, `api`.
 - Write PR descriptions per the `pull-requests` skill.
-- Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together.
+- Every PR updates the relevant `AGENTS.md` files or gives a skip line for each (see Directory guides); the `AGENTS.md updated` check fails it otherwise.
+- Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together; the `Skills in sync` CI check (`.github/workflows/skills.yml`) fails a PR when they differ.
+- Before pushing, commit and run both checks:
+  - `python .github/scripts/check_agents_md.py --body "<PR description>"` (the body is only needed for skip lines)
+  - `git diff --no-index --exit-code .claude/skills .agents/skills`
