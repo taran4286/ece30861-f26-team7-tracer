@@ -6,6 +6,7 @@ One module per area, callable without any web framework. The root `AGENTS.md` ho
 | --- | --- | --- | --- |
 | `incidents.py` | Group B | Create and get an incident | `tests/test_incidents.py` |
 | `evidence.py` | Group B | Import evidence | `tests/test_evidence.py` |
+| `validation.py` | Group B | Shared body checks: `require_object`, `require_string`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
 | `workflow.py` | Group C | Record a determination, transitions, list audit entries | `tests/test_workflow.py` |
 
 The table lists the planned modules; add a row for any new one.
@@ -36,10 +37,17 @@ def record_determination(incident_id: str, body: dict, *, user_id: str, role: Ro
 
 Header checks (missing `X-User-Id` or `X-User-Role`) come before step 1 and belong to the API layer.
 
+## Shared helpers
+
+- `incidents.load_incident(tx, incident_id, for_update=False)` loads the path incident or raises `NOT_FOUND`; pass `for_update=True` when the operation changes the incident.
+- `incidents.incident_to_dict(tx, incident)` builds the full Incident schema (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values). Every operation that returns an Incident uses it, so the shape stays in one place.
+- Validate bodies with `validation.py`, so dates and date-times are checked the same way everywhere: `parse_date` accepts only a real `YYYY-MM-DD`, and `parse_date_time` accepts only RFC 3339 with seconds and a `Z` or `±HH:MM` offset, returned in UTC.
+
 ## Rules
 
 - Services take the raw request body and do all body validation themselves. A 400 must come after the 404 check, so API request models must not reject a body before the service runs.
 - Unknown IDs inside a body, like `evidence_refs`, are 400s on that field; only IDs in the path are 404s.
 - When an operation changes the incident (determination, transition), load it with `with_for_update=True`, so two concurrent requests can't both pass the state check or bump `version` from the same value.
 - Keep materiality writes in `workflow.py`'s determination operation, and the allowed transitions as a data set in `workflow.py`.
+- Evidence import validates items field by field in a fixed order (ticketing: `ticket_id`, `summary`, `created_at`; SIEM: `alert_id`, `rule_name`, `severity`, `detected_at`), then rejects any key only the other source sends (`items[i].<key>`). Other extra keys are allowed and kept in `raw_item`.
 - Call `get_settings()` inside the operation, not at import time, so a test can switch the registrant type.
