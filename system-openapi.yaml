@@ -1,0 +1,1800 @@
+openapi: 3.1.1
+info:
+  title: Tracer Shared System API
+  version: 1.1.0-proposed
+  description: |
+    Common web-service interface for Teams 7 and 10 (Section 5.1). Paths are relative to the
+    selected team's base URL. Field types and constraints are defined in the schemas below;
+    examples are in Section 5.2.
+
+    **Conventions**
+    - HTTPS, JSON (UTF-8). Dates `YYYY-MM-DD`; timestamps ISO-8601 UTC. Project IDs are opaque server-generated strings; session IDs are supplied by the tester or staff.
+    - `X-User-Id`, `X-User-Role`, and `X-Test-Run` are a test identity convention, not an authentication design.
+    - "Today" is the date of the run's `test_now`. All date rules (future-date checks, due dates, warnings,
+      at-risk) use it. Record timestamps (`imported_at`, audit `timestamp`) use real server time.
+    - Business days exclude weekends and U.S. federal holidays (observed dates); the start day is not counted.
+    - Each incident has an integer `version`, starting at 1 and increasing by 1 on every change to the incident.
+      Requests that change an incident send the `version` they last read (REQ-21).
+    - Every error leaves stored data unchanged (REQ-19).
+    - A nice-to-have operation a team did not build returns `501`.
+
+    **Roles**
+    - Responder: all GETs; create incident; import and tag evidence; create group.
+    - DisclosureApprover: all operations.
+    - Board: GETs only.
+    - Any other operation for a role returns `403`.
+
+    **State transitions (3.2.1).** Any pair not listed returns `409 INVALID_TRANSITION` with no change.
+
+    | From → To | Performed by |
+    |---|---|
+    | UnderAssessment → DeterminedMaterial / DeterminedNotMaterial | determination |
+    | DeterminedMaterial → DisclosureDelayed | transitions |
+    | DisclosureDelayed → DeterminedMaterial | transitions |
+    | DeterminedMaterial / DisclosureDelayed → DisclosureRecorded | filings |
+    | DeterminedNotMaterial → Closed | transitions |
+    | DisclosureRecorded → AmendmentPending | transitions |
+    | AmendmentPending → DisclosureRecorded | filings (8-K/A) |
+    | DisclosureRecorded → Closed | transitions |
+
+    **Required form and due date (3.2.2)**
+
+    | Situation | required_form | due_date |
+    |---|---|---|
+    | Material, Domestic | 8-K Item 1.05 | determination_date + 4 business days |
+    | Material, FPI | 6-K | null |
+    | NotMaterial with voluntary_disclosure | 8-K Item 8.01 | null |
+    | AmendmentPending, Domestic | 8-K/A | info_available_date + 4 business days |
+    | AmendmentPending, FPI (proposed) | 6-K | null |
+
+    **Flags (3.2.3).** Computed on every read; fields on the incident, not states.
+    - `at_risk`: incident is UnderAssessment and more than `at_risk_threshold_days` have passed since
+      00:00 UTC on `discovery_date`.
+    - Due-date flags, checked in order: (1) filing recorded for the current `required_form` → none;
+      (2) today is after `due_date` → `overdue`; (3) 1 business day or less remains (business days after
+      today through `due_date`) → `warning`.
+
+    **Evidence sources.** Simulated ticketing and SIEM evidence is supplied as static JSON fixture items,
+    which tests submit through the import operation.
+
+    **Open items (pending pod agreement):** whether warning/overdue apply while DisclosureDelayed; whether
+    DeterminedNotMaterial can be re-determined Material (currently 409); registrant_type per run, at-risk
+    measured from 00:00 UTC, and FPI amendments are proposals in this contract.
+
+
+    **Testing interface update (class interface 0.4.2)**
+    - Paths in this file are relative to the system base URL. The tester has its own base URL and separate API description.
+    - POST /test/setup accepts session_id and setup; it prepares a new isolated session and returns the supplied ID only when ready. Duplicate IDs return 409. It does not run tests or update an existing session.
+    - On project requests, X-Test-Run equals the supplied session_id. The retained run_id metadata field is an alias for the same ID, not a second generated identifier.
+    - GET /test/report?session_id=... returns code coverage for that session. Reading it does not run project operations or change measurements. Use null/null with a reason when measurements are unavailable.
+    - GET /test/report/{run_id} remains a pod snapshot extension, separate from the class coverage report.
+    - PATCH /test/sessions/{session_id}/settings is a pod extension for clock/settings updates; registrant_type remains fixed.
+    - Test-control errors use message and source. Project operations retain the existing Error schema.
+    - Preserve isolated session state through suite execution and coverage retrieval; never share records or measurements across sessions. Runs start empty; tests execute sequentially and share state within a run. Separate sessions may coexist. No setup reset or automatic deletion of earlier runs.
+    - Empty setup uses test_now=2026-10-05T15:00:00Z, registrant_type=Domestic, at_risk_threshold_days=7, and the deployment's configured LLM URI. These pod defaults are proposed for agreement.
+    - Register actual system/tester URLs and setup/run time limits. Proposed limits: system setup 20s; tester setup 20s; tester run 130s; project calls 10s with no automatic retry.
+    - This edit changes testing controls only. Existing project-operation definitions and full-project rules are preserved; Phase 3 implementation status and any staged deviations must be recorded separately.
+
+
+    Traceability: REQ identifiers are the original Phase 2 project requirements. TEST-01 through TEST-05 label class testing-interface obligations in this draft; TEST-06 and TEST-07 label proposed pod extensions. TEST labels are local references, not instructor-assigned project requirement numbers. Full-project operations remain specified even if deferred in Phase 3; a listed operation is not a claim that code is implemented. See implementation status separately.
+servers:
+- url: https://team-b.example.edu/system
+  description: Example only; replace with the selected team system base URL.
+tags:
+- name: Test control
+- name: Incidents
+- name: Evidence
+- name: Workflow
+- name: Drafts
+- name: Audit
+- name: Groups
+paths:
+  /test/setup:
+    post:
+      tags:
+      - Test control
+      operationId: prepareSystemSession
+      summary: Prepare a new supplied test session
+      description: |-
+        Purpose: Prepare a new supplied test session
+        Requirements: TEST-01; supports REQ-19
+
+        No identity headers. Prepare empty isolated session resources without running tests. Return only after ready. On failure no runnable session is created. Duplicate ID returns 409; changing settings requires the separate settings operation. Endpoint remains reachable when backing resources are stopped.
+        Rejected requests leave stored project data unchanged.
+        Project state change: none; setup only prepares a new session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemSetupRequest'
+            example:
+              session_id: run-123
+              setup:
+                test_now: '2026-10-05T15:00:00Z'
+                registrant_type: Domestic
+      responses:
+        '201':
+          description: Session ready; supplied ID returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionId'
+              example:
+                session_id: run-123
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '409':
+          description: Session conflict or report not ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '500':
+          description: Operation failed or tester aborted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+      x-requirement-ids:
+      - TEST-01
+      x-related-project-requirement-ids:
+      - REQ-19
+  /test/report/{run_id}:
+    get:
+      tags:
+      - Test control
+      operationId: getTestReport
+      summary: 'Pod extension: snapshot of incident, group and audit data'
+      description: |-
+        Purpose: Pod extension: snapshot of incident, group and audit data
+        Requirements: TEST-06; supports REQ-19, REQ-22
+
+        Retained Phase 2 snapshot for readback and no-partial-write tests. run_id is the supplied session_id. Does not replace the query-based class coverage endpoint. No identity headers.
+        Request body: none. Use the declared path/query parameters and headers.
+        State change: none.
+        Rejected requests leave stored project data unchanged.
+        No tests or project actions run during report lookup.
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Run snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestReport'
+        '404':
+          description: Unknown session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '409':
+          description: Session conflict or report not ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '500':
+          description: Operation failed or tester aborted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+      x-requirement-ids:
+      - TEST-06
+      x-related-project-requirement-ids:
+      - REQ-19
+      - REQ-22
+  /incidents:
+    post:
+      tags:
+      - Incidents
+      operationId: createIncident
+      summary: Create an incident
+      description: |-
+        Purpose: Create an incident
+        Requirements: REQ-01, REQ-19, REQ-22. Roles: Responder, DisclosureApprover.
+        Creates the incident in UnderAssessment with version 1.
+
+        Rejected requests leave stored project data unchanged.
+      parameters:
+      - $ref: '#/components/parameters/XUserId'
+      - $ref: '#/components/parameters/XUserRole'
+      - $ref: '#/components/parameters/XTestRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIncidentRequest'
+      responses:
+        '201':
+          description: Incident created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-requirement-ids:
+      - REQ-01
+      - REQ-19
+      - REQ-22
+  /incidents/{incident_id}:
+    parameters:
+    - $ref: '#/components/parameters/IncidentId'
+    - $ref: '#/components/parameters/XUserId'
+    - $ref: '#/components/parameters/XUserRole'
+    - $ref: '#/components/parameters/XTestRun'
+    get:
+      tags:
+      - Incidents
+      operationId: getIncident
+      summary: Get an incident with its state, due date, and flags
+      description: |-
+        Purpose: Get an incident with its state, due date, and flags
+        Requirements: REQ-06, REQ-09 to REQ-12, REQ-14. Roles: all.
+        Request body: none. Use the declared path/query parameters and headers.
+        State change: none.
+        Rejected requests leave stored project data unchanged.
+      responses:
+        '200':
+          description: The incident.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      x-requirement-ids:
+      - REQ-06
+      - REQ-09
+      - REQ-10
+      - REQ-11
+      - REQ-12
+      - REQ-14
+    put:
+      tags:
+      - Incidents
+      operationId: replaceIncidentNotAllowed
+      summary: Not allowed (REQ-22)
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-requirement-ids:
+      - REQ-22
+      description: |-
+        Purpose: Not allowed (REQ-22)
+        Requirements: REQ-22
+        Not allowed (REQ-22)
+        Request body: none. Use the declared path/query parameters and headers.
+        Rejected requests leave stored project data unchanged.
+    delete:
+      tags:
+      - Incidents
+      operationId: deleteIncidentNotAllowed
+      summary: Not allowed; incidents are never hard-deleted (REQ-22)
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-requirement-ids:
+      - REQ-22
+      description: |-
+        Purpose: Not allowed; incidents are never hard-deleted (REQ-22)
+        Requirements: REQ-22
+        Not allowed; incidents are never hard-deleted (REQ-22)
+        Request body: none. Use the declared path/query parameters and headers.
+        Rejected requests leave stored project data unchanged.
+  /incidents/{incident_id}/evidence/import:
+    post:
+      tags:
+      - Evidence
+      operationId: importEvidence
+      summary: Import evidence from a simulated source
+      description: |-
+        Purpose: Import evidence from a simulated source
+        Requirements: REQ-02, REQ-03, REQ-19, REQ-22. Roles: Responder, DisclosureApprover.
+        Items are static JSON fixture items (TicketingItem or SiemItem), normalized to EvidenceItem.
+        One invalid item rejects the whole batch.
+        Allowed in any state. Does not change the incident's version.
+
+        Rejected requests leave stored project data unchanged.
+      parameters:
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/XUserId'
+      - $ref: '#/components/parameters/XUserRole'
+      - $ref: '#/components/parameters/XTestRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRequest'
+      responses:
+        '201':
+          description: Items imported and normalized.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - evidence
+                properties:
+                  evidence:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EvidenceItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-requirement-ids:
+      - REQ-02
+      - REQ-03
+      - REQ-19
+      - REQ-22
+  /incidents/{incident_id}/evidence/{evidence_id}:
+    parameters:
+    - $ref: '#/components/parameters/IncidentId'
+    - name: evidence_id
+      in: path
+      required: true
+      schema:
+        type: string
+    - $ref: '#/components/parameters/XUserId'
+    - $ref: '#/components/parameters/XUserRole'
+    - $ref: '#/components/parameters/XTestRun'
+    patch:
+      tags:
+      - Evidence
+      operationId: tagEvidence
+      summary: Replace an evidence item's impact categories (nice to have)
+      description: |-
+        Purpose: Replace an evidence item's impact categories (nice to have)
+        Requirements: REQ-05. Roles: Responder, DisclosureApprover.
+        Rejected requests leave stored project data unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TagRequest'
+      responses:
+        '200':
+          description: Updated evidence item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+      x-requirement-ids:
+      - REQ-05
+    delete:
+      tags:
+      - Evidence
+      operationId: deleteEvidenceNotAllowed
+      summary: Not allowed; evidence is never hard-deleted (REQ-22)
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-requirement-ids:
+      - REQ-22
+      description: |-
+        Purpose: Not allowed; evidence is never hard-deleted (REQ-22)
+        Requirements: REQ-22
+        Not allowed; evidence is never hard-deleted (REQ-22)
+        Request body: none. Use the declared path/query parameters and headers.
+        Rejected requests leave stored project data unchanged.
+  /incidents/{incident_id}/determination:
+    post:
+      tags:
+      - Workflow
+      operationId: recordDetermination
+      summary: Record the materiality determination
+      description: |-
+        Purpose: Record the materiality determination
+        Requirements: REQ-07, REQ-08, REQ-10, REQ-12, REQ-18, REQ-19, REQ-22. Role: DisclosureApprover only.
+        Allowed only from UnderAssessment. Sets state to DeterminedMaterial or DeterminedNotMaterial,
+        sets required_form and due_date (see top-level table), and clears at_risk. If the incident is
+        in a group, the same determination is applied to every member. This is the only operation that
+        writes a materiality value.
+
+        Rejected requests leave stored project data unchanged.
+      parameters:
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/XUserId'
+      - $ref: '#/components/parameters/XUserRole'
+      - $ref: '#/components/parameters/XTestRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeterminationRequest'
+      responses:
+        '200':
+          description: Determination recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '501':
+          description: voluntary_disclosure sent but REQ-18 not built.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-requirement-ids:
+      - REQ-07
+      - REQ-08
+      - REQ-10
+      - REQ-12
+      - REQ-18
+      - REQ-19
+      - REQ-22
+  /incidents/{incident_id}/transitions:
+    post:
+      tags:
+      - Workflow
+      operationId: transitionIncident
+      summary: Delay, end delay, close, or mark unavailable information available
+      description: |-
+        Purpose: Delay, end delay, close, or mark unavailable information available
+        Requirements: REQ-06, REQ-14, REQ-22. Role: DisclosureApprover.
+        Performs only the transitions assigned to "transitions" in the top-level table. `to` accepts
+        any state so that disallowed pairs return 409 INVALID_TRANSITION (AC-06).
+        For `to: AmendmentPending`, `info_available_date` and `elements` are required, and `elements`
+        must be a subset of the latest filing's `unavailable_elements`.
+
+        Rejected requests leave stored project data unchanged.
+      parameters:
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/XUserId'
+      - $ref: '#/components/parameters/XUserRole'
+      - $ref: '#/components/parameters/XTestRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionRequest'
+      responses:
+        '200':
+          description: Transition applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      x-requirement-ids:
+      - REQ-06
+      - REQ-14
+      - REQ-22
+  /incidents/{incident_id}/filings:
+    post:
+      tags:
+      - Workflow
+      operationId: recordFiling
+      summary: Record a filing submitted on EDGAR outside Tracer
+      description: |-
+        Purpose: Record a filing submitted on EDGAR outside Tracer
+        Requirements: REQ-12, REQ-13, REQ-14, REQ-22. Role: DisclosureApprover.
+        `form_type` must equal the incident's `required_form`. Sets state to DisclosureRecorded and
+        clears warning/overdue.
+
+        Rejected requests leave stored project data unchanged.
+      parameters:
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/XUserId'
+      - $ref: '#/components/parameters/XUserRole'
+      - $ref: '#/components/parameters/XTestRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FilingRequest'
+      responses:
+        '201':
+          description: Filing recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      x-requirement-ids:
+      - REQ-12
+      - REQ-13
+      - REQ-14
+      - REQ-22
+  /incidents/{incident_id}/drafts:
+    post:
+      tags:
+      - Drafts
+      operationId: requestDraft
+      summary: Generate an advisory LLM draft of the disclosure form
+      description: |-
+        Purpose: Generate an advisory LLM draft of the disclosure form
+        Requirements: REQ-08, REQ-15, REQ-16, REQ-17, REQ-20. Role: DisclosureApprover.
+        Allowed when state is DeterminedMaterial, DisclosureDelayed, or AmendmentPending.
+        Every citation is an evidence ID of this incident. An element with no supporting evidence has
+        text exactly "Not yet determined" and empty citations and sensitive_flags. The draft contains
+        no materiality field. Does not change incident state or version. Request body is empty.
+
+        Request body: none. Use the declared path/query parameters and headers.
+        Rejected requests leave stored project data unchanged.
+      parameters:
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/XUserId'
+      - $ref: '#/components/parameters/XUserRole'
+      - $ref: '#/components/parameters/XTestRun'
+      responses:
+        '201':
+          description: Draft generated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Draft'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          description: LLM error, or no response within 60 s (REQ-20). Message is "Drafting unavailable".
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+      x-requirement-ids:
+      - REQ-08
+      - REQ-15
+      - REQ-16
+      - REQ-17
+      - REQ-20
+  /drafts/{draft_id}/accept:
+    post:
+      tags:
+      - Drafts
+      operationId: acceptDraft
+      summary: Accept a draft
+      description: |-
+        Purpose: Accept a draft
+        Requirements: REQ-22. Role: DisclosureApprover. Writes an audit entry. Request body is empty.
+        Request body: none. Use the declared path/query parameters and headers.
+        Rejected requests leave stored project data unchanged.
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/XUserId'
+      - $ref: '#/components/parameters/XUserRole'
+      - $ref: '#/components/parameters/XTestRun'
+      responses:
+        '200':
+          description: Draft accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Draft'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+      x-requirement-ids:
+      - REQ-22
+  /incidents/{incident_id}/audit:
+    parameters:
+    - $ref: '#/components/parameters/IncidentId'
+    - $ref: '#/components/parameters/XUserId'
+    - $ref: '#/components/parameters/XUserRole'
+    - $ref: '#/components/parameters/XTestRun'
+    get:
+      tags:
+      - Audit
+      operationId: getAuditTrail
+      summary: Read the incident's append-only audit trail, oldest first
+      description: |-
+        Purpose: Read the incident's append-only audit trail, oldest first
+        Requirements: REQ-22. Roles: all.
+        Request body: none. Use the declared path/query parameters and headers.
+        State change: none.
+        Rejected requests leave stored project data unchanged.
+      responses:
+        '200':
+          description: Audit entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - entries
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEntry'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      x-requirement-ids:
+      - REQ-22
+    put:
+      tags:
+      - Audit
+      operationId: replaceAuditNotAllowed
+      summary: Not allowed (REQ-22)
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-requirement-ids:
+      - REQ-22
+      description: |-
+        Purpose: Not allowed (REQ-22)
+        Requirements: REQ-22
+        Not allowed (REQ-22)
+        Request body: none. Use the declared path/query parameters and headers.
+        Rejected requests leave stored project data unchanged.
+    patch:
+      tags:
+      - Audit
+      operationId: editAuditNotAllowed
+      summary: Not allowed (REQ-22)
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-requirement-ids:
+      - REQ-22
+      description: |-
+        Purpose: Not allowed (REQ-22)
+        Requirements: REQ-22
+        Not allowed (REQ-22)
+        Request body: none. Use the declared path/query parameters and headers.
+        Rejected requests leave stored project data unchanged.
+    delete:
+      tags:
+      - Audit
+      operationId: deleteAuditNotAllowed
+      summary: Not allowed (REQ-22)
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-requirement-ids:
+      - REQ-22
+      description: |-
+        Purpose: Not allowed (REQ-22)
+        Requirements: REQ-22
+        Not allowed (REQ-22)
+        Request body: none. Use the declared path/query parameters and headers.
+        Rejected requests leave stored project data unchanged.
+  /groups:
+    post:
+      tags:
+      - Groups
+      operationId: createGroup
+      summary: Link related incidents into a group (nice to have)
+      description: |-
+        Purpose: Link related incidents into a group (nice to have)
+        Requirements: REQ-04. Roles: Responder, DisclosureApprover.
+        All members must be UnderAssessment and not already grouped. Each member's group_id is set
+        and its version increments.
+
+        Rejected requests leave stored project data unchanged.
+      parameters:
+      - $ref: '#/components/parameters/XUserId'
+      - $ref: '#/components/parameters/XUserRole'
+      - $ref: '#/components/parameters/XTestRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupRequest'
+      responses:
+        '201':
+          description: Group created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      x-requirement-ids:
+      - REQ-04
+  /test/report:
+    get:
+      tags:
+      - Test control
+      operationId: getSystemCoverage
+      summary: Read code coverage for a prepared session
+      description: |-
+        Purpose: Read code coverage for a prepared session
+        Requirements: TEST-02
+
+        No body or identity headers. Return source-line/branch coverage from project calls in this session since setup. Return 409 while preparation is incomplete; 404 for unknown session. Reading the report does not execute project operations or modify measurements; later project calls may update measurements.
+        Request body: none. Use the declared path/query parameters and headers.
+        State change: none.
+        Rejected requests leave stored project data unchanged.
+        No tests or project actions run during report lookup.
+      parameters:
+      - name: session_id
+        in: query
+        required: true
+        schema: &id001
+          type: string
+          minLength: 1
+          pattern: \S
+      responses:
+        '200':
+          description: Session code coverage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemCoverageReport'
+              example:
+                session_id: run-123
+                coverage:
+                  code:
+                    covered: null
+                    total: null
+                    basis: Source lines; target instrumentation unavailable
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '404':
+          description: Unknown session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '409':
+          description: Session conflict or report not ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '500':
+          description: Operation failed or tester aborted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+      x-requirement-ids:
+      - TEST-02
+  /test/sessions/{session_id}/settings:
+    patch:
+      tags:
+      - Test control
+      operationId: updateSessionSettings
+      summary: 'Pod extension: change a session clock or mutable settings'
+      description: |-
+        Purpose: Pod extension: change a session clock or mutable settings
+        Requirements: TEST-07; supports REQ-09, REQ-10, REQ-11, REQ-20
+
+        No identity headers. Update only test_now, at_risk_threshold_days, or llm_base_url. Reject registrant_type and leave all settings unchanged on error. Return run metadata. No project records or audit entries are created by this control operation.
+        Rejected requests leave stored project data unchanged.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionSettingsUpdate'
+            example:
+              test_now: '2026-10-08T15:00:00Z'
+      responses:
+        '200':
+          description: Updated run metadata; run_id equals session_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestRun'
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '404':
+          description: Unknown session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '409':
+          description: Session conflict or report not ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '500':
+          description: Operation failed or tester aborted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+      x-requirement-ids:
+      - TEST-07
+      x-related-project-requirement-ids:
+      - REQ-09
+      - REQ-10
+      - REQ-11
+      - REQ-20
+components:
+  parameters:
+    XUserId:
+      name: X-User-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    XUserRole:
+      name: X-User-Role
+      in: header
+      required: true
+      schema:
+        $ref: '#/components/schemas/Role'
+    XTestRun:
+      name: X-Test-Run
+      in: header
+      required: true
+      description: Session ID supplied to system POST /test/setup. X-Test-Run equals session_id; every
+        project lookup is scoped to that session.
+      schema:
+        type: string
+    IncidentId:
+      name: incident_id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: 'VALIDATION_ERROR: missing or invalid field; `field` names it (e.g. items[3].detected_at).'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: 'FORBIDDEN_ROLE: role not allowed for this operation.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: 'NOT_FOUND: unknown incident, evidence, draft, group, or run.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    MethodNotAllowed:
+      description: 'METHOD_NOT_ALLOWED: edits and deletes are rejected (REQ-22).'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: |
+        One of: INVALID_TRANSITION (not allowed from current state); STALE_VERSION (sent version is
+        older than stored; message says to reload, REQ-21); CONFLICT (group rule violated or draft
+        already accepted); NOT_MATERIAL (draft requested for an incident that is not material).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotImplemented:
+      description: 'NOT_IMPLEMENTED: nice-to-have not built by this team.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Role:
+      type: string
+      enum:
+      - Responder
+      - DisclosureApprover
+      - Board
+    State:
+      type: string
+      enum:
+      - UnderAssessment
+      - DeterminedMaterial
+      - DeterminedNotMaterial
+      - DisclosureDelayed
+      - DisclosureRecorded
+      - AmendmentPending
+      - Closed
+    FormType:
+      type: string
+      enum:
+      - 8-K Item 1.05
+      - 8-K Item 8.01
+      - 6-K
+      - 8-K/A
+    FilingFormType:
+      type: string
+      enum:
+      - 8-K Item 1.05
+      - 6-K
+      - 8-K/A
+    DraftElementName:
+      type: string
+      enum:
+      - nature
+      - scope
+      - timing
+      - impact
+    ImpactCategory:
+      type: string
+      enum:
+      - operational
+      - financial
+      - legal_regulatory
+      - reputational
+      - data_compromised
+    Flag:
+      type: string
+      enum:
+      - at_risk
+      - warning
+      - overdue
+    Source:
+      type: string
+      enum:
+      - ticketing
+      - siem
+    Error:
+      type: object
+      required:
+      - error
+      - message
+      properties:
+        error:
+          type: string
+          enum:
+          - VALIDATION_ERROR
+          - FORBIDDEN_ROLE
+          - NOT_FOUND
+          - METHOD_NOT_ALLOWED
+          - INVALID_TRANSITION
+          - STALE_VERSION
+          - CONFLICT
+          - NOT_MATERIAL
+          - NOT_IMPLEMENTED
+          - DRAFTING_UNAVAILABLE
+        message:
+          type: string
+        field:
+          type: string
+    TestRun:
+      type: object
+      required:
+      - run_id
+      - test_now
+      - registrant_type
+      - at_risk_threshold_days
+      - llm_base_url
+      - implemented_optional
+      properties:
+        run_id:
+          type: string
+          description: Compatibility metadata name for session_id; exactly the same value.
+        test_now:
+          type: string
+          format: date-time
+        registrant_type:
+          type: string
+          enum:
+          - Domestic
+          - FPI
+        at_risk_threshold_days:
+          type: integer
+          minimum: 1
+        llm_base_url:
+          type: string
+          format: uri
+          description: Configured LLM URI metadata. A working LLM is not required for the Phase 3 testing
+            interface.
+        implemented_optional:
+          type: array
+          description: Nice-to-have requirement IDs this deployment built.
+          items:
+            type: string
+            enum:
+            - REQ-04
+            - REQ-05
+            - REQ-09
+            - REQ-17
+            - REQ-18
+            - REQ-20
+            - REQ-21
+    TestReport:
+      type: object
+      required:
+      - run
+      - incidents
+      - groups
+      - audit
+      properties:
+        run:
+          $ref: '#/components/schemas/TestRun'
+        incidents:
+          type: array
+          items:
+            $ref: '#/components/schemas/Incident'
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/Group'
+        audit:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEntry'
+    CreateIncidentRequest:
+      type: object
+      required:
+      - title
+      - discovery_date
+      properties:
+        title:
+          type: string
+          minLength: 1
+        discovery_date:
+          type: string
+          format: date
+          description: Not after today.
+    Incident:
+      type: object
+      required:
+      - incident_id
+      - title
+      - discovery_date
+      - state
+      - flags
+      - filings
+      - evidence
+      - version
+      properties:
+        incident_id:
+          type: string
+        title:
+          type: string
+        discovery_date:
+          type: string
+          format: date
+        state:
+          $ref: '#/components/schemas/State'
+        determination:
+          oneOf:
+          - $ref: '#/components/schemas/Determination'
+          - type: 'null'
+        required_form:
+          oneOf:
+          - $ref: '#/components/schemas/FormType'
+          - type: 'null'
+        due_date:
+          type:
+          - string
+          - 'null'
+          format: date
+        flags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Flag'
+        filings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Filing'
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvidenceItem'
+        group_id:
+          type:
+          - string
+          - 'null'
+        version:
+          type: integer
+          minimum: 1
+    TicketingItem:
+      type: object
+      description: Raw simulated ticketing item.
+      required:
+      - ticket_id
+      - summary
+      - created_at
+      properties:
+        ticket_id:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    SiemItem:
+      type: object
+      description: Raw simulated SIEM alert.
+      required:
+      - alert_id
+      - rule_name
+      - severity
+      - detected_at
+      properties:
+        alert_id:
+          type: string
+        rule_name:
+          type: string
+        severity:
+          type: string
+          enum:
+          - low
+          - medium
+          - high
+          - critical
+        description:
+          type: string
+        detected_at:
+          type: string
+          format: date-time
+    ImportRequest:
+      type: object
+      required:
+      - source
+      - items
+      properties:
+        source:
+          $ref: '#/components/schemas/Source'
+        items:
+          type: array
+          minItems: 1
+          description: TicketingItem when source is ticketing; SiemItem when source is siem.
+          items:
+            oneOf:
+            - $ref: '#/components/schemas/TicketingItem'
+            - $ref: '#/components/schemas/SiemItem'
+    EvidenceItem:
+      type: object
+      required:
+      - evidence_id
+      - incident_id
+      - source
+      - source_ref
+      - summary
+      - observed_at
+      - imported_by
+      - imported_at
+      - impact_categories
+      properties:
+        evidence_id:
+          type: string
+        incident_id:
+          type: string
+        source:
+          $ref: '#/components/schemas/Source'
+        source_ref:
+          type: string
+          description: ticket_id or alert_id from the raw item.
+        summary:
+          type: string
+        observed_at:
+          type: string
+          format: date-time
+          description: created_at or detected_at from the raw item.
+        imported_by:
+          type: string
+        imported_at:
+          type: string
+          format: date-time
+          description: Real server time (AC-02).
+        impact_categories:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ImpactCategory'
+    TagRequest:
+      type: object
+      required:
+      - impact_categories
+      properties:
+        impact_categories:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ImpactCategory'
+    DeterminationRequest:
+      type: object
+      required:
+      - decision
+      - determination_date
+      - rationale
+      - evidence_refs
+      - version
+      properties:
+        decision:
+          type: string
+          enum:
+          - Material
+          - NotMaterial
+        determination_date:
+          type: string
+          format: date
+          description: On or after discovery_date and not after today.
+        rationale:
+          type: string
+          minLength: 1
+        evidence_refs:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: Evidence IDs belonging to this incident.
+          items:
+            type: string
+        voluntary_disclosure:
+          type: boolean
+          description: Valid only with NotMaterial (REQ-18).
+        version:
+          type: integer
+          minimum: 1
+    Determination:
+      type: object
+      required:
+      - decision
+      - determination_date
+      - rationale
+      - evidence_refs
+      - recorded_by
+      - recorded_at
+      properties:
+        decision:
+          type: string
+          enum:
+          - Material
+          - NotMaterial
+        determination_date:
+          type: string
+          format: date
+        rationale:
+          type: string
+        evidence_refs:
+          type: array
+          items:
+            type: string
+        voluntary_disclosure:
+          type: boolean
+        recorded_by:
+          type: string
+        recorded_at:
+          type: string
+          format: date-time
+    TransitionRequest:
+      type: object
+      required:
+      - to
+      - version
+      properties:
+        to:
+          $ref: '#/components/schemas/State'
+        version:
+          type: integer
+          minimum: 1
+        info_available_date:
+          type: string
+          format: date
+          description: Required when to is AmendmentPending; not after today.
+        elements:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: Required when to is AmendmentPending; subset of the latest filing's unavailable_elements.
+          items:
+            $ref: '#/components/schemas/DraftElementName'
+    FilingRequest:
+      type: object
+      required:
+      - form_type
+      - filing_date
+      - accession_number
+      - version
+      properties:
+        form_type:
+          $ref: '#/components/schemas/FilingFormType'
+        filing_date:
+          type: string
+          format: date
+          description: On or after determination_date; not after today.
+        accession_number:
+          type: string
+          pattern: ^[0-9]{10}-[0-9]{2}-[0-9]{6}$
+        unavailable_elements:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/DraftElementName'
+        home_disclosure_date:
+          type: string
+          format: date
+          description: Required when form_type is 6-K (REQ-12).
+        version:
+          type: integer
+          minimum: 1
+    Filing:
+      type: object
+      required:
+      - form_type
+      - filing_date
+      - accession_number
+      - unavailable_elements
+      - recorded_by
+      - recorded_at
+      properties:
+        form_type:
+          $ref: '#/components/schemas/FilingFormType'
+        filing_date:
+          type: string
+          format: date
+        accession_number:
+          type: string
+        unavailable_elements:
+          type: array
+          items:
+            $ref: '#/components/schemas/DraftElementName'
+        home_disclosure_date:
+          type:
+          - string
+          - 'null'
+          format: date
+        recorded_by:
+          type: string
+        recorded_at:
+          type: string
+          format: date-time
+    SensitiveFlag:
+      type: object
+      required:
+      - excerpt
+      - reason
+      properties:
+        excerpt:
+          type: string
+        reason:
+          type: string
+          description: e.g. hostname, IP address, CVE, unpatched system, firewall rule.
+    DraftElement:
+      type: object
+      required:
+      - text
+      - citations
+      - sensitive_flags
+      properties:
+        text:
+          type: string
+          description: Exactly "Not yet determined" when no evidence supports the element.
+        citations:
+          type: array
+          items:
+            type: string
+        sensitive_flags:
+          type: array
+          items:
+            $ref: '#/components/schemas/SensitiveFlag'
+    Draft:
+      type: object
+      required:
+      - draft_id
+      - incident_id
+      - form_type
+      - elements
+      - advisory
+      - status
+      properties:
+        draft_id:
+          type: string
+        incident_id:
+          type: string
+        form_type:
+          $ref: '#/components/schemas/FormType'
+        elements:
+          type: object
+          required:
+          - nature
+          - scope
+          - timing
+          - impact
+          properties:
+            nature:
+              $ref: '#/components/schemas/DraftElement'
+            scope:
+              $ref: '#/components/schemas/DraftElement'
+            timing:
+              $ref: '#/components/schemas/DraftElement'
+            impact:
+              $ref: '#/components/schemas/DraftElement'
+        advisory:
+          type: boolean
+          const: true
+        status:
+          type: string
+          enum:
+          - Proposed
+          - Accepted
+        accepted_by:
+          type:
+          - string
+          - 'null'
+        accepted_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    AuditEntry:
+      type: object
+      required:
+      - entry_id
+      - user_id
+      - timestamp
+      - action
+      - target_id
+      - before
+      - after
+      properties:
+        entry_id:
+          type: string
+        user_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+          description: Real server time.
+        action:
+          type: string
+          enum:
+          - create_incident
+          - import_evidence
+          - tag_evidence
+          - record_determination
+          - transition
+          - record_filing
+          - accept_draft
+          - create_group
+        target_id:
+          type: string
+        before:
+          type:
+          - object
+          - 'null'
+          description: Changed fields before the action; null on create.
+        after:
+          type: object
+          description: Changed fields after the action.
+    GroupRequest:
+      type: object
+      required:
+      - incident_ids
+      properties:
+        incident_ids:
+          type: array
+          minItems: 2
+          uniqueItems: true
+          items:
+            type: string
+    Group:
+      type: object
+      required:
+      - group_id
+      - incident_ids
+      properties:
+        group_id:
+          type: string
+        incident_ids:
+          type: array
+          items:
+            type: string
+    SessionId:
+      type: object
+      required:
+      - session_id
+      properties:
+        session_id: &id002
+          type: string
+          minLength: 1
+          pattern: \S
+    TestControlError:
+      type: object
+      required:
+      - message
+      - source
+      properties:
+        message: *id002
+        source: &id003
+          type: string
+          enum:
+          - tester
+          - system
+          - communication
+          - unknown
+    CoverageMeasure:
+      oneOf:
+      - type: object
+        required:
+        - covered
+        - total
+        - basis
+        properties:
+          covered:
+            type: integer
+            minimum: 0
+          total:
+            type: integer
+            minimum: 0
+          basis: *id002
+      - type: object
+        required:
+        - covered
+        - total
+        - basis
+        properties:
+          covered:
+            type: 'null'
+          total:
+            type: 'null'
+          basis: *id002
+      description: Source lines, branches, components, or acceptance criteria, as identified in basis.
+        covered must not exceed total. If unavailable use null for both counts and explain why. Coverage
+        measures exercised behavior, not passing results.
+    SystemCoverageReport:
+      type: object
+      required:
+      - session_id
+      - coverage
+      properties:
+        session_id: *id002
+        coverage:
+          type: object
+          required:
+          - code
+          properties:
+            code:
+              $ref: '#/components/schemas/CoverageMeasure'
+    TestResult:
+      type: object
+      required:
+      - test_id
+      - outcome
+      - message
+      properties:
+        test_id: *id002
+        outcome:
+          type: string
+          enum:
+          - pass
+          - fail
+          - error
+          - skip
+        message: *id002
+        source: *id003
+      allOf:
+      - if:
+          properties:
+            outcome:
+              const: error
+          required:
+          - outcome
+        then:
+          required:
+          - source
+    SuiteReport:
+      type: object
+      required:
+      - session_id
+      - target_url
+      - results
+      - coverage
+      properties:
+        session_id: *id002
+        target_url:
+          type: string
+          format: uri
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/TestResult'
+          description: Every planned test appears exactly once, with a unique nonempty test_id.
+        coverage:
+          type: object
+          required:
+          - code
+          - component
+          - system
+          properties:
+            code:
+              $ref: '#/components/schemas/CoverageMeasure'
+            component:
+              $ref: '#/components/schemas/CoverageMeasure'
+            system:
+              $ref: '#/components/schemas/CoverageMeasure'
+    SetupSettings:
+      type: object
+      properties:
+        test_now:
+          type: string
+          format: date-time
+          description: UTC clock for this session. Defaults to the fixed example clock when omitted.
+          default: '2026-10-05T15:00:00Z'
+        registrant_type:
+          type: string
+          enum:
+          - Domestic
+          - FPI
+          description: Fixed for this session. Defaults to Domestic when omitted.
+          default: Domestic
+        at_risk_threshold_days:
+          type: integer
+          minimum: 1
+          default: 7
+        llm_base_url:
+          type: string
+          format: uri
+          description: Optional LLM override for future drafting/failure tests; no LLM connection is required
+            for setup.
+      description: Pod starting settings. Empty setup is allowed and uses the documented fixed clock and
+        Domestic defaults. No existing session can be updated through setup.
+      additionalProperties: false
+    SystemSetupRequest:
+      type: object
+      required:
+      - session_id
+      - setup
+      properties:
+        session_id: *id001
+        setup:
+          $ref: '#/components/schemas/SetupSettings'
+    SessionSettingsUpdate:
+      type: object
+      required: []
+      properties:
+        test_now:
+          type: string
+          format: date-time
+          description: UTC clock for this session. Defaults to the fixed example clock when omitted.
+          default: '2026-10-05T15:00:00Z'
+        at_risk_threshold_days:
+          type: integer
+          minimum: 1
+          default: 7
+        llm_base_url:
+          type: string
+          format: uri
+          description: Optional LLM override for future drafting/failure tests; no LLM connection is required
+            for setup.
+      additionalProperties: false
+      description: 'Pod extension: update mutable settings. registrant_type cannot be supplied or changed.'
+x-testing-requirements:
+  TEST-01: System prepares an isolated session using the supplied ID and returns that same ID only after
+    readiness.
+  TEST-02: System exposes code coverage for the requested session without executing project operations.
+  TEST-06: Pod snapshot extension supports readback and checking that rejected requests did not change
+    stored data.
+  TEST-07: Pod settings extension controls the test clock without recreating a session or changing its
+    registrant type.
