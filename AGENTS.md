@@ -16,6 +16,7 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 | `app/AGENTS.md` | Foundation modules: config, db, models, errors, roles, clock and audit |
 | `app/services/AGENTS.md` | Business logic and the steps every operation follows |
 | `scripts/AGENTS.md` | `setup_db.py`, the database roles and grants |
+| `tests/AGENTS.md` | How the pytest suite runs, its shared helpers and fixtures |
 | `.github/AGENTS.md` | CI workflows, their scripts and `CODEOWNERS` |
 
 **Keeping the guides current (mandatory)**
