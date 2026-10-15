@@ -102,6 +102,7 @@ def evidence_to_dict(evidence: Evidence) -> dict[str, Any]:
     """The EvidenceItem schema; raw_item stays in the database for traceability."""
     return {
         "evidence_id": evidence.evidence_id,
+        "incident_id": evidence.incident_id,
         "source": evidence.source.value,
         "source_ref": evidence.source_ref,
         "summary": evidence.summary,
