@@ -1,10 +1,8 @@
-# Tracer Phase 3 — Team 7 Implementation
-
-Oct 4, 2026 · @t
+# Tracer — Team 7 Implementation
 
 ## Directory guides
 
-Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees; `system-openapi.yaml` and `tester-openapi.yaml`, the shared API contracts for the service and the tester, win over both (see Scope).
+Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees; `system-openapi.yaml` and `tester-openapi.yaml`, the shared API contracts for the service and the tester, win over both. They are the source of truth for paths, schemas, error codes and behavior; where a guide disagrees with them, fix the guide.
 
 - Before changing or explaining a file, read the `AGENTS.md` in its folder and in each parent folder up to the root. Not every tool loads nested guides on its own, so read them explicitly.
 - Rules that must never be missed stay in this file; folder guides hold local details.
@@ -14,11 +12,12 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 | Guide | Covers |
 | --- | --- |
 | `app/AGENTS.md` | Foundation modules: config, db, models, errors, roles, clock and audit |
-| `app/api/AGENTS.md` | The system's FastAPI app: health, explicit audit 405 and standalone 501 placeholders, and the catch-all |
+| `app/api/AGENTS.md` | The system's FastAPI app: the photo page, health check, `stubs.py` placeholders and the 501 catch-all |
 | `app/services/AGENTS.md` | Business logic and the steps every operation follows |
 | `tester/AGENTS.md` | Our tester's FastAPI app and the rule that it never imports `app` |
+| `fixtures/AGENTS.md` | The incident, ticketing and SIEM fixtures our tester sends |
 | `tests/AGENTS.md` | The pytest suite: its files, shared helpers and fixtures, and how to run it |
-| `scripts/AGENTS.md` | `setup_db.py`, the database roles and grants |
+| `scripts/AGENTS.md` | How `setup_db.py` is built and what to update when changing it |
 | `.github/AGENTS.md` | CI workflows, their scripts and `CODEOWNERS` |
 
 **Keeping the guides current (mandatory)**
@@ -51,30 +50,31 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 - `app/config.py`: settings read from environment variables.
 - `app/db.py`: engine, `Base`, and one transaction per operation.
 - `app/models.py`: the tables in Data model and storage.
-- `app/errors.py`: a `TracerError` exception carrying the error code, message and field; the API layer maps it to HTTP responses later.
+- `app/errors.py`: `ErrorCode`, with each code's HTTP status beside it, and a `TracerError` exception carrying the error code, message and field.
 - `app/roles.py`: the `Role` enum, the permission map and `require_role()`.
 - `app/clock.py`: `today()` for every date rule and `utcnow()` for stored timestamps.
 - `app/audit.py`: the `audit()` helper.
 - `app/api/`: the system's FastAPI app, `system_app`.
-- `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination and transitions), callable without any web framework. Each operation takes the acting user's ID and role as arguments.
+- `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination, transitions and the audit list), with shared body checks in `validation.py`, callable without any web framework. Each operation takes the acting user's ID and role as arguments.
 - `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester` (see Deployment).
 - `tester/`: our tester's FastAPI app, `tester_app`; it never imports `app`.
+- `fixtures/`: the incident, ticketing and SIEM fixtures our tester sends.
 - `scripts/setup_db.py`: creates the app and tester roles, the tables and the grants (see Database roles).
 - `docker-compose.yml`: the local Postgres (see Local database).
-- `tests/`: one test file per service module, plus `test_server.py` and `test_tester.py` for the deployed apps.
+- `tests/`: one test file per service module (`validation.py` is covered through them), plus `test_server.py` and `test_tester.py` for the deployed apps.
 - `.github/`: CI workflows and their scripts, including the `AGENTS.md` check.
 
 **Config** (environment variables, loaded from a git-ignored `.env`)
 
-- `DATABASE_URL`: the app role's connection, used by the service and tests, e.g. `postgresql+psycopg://tracer_app:pass@localhost:5432/tracer`.
-- `TESTER_DATABASE_URL`: the tester role's connection, used by the tester's session storage and tests and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_tester:pass@localhost:5432/tracer`.
-- `ADMIN_DATABASE_URL`: the owner role's connection, used only by `scripts/setup_db.py` and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_owner:pass@localhost:5432/tracer`.
+- `DATABASE_URL`: the app role's connection, used by the service and tests, e.g. `postgresql+psycopg://tracer_app:pass@127.0.0.1:5432/tracer`.
+- `TESTER_DATABASE_URL`: the tester role's connection, used by the tester's session storage and tests and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_tester:pass@127.0.0.1:5432/tracer`.
+- `ADMIN_DATABASE_URL`: the owner role's connection, used only by `scripts/setup_db.py` and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_owner:pass@127.0.0.1:5432/tracer`.
 - `REGISTRANT_TYPE`: `Domestic` or `FPI`, defaulting to `Domestic`.
 - Commit a `.env.example` with placeholder values; never commit real credentials.
 
 **Local database (Docker)**
 
-- Run Postgres locally with `docker compose up -d` from a committed `docker-compose.yml`; everyone in every group uses it, so tests run against the same Postgres version.
+- Run Postgres locally with `docker compose up -d` from a committed `docker-compose.yml`; everyone uses it, so tests run against the same Postgres version.
 - Use the `postgres:18` image, publish port 5432 on loopback only (`127.0.0.1:5432:5432`; Docker otherwise listens on every host address), and keep data in a named volume so it survives restarts; `docker compose down -v` wipes it.
 - Read `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` from `.env`, with placeholders in `.env.example`.
 - The container's `POSTGRES_USER` is the owner role: point `ADMIN_DATABASE_URL` at it, then run `python scripts/setup_db.py` to create `tracer_app`, `tracer_tester`, the tables and the grants.
@@ -88,45 +88,20 @@ Run these in order when someone asks to set up the project or the local database
 2. Install the project into a virtual environment: `python -m venv .venv`, activate it, then `pip install -e ".[dev]"`.
 3. If `.env` doesn't exist, copy `.env.example` to `.env` and replace each `change-me-*` placeholder with a random value, e.g. `python -c "import secrets; print(secrets.token_urlsafe(24))"`. The owner password appears twice (`POSTGRES_PASSWORD` and `ADMIN_DATABASE_URL`) and must match; URL-safe values need no escaping. Never print, commit or overwrite an existing `.env`.
 4. Start the database with `docker compose up -d` and wait until `docker compose ps` shows `healthy`.
-5. Run `python scripts/setup_db.py`. It prints the app and tester roles' privileges; judge the result by the exit code. 0 is success, and the last line starts with `setup_db: done;`. 1 is failure, and the error message says what went wrong and whether anything was changed.
+5. Run `python scripts/setup_db.py`. It prints the app and tester roles' privileges; judge the result by the exit code. 0 is success, and the last line starts with `setup_db: done;`. 1 is failure, and the error message says what went wrong; once the script has reached the database, it also says whether anything was changed.
 
 - Re-run `scripts/setup_db.py` after adding a table or changing the grants; it is safe to re-run.
-- A re-run only creates missing tables and types; it doesn't alter existing ones. After changing a column or an enum's values in `app/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Database roles).
+- A re-run only creates missing tables and types; it doesn't alter existing ones. After changing a column or an enum's values in `app/models.py` or `tester/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Deployment).
 - `docker compose stop` keeps the data; `docker compose down -v` wipes it, after which steps 4 and 5 rebuild it.
 - The image reads `POSTGRES_PASSWORD` only when it initializes an empty volume, so changing it later has no effect: wipe with `docker compose down -v` and redo steps 4 and 5.
 
-## Scope
-
-Phase 3 builds Team 7's Tracer service covering REQ-01, 02, 03, 06, 07, 08, 19, 22 and 23. `system-openapi.yaml` is the source of truth for paths, schemas, error codes and behavior. Where this file or a folder guide disagrees with it, the spec wins; fix the guide.
-
-- In scope: incident creation, evidence import, the five-state machine, materiality determinations, the audit trail, test control (`/test/setup`, the coverage report and `X-Test-Run` sessions), deployment, and 405/501 stubs.
-- Out of scope for now: shared fixtures and the cross-team test suite. These get their own plan.
-- Out of scope (Phase 4): due dates, flags, filings, LLM drafts, stale-version rejection (REQ-21), and re-determination of DeterminedNotMaterial.
-
-## Build order and work split
-
-The foundation comes first because every endpoint depends on it; after that, three people can work at the same time.
-
-1. Foundation: config, database, tables, the error type, role checks and the `audit()` helper.
-2. Endpoints: incidents, then evidence, then determination, then transitions. The code can be written in parallel, but testing each one end to end needs the one before it.
-3. Deployment.
-
-| Group | Owns |
-| --- | --- |
-| A. Foundation | Config, database, local Docker database, tables, database roles and `setup_db.py`, error type, role checks, `audit()` helper, deployment |
-| B. Incidents and evidence | Incident create and get, the 405s, evidence import |
-| C. Workflow | Determination, transitions, audit endpoint, 501 stubs |
-
-- Group A shares the model fields and helper signatures on day one so B and C can start against them.
-- Until import and determination are merged, group C tests by inserting incidents and evidence directly into the database.
-
 ## Cross-cutting rules
 
-Every operation follows these rules. Roles, validation, no partial writes, dates, registrant type and version live in the services now; identity headers and error order are applied in the API layer once the API is confirmed.
+Every operation follows these rules. The services apply roles, validation, no partial writes, dates, registrant type and version in error order (see `app/services/AGENTS.md`); the API layer checks identity headers before calling them.
 
 **Identity headers**
 
-- Require `X-User-Id` (non-empty) and `X-User-Role` (Responder, DisclosureApprover, Board) on every route.
+- Require `X-User-Id` (non-empty), `X-User-Role` (Responder, DisclosureApprover, Board) and `X-Test-Run` (the test session ID), in that order, on every project route. Test-control routes take no identity headers.
 - Missing or invalid header → 400 `VALIDATION_ERROR` with `field` set to the header name.
 
 **Roles**
@@ -148,7 +123,7 @@ Every operation follows these rules. Roles, validation, no partial writes, dates
 
 - Return the `Error` schema: `error`, `message`, and `field`.
 - Use path-style field names, e.g. `items[3].detected_at`, `evidence_refs`, `determination_date`.
-- Validate `format: date` as real `YYYY-MM-DD` dates and `format: date-time` as ISO-8601.
+- Validate `format: date` as real `YYYY-MM-DD` dates and `format: date-time` as RFC 3339 (ISO-8601 with seconds and a `Z` or `±HH:MM` offset).
 
 **No partial writes (REQ-19)**
 
@@ -158,18 +133,18 @@ Every operation follows these rules. Roles, validation, no partial writes, dates
 
 **Dates**
 
-- Write one helper `today()` = the current UTC date; use it for every date rule. When test control is added, it switches to the run's `test_now`.
+- Write one helper `today()` and use it for every date rule. The spec defines today as the date of the run's `test_now`.
 - Use real server time (UTC, NTP-synced) for `imported_at`, `recorded_at` and audit `timestamp`.
 
 **Registrant type**
 
-- Read `registrant_type` (Domestic or FPI) from config. It moves onto the run when test control is added.
+- Read `registrant_type` (Domestic or FPI) from config.
 
 **Version**
 
 - New incidents start at `version: 1`.
 - Increment by 1 on each determination and successful transition; evidence import leaves it unchanged.
-- Accept `version` in request bodies and validate it as an integer ≥ 1, but do not reject stale values yet.
+- Accept `version` in request bodies and validate it as an integer ≥ 1, but accept stale values.
 
 ## Data model and storage
 
@@ -184,15 +159,15 @@ Four tables hold the system's data; the tester keeps its sessions and reports in
 | discovery_date | date, not null | not after today |
 | state | State enum, not null | starts as UnderAssessment |
 | required_form | FormType enum, nullable | null until a Material determination |
-| due_date | date, nullable | always null in Phase 3 |
-| group_id | text, nullable | always null in Phase 3 |
+| due_date | date, nullable | always null |
+| group_id | text, nullable | always null |
 | version | integer, not null | starts at 1; +1 on each determination and transition |
 
 **determinations**
 
 | Field | Type | Rules |
 | --- | --- | --- |
-| incident_id | text, primary key, references incidents | one per incident in Phase 3 |
+| incident_id | text, primary key, references incidents | one per incident |
 | decision | `Material` or `NotMaterial`, not null | |
 | determination_date | date, not null | on or after discovery_date, not after today |
 | rationale | text, not null | non-empty |
@@ -227,14 +202,14 @@ Four tables hold the system's data; the tester keeps its sessions and reports in
 | action | AuditAction enum, not null | |
 | target_id | text, not null | the incident ID |
 | before | JSON, nullable | null on create and import |
-| after | JSON, not null | changed fields, including version |
+| after | JSON, not null | changed fields, including version for incident changes |
 
 **Enums**
 
 - State: UnderAssessment, DeterminedMaterial, DeterminedNotMaterial, DisclosureDelayed, DisclosureRecorded, AmendmentPending, Closed.
 - FormType: `8-K Item 1.05`, `8-K Item 8.01`, `6-K`, `8-K/A`.
 - ImpactCategory: operational, financial, legal_regulatory, reputational, data_compromised.
-- AuditAction: create_incident, import_evidence, record_determination, transition (later phases add tag_evidence, record_filing, accept_draft and create_group).
+- AuditAction: create_incident, import_evidence, record_determination, transition. The spec also lists tag_evidence, record_filing, accept_draft and create_group; each is added with its operation.
 
 **Storage rules**
 
@@ -252,14 +227,14 @@ Three roles keep the grants enforceable: a table's owner can always grant itself
 | Tester (`tracer_tester`) | `TESTER_DATABASE_URL` | No | The tester's session storage and tests |
 
 - `scripts/setup_db.py` runs as the owner, in one transaction, and is safe to re-run. It creates the app and tester roles from the users and passwords in `DATABASE_URL` and `TESTER_DATABASE_URL` if missing, creates the system's and the tester's tables, then applies the grants.
-- Each run resets both login roles, so leftover privileges don't survive: set each one's password from its URL, revoke every role membership it holds, make the owner role the owner of all five tables, and revoke all privileges on them from both roles and from `PUBLIC` before granting.
+- Each run resets both login roles, so leftover privileges don't survive: set each one's password from its URL, revoke every role membership it holds, make the owner role the owner of all five tables and their enum types, and revoke all privileges on them from both roles and from `PUBLIC` before granting.
 - Check each login role's attributes in `pg_roles` and fail if `rolsuper`, `rolcreatedb`, `rolcreaterole`, `rolreplication` or `rolbypassrls` is set. Clear them with `ALTER ROLE` only when the owner is a superuser; a managed host's admin user usually can't change these attributes, so there the check fails the run instead.
 - Fail if either login role owns the database or schema `public`: a schema's owner always has CREATE on it and can drop any table in it, which no revoke or table grant check catches. Revoke CREATE on `public` from `PUBLIC` (already the default since Postgres 15).
 - End the run by checking each login role's effective privileges on all five tables with `has_table_privilege` and `has_schema_privilege`, both granted and forbidden ones (including no CREATE on `public`), and fail if any differ; this doubles as the AC-23 demo.
 - Grant the app role exactly:
   - USAGE on the schema.
   - `incidents`: SELECT, INSERT, UPDATE.
-  - `evidence`: SELECT, INSERT (Phase 4 adds UPDATE for tagging).
+  - `evidence`: SELECT, INSERT.
   - `determinations`: SELECT, INSERT.
   - `audit_entries`: SELECT, INSERT.
 - Grant the tester role exactly:
@@ -269,7 +244,7 @@ Three roles keep the grants enforceable: a table's owner can always grant itself
 - Declare `audit_entries.seq` with SQLAlchemy `Identity()`, not a plain autoincrement column; if it ends up as a serial, the app role also needs USAGE on its sequence.
 - Neither the service nor the tester creates tables at startup; their roles can't.
 - The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
-- Use the setup script in place of migrations for Phase 3; move to Alembic once the schema starts changing.
+- Use `setup_db.py` to create the tables and apply the grants. It can't change an existing table, so a schema change on a deployed database needs a migration (see Deployment).
 
 ## Incidents (REQ-01, REQ-22)
 
@@ -287,7 +262,7 @@ Incidents are created in UnderAssessment at version 1 and are never replaced or 
 **`GET /incidents/{incident_id}`** (all roles)
 
 - Return the full Incident; unknown ID → 404.
-- Always return `flags: []` and `due_date: null` in Phase 3.
+- Always return `flags: []` and `due_date: null`.
 
 **`PUT` and `DELETE /incidents/{incident_id}`**
 
@@ -321,7 +296,7 @@ Each request is one `ImportRequest` body of simulated ticketing or SIEM items; o
 **Other evidence routes**
 
 - `DELETE /incidents/{id}/evidence/{evidence_id}` → 405, nothing changed.
-- `PATCH /incidents/{id}/evidence/{evidence_id}` → 501 unless REQ-05 is built (see Stubs and not-yet-built routes).
+- `PATCH /incidents/{id}/evidence/{evidence_id}` → 501 (see Stubs).
 
 ## Materiality determination (REQ-07, REQ-08)
 
@@ -333,7 +308,7 @@ Only a DisclosureApprover can record a determination, only from UnderAssessment,
 - Require `decision` ∈ {Material, NotMaterial}, `determination_date`, non-empty `rationale`, `evidence_refs` and `version`; a missing field → 400 naming it.
 - Require `determination_date` ≥ `discovery_date` and ≤ `today()`; both boundaries are valid (AC-20).
 - Require `evidence_refs` to have at least one unique ID, each belonging to this incident; an unknown ref or one from another incident → 400 `field: "evidence_refs"`.
-- If `voluntary_disclosure` is present and REQ-18 isn't built → 501.
+- If `voluntary_disclosure` is present → 501 (see Stubs).
 - State not UnderAssessment → 409 `INVALID_TRANSITION` (checked after body validation, per error order).
 - Set `state` to DeterminedMaterial or DeterminedNotMaterial.
 - Set `required_form` from the configured registrant type: Material + Domestic → `8-K Item 1.05`; Material + FPI → `6-K`; NotMaterial → `null`.
@@ -350,7 +325,7 @@ Only a DisclosureApprover can record a determination, only from UnderAssessment,
 
 ## State machine and transitions (REQ-06)
 
-Only five moves succeed in Phase 3; every other pair, including staying in the same state, returns 409 `INVALID_TRANSITION` with nothing changed.
+Only five moves succeed; every other pair, including staying in the same state, returns 409 `INVALID_TRANSITION` with nothing changed.
 
 | From | To | Endpoint |
 | --- | --- | --- |
@@ -365,7 +340,7 @@ Only five moves succeed in Phase 3; every other pair, including staying in the s
 - Responder or Board → 403.
 - Validate `to` against the full `State` enum (an unknown value → 400) and `version` as an integer ≥ 1.
 - Encode the allowed set as data: `{(DM, DisclosureDelayed), (DisclosureDelayed, DM), (DNM, Closed)}`; check `(current, to)` against it.
-- Return 409 for every pair not in the set, including UA → DM/DNM (those go through `/determination`), DNM → DM (re-determination is Phase 4) and any `to: DisclosureRecorded` (filings, Phase 4).
+- Return 409 for every pair not in the set, including UA → DM/DNM (those go through `/determination`), DNM → DM and any `to: DisclosureRecorded`.
 - On success, set `state`, increment `version`, keep `determination` and `required_form` untouched, and return 200 with the full Incident.
 - Write a `transition` audit entry: `before: {state, version}`, `after: {state, version}`.
 - For `to: AmendmentPending`, validate that `info_available_date` and `elements` are present and well formed first (400 if not), then return 409 for the disallowed pair.
@@ -384,9 +359,9 @@ Every successful create, import request, determination and transition writes exa
 - Enforce append-only in the DB as well (INSERT/SELECT grant only) and be ready to demo it for AC-23.
 - Don't audit GETs or rejected requests.
 
-## Stubs and not-yet-built routes
+## Stubs
 
-Anything not built returns 501 `NOT_IMPLEMENTED` using the `Error` schema.
+Any system operation this team doesn't build returns 501 `NOT_IMPLEMENTED` using the `Error` schema.
 
 - `PATCH /incidents/{id}/evidence/{evidence_id}` (REQ-05) → 501.
 - `POST /groups` (REQ-04) → 501.
@@ -425,18 +400,18 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 - Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
 - Leave Deployment Protection at Standard: the production domain stays public for testers, while preview and deployment-specific URLs need a Vercel login.
 - No `vercel.json` is needed: the Hobby plan's default function limit of 300 s already covers the tester's longest request.
-- After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached or a setting such as `DATABASE_URL` or `REGISTRANT_TYPE` is missing or invalid; the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
+- After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached, a setting is missing or invalid (no `DATABASE_URL`, or a `REGISTRANT_TYPE` other than Domestic or FPI), or the URL names a driver we don't install (a bare `postgresql://`); the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
 - The server clock (UTC, NTP-synced, for AC-02's ±5 s) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 
-## Decisions settled by the Phase 3 plan
+## Settled decisions
 
-- `voluntary_disclosure`: either boolean value, `true` or `false`, returns 501 while REQ-18 isn't built; non-boolean values return 400 `VALIDATION_ERROR` on `voluntary_disclosure`.
-- 405 routes: the shared API role rules take precedence over the plan: validate headers, then return 403 for Responder and Board; DisclosureApprover reaches 405.
-- `to: AmendmentPending`: the plan's error order puts invalid body (400) before wrong state (409). Missing or malformed `info_available_date` or `elements` → 400; with valid fields, the disallowed pair → 409.
+- `voluntary_disclosure`: either boolean value, `true` or `false`, returns 501; non-boolean values return 400 `VALIDATION_ERROR` on `voluntary_disclosure`.
+- 405 routes: validate headers, then return 403 for Responder and Board, per the spec's role rules; DisclosureApprover reaches 405.
+- `to: AmendmentPending`: the error order puts invalid body (400) before wrong state (409). Missing or malformed `info_available_date` or `elements` → 400; with valid fields, the disallowed pair → 409.
 
 ## Tests to write
 
-Write pytest tests against the service modules using a real local Postgres database. Every rejection test also checks that stored data is unchanged; HTTP-level tests (status codes, headers, error order) come with the API layer.
+Write pytest tests against the service modules using a real local Postgres database. Every rejection test also checks that stored data is unchanged; HTTP-level tests (status codes, headers, error order) go in `tests/test_server.py`.
 
 **Incidents**
 
@@ -476,18 +451,6 @@ Write pytest tests against the service modules using a real local Postgres datab
 
 - A 10-action sequence produces 10 matching entries, oldest first.
 - Under the app's DB user, UPDATE and DELETE on audit_entries fail, and DELETE on incidents and evidence fails.
-
-## Done checklist
-
-Phase 3 is done for Team 7 when the deployed service does all of the following.
-
-- Creates incidents with distinct IDs in UnderAssessment.
-- Imports ticketing and SIEM items as normalized evidence, rejecting any batch with a bad item.
-- Records a determination only as DisclosureApprover and sets the correct `required_form`.
-- Rejects disallowed transitions with 409 and leaves state unchanged.
-- Writes an audit entry for every action and rejects edits and deletes with 405.
-- Leaves stored data unchanged on every error.
-- Is ready to demo the audit table's DB permissions (AC-23).
 
 ## Branches, commits and pull requests
 

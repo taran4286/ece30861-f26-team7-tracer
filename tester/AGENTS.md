@@ -1,13 +1,13 @@
 # tester/: our tester
 
-Our tester service from the shared Tester API; group A owns it. `server.py` mounts `tester_app` at `/tester`, its own base URL. The root `AGENTS.md` wins wherever this file disagrees.
+Our tester service, implementing `tester-openapi.yaml`. `server.py` mounts `tester_app` at `/tester`, its own base URL. Root "Directory guides" says which file wins when this one disagrees with the root `AGENTS.md` or `tester-openapi.yaml`.
 
 ## What it serves
 
 - `GET /` returns an HTML page with `tester.png` inlined and captioned "Team 7 tester", so a browser shows the deploy is up; `/tester` without the slash redirects there with a 307. It's outside the spec, and reads the photo per request, so a missing file breaks only this page.
 - `GET /test/report?session_id=` returns the stored `SuiteReport` of a finished or aborted run and never starts or repeats one. A missing or blank `session_id` gets 400, an unknown session 404, a session whose run hasn't ended 409, and unreachable storage 500, each with `source: "tester"`.
-- Every other path apart from the docs pages below returns 501 for GET, POST, PUT, PATCH and DELETE, with `{"message": …, "source": "tester"}`, the test-control error shape.
-- FastAPI's generated `/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json` also answer, and other methods such as `HEAD` and `OPTIONS` get FastAPI's 405; both are outside the spec.
+- Any other GET, POST, PUT, PATCH or DELETE request, including the spec's `/test/setup` and `/test/run`, returns 501 `{"message": "/<path> is not implemented", "source": "tester"}`, the spec's `TestControlError` shape.
+- GET and HEAD on FastAPI's generated `/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json` also answer, and other methods such as `HEAD` and `OPTIONS` elsewhere get FastAPI's 405; both are outside the spec.
 
 ## Session storage
 
