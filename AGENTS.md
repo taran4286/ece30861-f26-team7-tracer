@@ -237,7 +237,7 @@ Two roles keep the REQ-22 grants enforceable: a table's owner can always grant i
 - Declare `audit_entries.seq` with SQLAlchemy `Identity()`, not a plain autoincrement column; if it ends up as a serial, the app role also needs USAGE on its sequence.
 - The service never creates tables at startup; the app role can't.
 - The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
-- Use the setup script in place of migrations.
+- Use `setup_db.py` to create the tables and apply the grants. It can't change an existing table, so a schema change on a deployed database needs a migration (see Deployment).
 
 ## Incidents (REQ-01, REQ-22)
 

@@ -10,7 +10,7 @@ The system's web layer. `server.py` mounts `system_app` at `/system`, so every p
 | `GET /health` | 200 `{"status": "ok", "database": "ok"}` after a `SELECT 1` through `get_engine()`; 503 `{"status": "unavailable", "database": "unavailable"}` when a setting is missing or invalid (such as no `DATABASE_URL` on a preview), the URL names a driver we don't install (a bare `postgresql://` scheme), or the database can't be reached |
 | `PUT`, `PATCH`, `DELETE /incidents/{incident_id}/audit` | Header checks, then 403 for Responder and Board or 405 `METHOD_NOT_ALLOWED` for DisclosureApprover |
 | `PATCH /incidents/{incident_id}/evidence/{evidence_id}`, `POST /groups` | Header checks, then 403 for Board or 501 `NOT_IMPLEMENTED` for Responder and DisclosureApprover |
-| Any other path, with GET, POST, PUT, PATCH or DELETE | 501 `{"error": "NOT_IMPLEMENTED", "message": "/<path> is not implemented"}`, with no header or role checks |
+| Any other path and method pair not handled by an earlier route, with GET, POST, PUT, PATCH or DELETE (such as `POST /health` or `GET /groups`) | 501 `{"error": "NOT_IMPLEMENTED", "message": "/<path> is not implemented"}`, with no header or role checks |
 | GET or HEAD on `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json` | FastAPI's generated docs for `system_app`; outside the spec |
 
 Other methods, such as `HEAD` and `OPTIONS` elsewhere, get FastAPI's 405; no operation in the spec uses them.
