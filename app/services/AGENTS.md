@@ -7,25 +7,9 @@ One module per area, callable without any web framework. The root `AGENTS.md` ho
 | `incidents.py` | Group B | Create and get an incident | `tests/test_incidents.py` |
 | `evidence.py` | Group B | Import evidence | `tests/test_evidence.py` |
 | `validation.py` | Group B | Shared body checks: `require_object`, `require_string`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
-| `workflow.py` | Group C | Record a determination, transitions, list audit entries | `tests/test_workflow.py`, `tests/test_transitions_audit.py` |
+| `workflow.py` | Group C | Record a determination, transitions, list audit entries | `tests/test_workflow.py` |
 
 The table lists the planned modules; add a row for any new one.
-
-## Transitions and audit retrieval
-
-`ALLOWED_TRANSITIONS` holds the three Phase 3 pairs. `transition_incident` locks the
-incident, validates the request, changes state and version, and writes its audit
-entry in one transaction. It uses `load_incident` and `incident_to_dict`, preserving
-the existing determination and evidence. Whole-number versions, including `1.0`,
-are accepted without rejecting stale values.
-
-For `AmendmentPending`, the current validation checks a real `YYYY-MM-DD` date and
-a non-empty list of non-blank element strings before rejecting the transition.
-It does not yet enforce the contract's date limit, element names or uniqueness.
-
-`list_audit_entries` checks the incident exists and returns its entries ordered by
-`seq`, without exposing that internal column or writing an entry for the read.
-All three roles may read. HTTP header checks and 405/501 responses belong to the API layer.
 
 ## Shape of every operation
 
@@ -69,3 +53,4 @@ Header checks (missing `X-User-Id` or `X-User-Role`) come before step 1 and belo
 - Call `get_settings()` inside the operation, not at import time, so a test can switch the registrant type.
 - `record_determination` returns 501 for `voluntary_disclosure` after body validation and before the state check; the root `AGENTS.md` Materiality determination section holds its other rules.
 - `require_string` rejects NUL characters because PostgreSQL text cannot store them.
+- `record_determination` and `transition_incident` accept a whole-number float `version` such as `1.0`, which JSON Schema 2020-12 counts as an integer.

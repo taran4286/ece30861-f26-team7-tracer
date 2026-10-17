@@ -1,6 +1,5 @@
 """Phase 3 determinations, state transitions and audit retrieval."""
 
-from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -49,17 +48,9 @@ def _transition_target(body: Any) -> State:
         raise invalid("version", "Expected an integer greater than or equal to 1")
     if target == State.AMENDMENT_PENDING:
         # Validate the extra fields before rejecting this Phase 4 transition.
-        # TODO: Match the pod contract's element names, uniqueness and date limit.
-        value = body.get("info_available_date")
-        if not isinstance(value, str):
-            raise invalid("info_available_date", "Expected a YYYY-MM-DD date")
-        try:
-            parsed = date.fromisoformat(value)
-        except ValueError:
-            raise invalid("info_available_date", "Expected a real YYYY-MM-DD date")
-        # Require YYYY-MM-DD, not another date format accepted by Python.
-        if parsed.isoformat() != value:
-            raise invalid("info_available_date", "Expected a YYYY-MM-DD date")
+        # TODO: Match the pod contract's element names and uniqueness.
+        if parse_date(body.get("info_available_date"), "info_available_date") > clock.today():
+            raise invalid("info_available_date", "info_available_date must not be after today")
         elements = body.get("elements")
         if not isinstance(elements, list) or not elements:
             raise invalid("elements", "Expected a non-empty array of element names")

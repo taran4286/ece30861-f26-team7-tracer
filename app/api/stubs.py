@@ -40,8 +40,8 @@ def _reply(request: Request, operation: Operation, code: ErrorCode, status: int)
 @router.api_route("/incidents/{incident_id}/audit", methods=["PUT", "PATCH", "DELETE"])
 def audit_not_allowed(request: Request, incident_id: str) -> JSONResponse:
     """Reject attempts to replace, edit or delete audit history."""
-    # All recognized roles receive 405. READ uses the existing all-role permission.
-    return _reply(request, Operation.READ, ErrorCode.METHOD_NOT_ALLOWED, 405)
+    # Responder and Board receive 403 before DisclosureApprover reaches the 405.
+    return _reply(request, Operation.EDIT_AUDIT, ErrorCode.METHOD_NOT_ALLOWED, 405)
 
 
 @router.patch("/incidents/{incident_id}/evidence/{evidence_id}")
