@@ -4,7 +4,7 @@ Oct 4, 2026 · @t
 
 ## Directory guides
 
-Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees; `system-openapi.yaml`, the shared API contract, wins over both (see Scope).
+Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees; `system-openapi.yaml` and `tester-openapi.yaml`, the shared API contracts for the service and the tester, win over both (see Scope).
 
 - Before changing or explaining a file, read the `AGENTS.md` in its folder and in each parent folder up to the root. Not every tool loads nested guides on its own, so read them explicitly.
 - Rules that must never be missed stay in this file; folder guides hold local details.
