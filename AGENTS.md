@@ -15,6 +15,7 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 | `app/api/AGENTS.md` | The system's FastAPI app: the photo page, health check, `stubs.py` placeholders and the 501 catch-all |
 | `app/services/AGENTS.md` | Business logic and the steps every operation follows |
 | `tester/AGENTS.md` | Our tester's FastAPI app and the rule that it never imports `app` |
+| `fixtures/AGENTS.md` | The incident, ticketing and SIEM fixtures our tester sends |
 | `tests/AGENTS.md` | The pytest suite: its files, shared helpers and fixtures, and how to run it |
 | `scripts/AGENTS.md` | How `setup_db.py` is built and what to update when changing it |
 | `.github/AGENTS.md` | CI workflows, their scripts and `CODEOWNERS` |
@@ -57,6 +58,7 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 - `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination, transitions and the audit list), with shared body checks in `validation.py`, callable without any web framework. Each operation takes the acting user's ID and role as arguments.
 - `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester` (see Deployment).
 - `tester/`: our tester's FastAPI app, `tester_app`; it never imports `app`.
+- `fixtures/`: the incident, ticketing and SIEM fixtures our tester sends.
 - `scripts/setup_db.py`: creates the app role, the tables and the grants (see Database roles).
 - `docker-compose.yml`: the local Postgres (see Local database).
 - `tests/`: one test file per service module (`validation.py` is covered through them), plus `test_server.py` and `test_tester.py` for the deployed apps.

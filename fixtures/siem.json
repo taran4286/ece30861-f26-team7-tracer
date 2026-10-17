@@ -1,0 +1,22 @@
+[
+  {"alert_id": "SIEM-2001", "rule_name": "Login from new country", "severity": "low", "description": "First login for this account from the country.", "detected_at": "2026-09-25T08:20:00Z"},
+  {"alert_id": "SIEM-2002", "rule_name": "Mailbox rule forwards to an external address", "severity": "medium", "detected_at": "2026-09-25T10:45:00Z"},
+  {"alert_id": "SIEM-2003", "rule_name": "Mass file rename on a file share", "severity": "critical", "description": "More than 10,000 files renamed in five minutes.", "detected_at": "2026-09-26T06:01:00Z"},
+  {"alert_id": "SIEM-2004", "rule_name": "Backup job deleted", "severity": "high", "detected_at": "2026-09-26T06:12:00Z"},
+  {"alert_id": "SIEM-2005", "rule_name": "Failed logins above threshold", "severity": "medium", "description": "Threshold is 500 failures per minute.", "detected_at": "2026-09-27T13:15:00Z"},
+  {"alert_id": "SIEM-2006", "rule_name": "Password reset requests above threshold", "severity": "low", "detected_at": "2026-09-27T16:40:00Z"},
+  {"alert_id": "SIEM-2007", "rule_name": "Storage bucket made public", "severity": "high", "description": "Access policy changed to allow anonymous reads.", "detected_at": "2026-09-28T08:55:00Z"},
+  {"alert_id": "SIEM-2008", "rule_name": "Unsigned binary on a point-of-sale terminal", "severity": "critical", "detected_at": "2026-09-29T11:00:00Z"},
+  {"alert_id": "SIEM-2009", "rule_name": "Process reading payment memory", "severity": "critical", "description": "Seen on 14 terminals.", "detected_at": "2026-09-29T14:20:00Z"},
+  {"alert_id": "SIEM-2010", "rule_name": "Impossible travel for a VPN account", "severity": "high", "detected_at": "2026-09-30T02:45:00Z"},
+  {"alert_id": "SIEM-2011", "rule_name": "Dormant account reactivated", "severity": "low", "description": "No activity for 120 days before this login.", "detected_at": "2026-09-30T08:30:00Z"},
+  {"alert_id": "SIEM-2012", "rule_name": "Large write to removable media", "severity": "medium", "detected_at": "2026-10-01T17:00:00Z"},
+  {"alert_id": "SIEM-2013", "rule_name": "Access to archived projects after notice", "severity": "low", "description": "Employee is in the offboarding group.", "detected_at": "2026-10-01T18:35:00Z"},
+  {"alert_id": "SIEM-2014", "rule_name": "Inbound traffic above baseline", "severity": "high", "detected_at": "2026-10-02T11:55:00Z"},
+  {"alert_id": "SIEM-2015", "rule_name": "Payment gateway health check failing", "severity": "medium", "description": "Three regions failing at once.", "detected_at": "2026-10-02T12:05:00Z"},
+  {"alert_id": "SIEM-2016", "rule_name": "Build artifact signature mismatch", "severity": "critical", "detected_at": "2026-10-03T09:10:00Z"},
+  {"alert_id": "SIEM-2017", "rule_name": "Outbound connection to an unknown host from the build network", "severity": "high", "description": "Connection repeated every 15 minutes.", "detected_at": "2026-10-03T10:00:00Z"},
+  {"alert_id": "SIEM-2018", "rule_name": "Email from a look-alike domain", "severity": "medium", "detected_at": "2026-10-04T07:50:00Z"},
+  {"alert_id": "SIEM-2019", "rule_name": "Vendor record changed outside the approval workflow", "severity": "low", "description": "Change made through a support ticket.", "detected_at": "2026-10-04T09:25:00Z"},
+  {"alert_id": "SIEM-2020", "rule_name": "Payment above the daily limit", "severity": "critical", "detected_at": "2026-10-05T07:45:00Z"}
+]

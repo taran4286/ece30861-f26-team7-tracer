@@ -1,0 +1,12 @@
+[
+  {"title": "Phishing compromise of a finance mailbox", "discovery_date": "2026-09-25"},
+  {"title": "Ransomware on the file server cluster", "discovery_date": "2026-09-26"},
+  {"title": "Credential stuffing against the customer portal", "discovery_date": "2026-09-27"},
+  {"title": "Misconfigured storage bucket exposed customer records", "discovery_date": "2026-09-28"},
+  {"title": "Malware on point-of-sale terminals", "discovery_date": "2026-09-29"},
+  {"title": "Unauthorized VPN access from an unrecognized network", "discovery_date": "2026-09-30"},
+  {"title": "Insider copied design files to removable media", "discovery_date": "2026-10-01"},
+  {"title": "Denial-of-service attack on the payment gateway", "discovery_date": "2026-10-02"},
+  {"title": "Tampered dependency in the build pipeline", "discovery_date": "2026-10-03"},
+  {"title": "Business email compromise wire transfer attempt", "discovery_date": "2026-10-04"}
+]
