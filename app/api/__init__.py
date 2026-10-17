@@ -1,12 +1,13 @@
 """The system's FastAPI app; server.py mounts it at /system.
 
-It serves GET /health and returns 501 for every other path.
+It serves a photo at GET /, GET /health, and 501 for every other path.
 """
 
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,7 +19,15 @@ logger = logging.getLogger(__name__)
 
 ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 
+PHOTO = Path(__file__).with_name("system.png")
+
 system_app = FastAPI(title="Tracer system")
+
+
+@system_app.get("/")
+def photo() -> FileResponse:
+    """Show a photo at the base URL, so a browser shows the deploy is up. Not part of the spec."""
+    return FileResponse(PHOTO, media_type="image/png")
 
 
 @system_app.get("/health")
