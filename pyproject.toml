@@ -11,14 +11,21 @@ dependencies = [
     "sqlalchemy>=2.0,<2.1",
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.4",
+    "fastapi>=0.140",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+# httpx2 backs FastAPI's TestClient.
+dev = ["pytest>=8", "httpx2>=2.13"]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "tester*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Lets tests import server.py and tests.helpers from the repo root.
 pythonpath = ["."]
+
+# Vercel loads the ASGI app from here instead of auto-detecting an entrypoint.
+[tool.vercel]
+entrypoint = "server:app"
