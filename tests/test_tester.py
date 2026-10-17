@@ -13,6 +13,15 @@ TESTER_DIR = Path(__file__).resolve().parents[1] / "tester"
 client = TestClient(server_app)
 
 
+@pytest.mark.parametrize("path", ["/tester", "/tester/"])
+def test_base_url_shows_the_tester_photo(path):
+    # /tester redirects to /tester/; TestClient follows it.
+    response = client.get(path)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content == (TESTER_DIR / "tester.png").read_bytes()
+
+
 @pytest.mark.parametrize(
     ("method", "path"),
     [("POST", "/tester/test/setup"), ("POST", "/tester/test/run"), ("GET", "/tester/test/report")],

@@ -80,6 +80,15 @@ def test_health_gives_up_on_a_silent_database(monkeypatch, fresh_settings):
     assert elapsed < 8
 
 
+@pytest.mark.parametrize("path", ["/system", "/system/"])
+def test_base_url_shows_the_system_photo(path):
+    # /system redirects to /system/; TestClient follows it.
+    response = client.get(path)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content == system_api.PHOTO.read_bytes()
+
+
 @pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])
 @pytest.mark.parametrize("path", ["/system/incidents", "/system/incidents/inc_1/audit"])
 def test_other_system_paths_return_501(method, path):
