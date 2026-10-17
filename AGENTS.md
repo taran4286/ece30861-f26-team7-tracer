@@ -394,7 +394,7 @@ The service needs a stable HTTPS base URL and a database that keeps its data acr
 
 ## Decisions settled by the Phase 3 plan
 
-- `voluntary_disclosure`: the plan returns 501 whenever it is sent, so any value, including `false`, returns 501 while REQ-18 isn't built.
+- `voluntary_disclosure`: either boolean value, `true` or `false`, returns 501 while REQ-18 isn't built; non-boolean values return 400 `VALIDATION_ERROR` on `voluntary_disclosure`.
 - 405 routes: the plan lists their roles as "All", so header and role checks run first, then 405.
 - `to: AmendmentPending`: the plan's error order puts invalid body (400) before wrong state (409). Missing or malformed `info_available_date` or `elements` → 400; with valid fields, the disallowed pair → 409.
 

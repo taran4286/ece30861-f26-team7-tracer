@@ -27,7 +27,7 @@ def require_string(obj: dict[str, Any], key: str, field: str) -> str:
     value = obj.get(key)
     if value is None:
         raise invalid(field, f"{field} is required")
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
         raise invalid(field, f"{field} must be a non-empty string")
     return value
 

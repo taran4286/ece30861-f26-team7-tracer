@@ -51,11 +51,5 @@ Header checks (missing `X-User-Id` or `X-User-Role`) come before step 1 and belo
 - Keep materiality writes in `workflow.py`'s determination operation, and the allowed transitions as a data set in `workflow.py`.
 - Evidence import validates items field by field in a fixed order (ticketing: `ticket_id`, `summary`, `created_at`; SIEM: `alert_id`, `rule_name`, `severity`, `detected_at`), then rejects any key only the other source sends (`items[i].<key>`). Other extra keys are allowed and kept in `raw_item`.
 - Call `get_settings()` inside the operation, not at import time, so a test can switch the registrant type.
-
-## Materiality determination implementation
-
-`workflow.record_determination(incident_id, body, *, user_id, role)` implements the Phase 3 determination operation. It locks the incident before checking its state, validates the required fields and incident-owned evidence references, and writes the determination, incident update and audit entry in one transaction. Only a DisclosureApprover may call it successfully, and only from UnderAssessment.
-
-Material decisions select `8-K Item 1.05` for Domestic registrants or `6-K` for FPI registrants; NotMaterial leaves `required_form` null. A successful determination increments the stored version, while a valid stale request version is accepted in Phase 3. Any supplied `voluntary_disclosure` value, including false or null, raises `NOT_IMPLEMENTED` after required body validation and before the state check.
-
-The operation currently builds its JSON-ready Incident response locally. Consolidate this with `incidents.incident_to_dict` when integrating the services. HTTP routing and identity-header validation remain API-layer work. Determination behavior tests and the guardrail ensuring other handlers never write materiality are deferred and must be added before Phase 3 is considered complete.
+- `record_determination` returns 501 for `voluntary_disclosure` after body validation and before the state check; the root `AGENTS.md` Materiality determination section holds its other rules.
+- `require_string` rejects NUL characters because PostgreSQL text cannot store them.
