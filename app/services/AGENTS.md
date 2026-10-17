@@ -51,3 +51,5 @@ Header checks (missing `X-User-Id` or `X-User-Role`) come before step 1 and belo
 - Keep materiality writes in `workflow.py`'s determination operation, and the allowed transitions as a data set in `workflow.py`.
 - Evidence import validates items field by field in a fixed order (ticketing: `ticket_id`, `summary`, `created_at`; SIEM: `alert_id`, `rule_name`, `severity`, `detected_at`), then rejects any key only the other source sends (`items[i].<key>`). Other extra keys are allowed and kept in `raw_item`.
 - Call `get_settings()` inside the operation, not at import time, so a test can switch the registrant type.
+- `record_determination` returns 501 for `voluntary_disclosure` after body validation and before the state check; the root `AGENTS.md` Materiality determination section holds its other rules.
+- `require_string` rejects NUL characters because PostgreSQL text cannot store them.

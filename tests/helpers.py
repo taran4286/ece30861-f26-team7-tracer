@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 
 from app.db import transaction
-from app.models import AuditEntry, Evidence, Incident, State
+from app.models import AuditEntry, Determination, Evidence, Incident, State
 from app.roles import Role
 
 RESPONDER = {"user_id": "u-responder", "role": Role.RESPONDER}
@@ -33,11 +33,11 @@ def alert(n: int = 1, **overrides: Any) -> dict[str, Any]:
 
 
 def table_counts() -> dict[str, int]:
-    """Row counts of every table Group B writes, to check a rejection stored nothing."""
+    """Row counts of every service table, to check a rejection stored nothing."""
     with transaction() as tx:
         return {
             model.__tablename__: tx.scalar(select(func.count()).select_from(model))
-            for model in (Incident, Evidence, AuditEntry)
+            for model in (Incident, Evidence, Determination, AuditEntry)
         }
 
 
