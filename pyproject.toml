@@ -23,7 +23,7 @@ include = ["app*", "tester*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Lets tests import server.py from the repo root.
+# Lets tests import server.py and tests.helpers from the repo root.
 pythonpath = ["."]
 
 # Vercel loads the ASGI app from here instead of auto-detecting an entrypoint.

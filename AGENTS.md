@@ -4,7 +4,7 @@ Oct 4, 2026 · @t
 
 ## Directory guides
 
-Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees.
+Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees; `system-openapi.yaml` and `tester-openapi.yaml`, the shared API contracts for the service and the tester, win over both (see Scope).
 
 - Before changing or explaining a file, read the `AGENTS.md` in its folder and in each parent folder up to the root. Not every tool loads nested guides on its own, so read them explicitly.
 - Rules that must never be missed stay in this file; folder guides hold local details.
@@ -17,7 +17,7 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 | `app/api/AGENTS.md` | The system's FastAPI app: the health check and the 501 stub |
 | `app/services/AGENTS.md` | Business logic and the steps every operation follows |
 | `tester/AGENTS.md` | Our tester's FastAPI app and the rule that it never imports `app` |
-| `tests/AGENTS.md` | The pytest suite: its files and how to run it |
+| `tests/AGENTS.md` | The pytest suite: its files, shared helpers and fixtures, and how to run it |
 | `scripts/AGENTS.md` | `setup_db.py`, the database roles and grants |
 | `.github/AGENTS.md` | CI workflows, their scripts and `CODEOWNERS` |
 
@@ -46,6 +46,8 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 
 **Repo layout**
 
+- `system-openapi.yaml`: the Tracer Shared System API that our service implements, copied verbatim from the version shared with Team 10 (its `info.version` names it). Don't edit it here; when the pod agrees on a new version, replace the whole file and update the guides to match.
+- `tester-openapi.yaml`: the Tracer Shared Tester API that our tester implements, with its own base URL. Copied and replaced the same way as `system-openapi.yaml`.
 - `app/config.py`: settings read from environment variables.
 - `app/db.py`: engine, `Base`, and one transaction per operation.
 - `app/models.py`: the tables in Data model and storage.
@@ -94,10 +96,10 @@ Run these in order when someone asks to set up the project or the local database
 
 ## Scope
 
-Phase 3 builds Team 7's Tracer service covering REQ-01, 02, 03, 06, 07, 08, 19, 22 and 23. The Phase 3 implementation plan is the source of truth until the final API arrives; then paths, schemas and error codes get rewired against it.
+Phase 3 builds Team 7's Tracer service covering REQ-01, 02, 03, 06, 07, 08, 19, 22 and 23. `system-openapi.yaml` is the source of truth for paths, schemas, error codes and behavior. Where this file or a folder guide disagrees with it, the spec wins; fix the guide.
 
-- In scope: incident creation, evidence import, the five-state machine, materiality determinations, the audit trail, deployment, and 405/501 stubs.
-- Out of scope for now: test control (`/test/setup`, `/test/report`, `X-Test-Run`), shared fixtures and the cross-team test suite. These get their own plan.
+- In scope: incident creation, evidence import, the five-state machine, materiality determinations, the audit trail, test control (`/test/setup`, the coverage report and `X-Test-Run` sessions), deployment, and 405/501 stubs.
+- Out of scope for now: shared fixtures and the cross-team test suite. These get their own plan.
 - Out of scope (Phase 4): due dates, flags, filings, LLM drafts, stale-version rejection (REQ-21), and re-determination of DeterminedNotMaterial.
 
 ## Build order and work split
