@@ -44,6 +44,7 @@ The business logic is built first, independent of the web framework; the FastAPI
 **Repo layout**
 
 - `system-openapi.yaml`: the Tracer Shared System API that our service implements, copied verbatim from the version shared with Team 10 (its `info.version` names it). Don't edit it here; when the pod agrees on a new version, replace the whole file and update the guides to match.
+- `tester-openapi.yaml`: the Tracer Shared Tester API that our tester implements, with its own base URL. Copied and replaced the same way as `system-openapi.yaml`.
 - `app/config.py`: settings read from environment variables.
 - `app/db.py`: engine, `Base`, and one transaction per operation.
 - `app/models.py`: the tables in Data model and storage.
