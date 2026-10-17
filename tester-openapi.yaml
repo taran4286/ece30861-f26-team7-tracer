@@ -1,0 +1,335 @@
+openapi: 3.1.1
+info:
+  title: Tracer Shared Tester API
+  version: 1.1.0-proposed
+  description: |
+    Each team implements its own tester; code and exact test cases can differ. Inputs, outputs and shared project expectations follow the same pod and class contracts. The target_url is a system base URL, not a tester URL. Setup creates a unique session ID, calls target system setup, waits, and never executes the suite. Failed setup leaves no runnable tester session. One ordered suite per prepared session. Concurrent or later runs return 409, including after an abort; invalid requests do not consume a session. Completed suites return 200 even with failed tests or target errors. Store reports before returning. On abort store available results, mark tests whose evaluation was prevented error/source tester, and mark unexecuted tests skip. Include every planned test exactly once; result IDs are unique. Report lookup never reruns tests and is 409 before end. Keep finalized reports unchanged and available until tester instance stops. After a lost response retrieve report; never resend run; use a new session to repeat. Expected project errors are passing tests. System internal failures are error/source system; no response or timeout is error/source communication; unknown source if location cannot be identified. Tester retrieves code coverage from target; computes component and system coverage independently of pass/fail. Counts obey 0 <= covered <= total or null/null when unavailable. Access uses the pod's test identity headers for project calls; controls need no identity headers. Proposed setup 20s, run 130s including all target calls; project timeout 10s, no retry. Follow the deployed registry limits. No system /test/run endpoint or encoded batch of project commands is required.
+
+    Traceability: REQ identifiers are the original Phase 2 project requirements. TEST-01 through TEST-05 label class testing-interface obligations in this draft; TEST-06 and TEST-07 label proposed pod extensions. TEST labels are local references, not instructor-assigned project requirement numbers. Full-project operations remain specified even if deferred in Phase 3; a listed operation is not a claim that code is implemented. See implementation status separately.
+servers:
+- url: https://team-a.example.edu/tester
+  description: Example only; replace with the selected tester base URL.
+paths:
+  /test/setup:
+    post:
+      operationId: prepareTesterSession
+      summary: Create a session and prepare the target system
+      description: |-
+        Purpose: Create a session and prepare the target system
+        Requirements: TEST-03
+
+        Generate a unique nonempty session_id. Save the target URL, send the same ID plus pod starting settings to target /test/setup, and wait until ready. Forward any system setup error with the same status, message and source. If tester setup fails locally return 500/source tester; if no system response is available return 500/source communication.
+        Rejected requests leave stored project data unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TesterSetupRequest'
+            example:
+              target_url: https://team-b.example.edu/system
+      responses:
+        '201':
+          description: Target is ready; shared session ID returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionId'
+              example:
+                session_id: run-123
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '404':
+          description: Unknown session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '409':
+          description: Session conflict or report not ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '500':
+          description: Operation failed or tester aborted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        default:
+          description: Forwarded system setup failure; preserve its status, message and source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+      x-requirement-ids:
+      - TEST-03
+  /test/run:
+    post:
+      operationId: runTesterSuite
+      summary: Execute one prepared suite and return its report
+      description: |-
+        Purpose: Execute one prepared suite and return its report
+        Requirements: TEST-04
+
+        Execute planned tests in order through the target project API using X-Test-Run=session_id. Collect code coverage from target system report, calculate component/system coverage, and store the complete report before returning 200. Target failures are reported as test outcomes and do not automatically mean the tester aborted. Tester abort returns 500/source tester with a retrievable stored partial report.
+        Rejected requests leave stored project data unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionId'
+            example:
+              session_id: run-123
+      responses:
+        '200':
+          description: Finished suite, including any failed or errored tests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuiteReport'
+              example: &id001
+                session_id: run-123
+                target_url: https://team-b.example.edu/system
+                results:
+                - test_id: AC-01-create
+                  outcome: pass
+                  message: Expected UnderAssessment; received UnderAssessment.
+                coverage:
+                  code:
+                    covered: null
+                    total: null
+                    basis: Source lines; target instrumentation unavailable
+                  component:
+                    covered: 1
+                    total: 5
+                    basis: Phase 3 API components; incident operations exercised.
+                  system:
+                    covered: 1
+                    total: 9
+                    basis: Phase 3 API acceptance criteria; one AC-01 check attempted. AC-06 is partial;
+                      AC-09/23 API portions only.
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '404':
+          description: Unknown session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '409':
+          description: Session conflict or report not ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '500':
+          description: Operation failed or tester aborted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+      x-requirement-ids:
+      - TEST-04
+  /test/report:
+    get:
+      operationId: getTesterReport
+      summary: Retrieve the stored report without running tests
+      description: |-
+        Purpose: Retrieve the stored report without running tests
+        Requirements: TEST-05
+
+        200 returns the same stored report body as a completed run, or the preserved report after an abort. 409 before suite end. Never start or repeat a suite. Preserve the report unchanged once suite ends.
+        Request body: none. Use the declared path/query parameters and headers.
+        State change: none.
+        Rejected requests leave stored project data unchanged.
+      parameters:
+      - name: session_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          pattern: \S
+      responses:
+        '200':
+          description: Stored suite report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuiteReport'
+              example: *id001
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '404':
+          description: Unknown session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '409':
+          description: Session conflict or report not ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+        '500':
+          description: Operation failed or tester aborted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestControlError'
+      x-requirement-ids:
+      - TEST-05
+components:
+  schemas:
+    SessionId:
+      type: object
+      required:
+      - session_id
+      properties:
+        session_id: &id002
+          type: string
+          minLength: 1
+          pattern: \S
+    TestControlError:
+      type: object
+      required:
+      - message
+      - source
+      properties:
+        message: *id002
+        source: &id003
+          type: string
+          enum:
+          - tester
+          - system
+          - communication
+          - unknown
+    CoverageMeasure:
+      oneOf:
+      - type: object
+        required:
+        - covered
+        - total
+        - basis
+        properties:
+          covered:
+            type: integer
+            minimum: 0
+          total:
+            type: integer
+            minimum: 0
+          basis: *id002
+      - type: object
+        required:
+        - covered
+        - total
+        - basis
+        properties:
+          covered:
+            type: 'null'
+          total:
+            type: 'null'
+          basis: *id002
+      description: Source lines, branches, components, or acceptance criteria, as identified in basis.
+        covered must not exceed total. If unavailable use null for both counts and explain why. Coverage
+        measures exercised behavior, not passing results.
+    SystemCoverageReport:
+      type: object
+      required:
+      - session_id
+      - coverage
+      properties:
+        session_id: *id002
+        coverage:
+          type: object
+          required:
+          - code
+          properties:
+            code:
+              $ref: '#/components/schemas/CoverageMeasure'
+    TestResult:
+      type: object
+      required:
+      - test_id
+      - outcome
+      - message
+      properties:
+        test_id: *id002
+        outcome:
+          type: string
+          enum:
+          - pass
+          - fail
+          - error
+          - skip
+        message: *id002
+        source: *id003
+      allOf:
+      - if:
+          properties:
+            outcome:
+              const: error
+          required:
+          - outcome
+        then:
+          required:
+          - source
+    SuiteReport:
+      type: object
+      required:
+      - session_id
+      - target_url
+      - results
+      - coverage
+      properties:
+        session_id: *id002
+        target_url:
+          type: string
+          format: uri
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/TestResult'
+          description: Every planned test appears exactly once, with a unique nonempty test_id.
+        coverage:
+          type: object
+          required:
+          - code
+          - component
+          - system
+          properties:
+            code:
+              $ref: '#/components/schemas/CoverageMeasure'
+            component:
+              $ref: '#/components/schemas/CoverageMeasure'
+            system:
+              $ref: '#/components/schemas/CoverageMeasure'
+    TesterSetupRequest:
+      type: object
+      required:
+      - target_url
+      properties:
+        target_url:
+          type: string
+          format: uri
+          description: HTTP(S) system base URL; no /test suffix, query, fragment, or embedded credentials.
+x-testing-requirements:
+  TEST-03: Tester accepts a target system URL, generates a unique session ID, and waits for system preparation.
+  TEST-04: Tester executes one ordered suite per prepared session and stores a complete or aborted report.
+  TEST-05: Tester returns the stored report without repeating the suite.
