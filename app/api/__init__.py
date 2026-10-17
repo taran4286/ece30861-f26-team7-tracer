@@ -1,6 +1,7 @@
 """The system's FastAPI app; server.py mounts it at /system.
 
-It serves a captioned photo at GET /, GET /health, and 501 for every other path.
+It serves a captioned photo, health check, and explicit Phase 3 placeholders.
+Other unfinished paths fall back to 501.
 """
 
 import base64
@@ -15,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import get_engine
 from app.errors import ErrorCode
+from app.api.stubs import router as stub_router
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,10 @@ def health() -> JSONResponse:
         logger.warning("health: database unavailable", exc_info=True)
         return JSONResponse({"status": "unavailable", "database": "unavailable"}, status_code=503)
     return JSONResponse({"status": "ok", "database": "ok"})
+
+
+# Specific placeholders must be registered before the catch-all.
+system_app.include_router(stub_router)
 
 
 # Declared last: it matches every path, so a route declared after it never runs.

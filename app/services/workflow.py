@@ -1,4 +1,4 @@
-"""Materiality determinations; HTTP handling is added after API confirmation."""
+"""Phase 3 determinations, state transitions and audit retrieval."""
 
 from typing import Any
 
@@ -9,10 +9,119 @@ from app.audit import audit
 from app.config import RegistrantType, get_settings
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
-from app.models import AuditAction, Decision, Determination, Evidence, FormType, State
+from app.models import AuditAction, AuditEntry, Decision, Determination, Evidence, FormType, State
 from app.roles import Operation, Role, require_role
 from app.services.incidents import incident_to_dict, load_incident
 from app.services.validation import invalid, parse_date, require_object, require_string
+
+
+# Allowed (current state, requested state) pairs from the Phase 3 guide.
+# Determination and filing operations handle their own state changes.
+ALLOWED_TRANSITIONS = frozenset(
+    {
+        (State.DETERMINED_MATERIAL, State.DISCLOSURE_DELAYED),
+        (State.DISCLOSURE_DELAYED, State.DETERMINED_MATERIAL),
+        (State.DETERMINED_NOT_MATERIAL, State.CLOSED),
+    }
+)
+
+
+def _transition_target(body: Any) -> State:
+    """Check the request fields and return the requested state."""
+    body = require_object(body)
+    target = body.get("to")
+    if not isinstance(target, str):
+        raise invalid("to", "Expected a state name")
+    try:
+        # Check the state name here; check whether the move is allowed later.
+        target = State(target)
+    except ValueError:
+        raise invalid("to", "Unknown state")
+    version = body.get("version")
+    # Exclude True/False, which Python otherwise treats as integers.
+    # Stale versions are not rejected in Phase 3.
+    if (
+        isinstance(version, bool)
+        or not (isinstance(version, int) or (isinstance(version, float) and version.is_integer()))
+        or version < 1
+    ):
+        raise invalid("version", "Expected an integer greater than or equal to 1")
+    if target == State.AMENDMENT_PENDING:
+        # Validate the extra fields before rejecting this Phase 4 transition.
+        # TODO: Match the pod contract's element names and uniqueness.
+        if parse_date(body.get("info_available_date"), "info_available_date") > clock.today():
+            raise invalid("info_available_date", "info_available_date must not be after today")
+        elements = body.get("elements")
+        if not isinstance(elements, list) or not elements:
+            raise invalid("elements", "Expected a non-empty array of element names")
+        for index, element in enumerate(elements):
+            if not isinstance(element, str) or not element.strip():
+                raise invalid(f"elements[{index}]", "Expected a non-empty element name")
+    return target
+
+
+def transition_incident(
+    incident_id: str, body: Any, *, user_id: str, role: Role | str
+) -> dict[str, Any]:
+    """Apply a requested state change and return the updated incident.
+
+    body contains `to` and `version`; user_id identifies the actor in the audit.
+    Only DisclosureApprover may transition. The change and audit entry save together.
+    """
+    require_role(role, Operation.TRANSITION)
+    # Roll back the operation if any step fails.
+    with transaction() as tx:
+        # Lock the incident so simultaneous requests cannot overwrite each other.
+        incident = load_incident(tx, incident_id, for_update=True)
+        # Check existence before input, as required by the error order.
+        target = _transition_target(body)
+        if (incident.state, target) not in ALLOWED_TRANSITIONS:
+            raise TracerError(
+                ErrorCode.INVALID_TRANSITION,
+                f"Cannot transition from {incident.state.value} to {target.value}",
+            )
+        # Record the old values. Only state and version change.
+        before = {"state": incident.state.value, "version": incident.version}
+        incident.state = target
+        incident.version += 1
+        after = {"state": incident.state.value, "version": incident.version}
+        # Save one audit entry in the same transaction as the change.
+        audit(tx, AuditAction.TRANSITION, incident_id, before, after, user_id=user_id)
+        return incident_to_dict(tx, incident)
+
+
+def list_audit_entries(
+    incident_id: str, *, user_id: str, role: Role | str
+) -> dict[str, Any]:
+    """Return one incident's audit entries, oldest first. All roles may read.
+
+    user_id keeps the common service signature; reads do not create audit entries.
+    An unknown incident raises NOT_FOUND; an empty history returns {"entries": []}.
+    """
+    require_role(role, Operation.READ)
+    with transaction() as tx:
+        load_incident(tx, incident_id)
+        # Include all actions for this incident. Order by sequence, since timestamps can tie.
+        entries = tx.scalars(
+            select(AuditEntry)
+            .where(AuditEntry.target_id == incident_id)
+            .order_by(AuditEntry.seq)
+        ).all()
+        # seq controls ordering but is not part of the response.
+        return {
+            "entries": [
+                {
+                    "entry_id": entry.entry_id,
+                    "user_id": entry.user_id,
+                    "timestamp": entry.timestamp.isoformat(),
+                    "action": entry.action.value,
+                    "target_id": entry.target_id,
+                    "before": entry.before,
+                    "after": entry.after,
+                }
+                for entry in entries
+            ]
+        }
 
 
 def record_determination(

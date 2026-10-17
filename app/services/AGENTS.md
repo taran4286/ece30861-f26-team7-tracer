@@ -53,3 +53,4 @@ Header checks (missing `X-User-Id` or `X-User-Role`) come before step 1 and belo
 - Call `get_settings()` inside the operation, not at import time, so a test can switch the registrant type.
 - `record_determination` returns 501 for `voluntary_disclosure` after body validation and before the state check; the root `AGENTS.md` Materiality determination section holds its other rules.
 - `require_string` rejects NUL characters because PostgreSQL text cannot store them.
+- `record_determination` and `transition_incident` accept a whole-number float `version` such as `1.0`, which JSON Schema 2020-12 counts as an integer.

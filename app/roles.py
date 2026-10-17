@@ -19,6 +19,7 @@ class Operation(StrEnum):
     CREATE_GROUP = "create_group"
     RECORD_DETERMINATION = "record_determination"
     TRANSITION = "transition"
+    EDIT_AUDIT = "edit_audit"
 
 
 PERMISSIONS: dict[Role, frozenset[Operation]] = {

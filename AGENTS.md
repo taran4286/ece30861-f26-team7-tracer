@@ -14,7 +14,7 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 | Guide | Covers |
 | --- | --- |
 | `app/AGENTS.md` | Foundation modules: config, db, models, errors, roles, clock and audit |
-| `app/api/AGENTS.md` | The system's FastAPI app: the health check and the 501 stub |
+| `app/api/AGENTS.md` | The system's FastAPI app: health, explicit audit 405 and standalone 501 placeholders, and the catch-all |
 | `app/services/AGENTS.md` | Business logic and the steps every operation follows |
 | `tester/AGENTS.md` | Our tester's FastAPI app and the rule that it never imports `app` |
 | `tests/AGENTS.md` | The pytest suite: its files, shared helpers and fixtures, and how to run it |
@@ -426,7 +426,7 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 ## Decisions settled by the Phase 3 plan
 
 - `voluntary_disclosure`: either boolean value, `true` or `false`, returns 501 while REQ-18 isn't built; non-boolean values return 400 `VALIDATION_ERROR` on `voluntary_disclosure`.
-- 405 routes: the plan lists their roles as "All", so header and role checks run first, then 405.
+- 405 routes: the shared API role rules take precedence over the plan: validate headers, then return 403 for Responder and Board; DisclosureApprover reaches 405.
 - `to: AmendmentPending`: the plan's error order puts invalid body (400) before wrong state (409). Missing or malformed `info_available_date` or `elements` → 400; with valid fields, the disallowed pair → 409.
 
 ## Tests to write
