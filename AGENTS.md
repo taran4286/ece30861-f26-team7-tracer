@@ -16,7 +16,8 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 | `app/AGENTS.md` | Foundation modules: config, db, models, errors, roles, clock and audit |
 | `app/api/AGENTS.md` | The system's FastAPI app: the health check and the 501 stub |
 | `app/services/AGENTS.md` | Business logic and the steps every operation follows |
-| `tester/AGENTS.md` | Our tester's FastAPI app and the rule that it never imports `app` |
+| `tester/AGENTS.md` | Our tester's FastAPI app, its cross-team test cases, and the rule that it never imports `app` |
+| `fixtures/AGENTS.md` | The shared incident, ticketing and SIEM fixtures the testers send |
 | `tests/AGENTS.md` | The pytest suite: its files, shared helpers and fixtures, and how to run it |
 | `scripts/AGENTS.md` | `setup_db.py`, the database roles and grants |
 | `.github/AGENTS.md` | CI workflows, their scripts and `CODEOWNERS` |
@@ -41,6 +42,7 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 
 - Python 3.12, PostgreSQL, SQLAlchemy 2.0 with psycopg 3, pydantic-settings and pytest.
 - FastAPI for the system's API layer and for the tester, both served by `server.py`.
+- httpx2 for the tester's calls to target systems, and jsonschema with PyYAML to check their responses against `system-openapi.yaml`.
 - Vercel runs the deployed service and Neon hosts its Postgres (see Deployment).
 - Dependencies are declared in `pyproject.toml`.
 
@@ -58,10 +60,11 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 - `app/api/`: the system's FastAPI app, `system_app`.
 - `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination and transitions), callable without any web framework. Each operation takes the acting user's ID and role as arguments.
 - `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester` (see Deployment).
-- `tester/`: our tester's FastAPI app, `tester_app`; it never imports `app`.
+- `tester/`: our tester's FastAPI app, `tester_app`, and the cross-team test cases it runs against a target system; it never imports `app`.
+- `fixtures/`: the shared incident, ticketing and SIEM fixtures the cases send; Team 10 keeps its own copy.
 - `scripts/setup_db.py`: creates the app role, the tables and the grants (see Database roles).
 - `docker-compose.yml`: the local Postgres (see Local database).
-- `tests/`: one test file per service module, plus `test_server.py` and `test_tester.py` for the deployed apps.
+- `tests/`: one test file per service module, plus `test_server.py` and `test_tester.py` for the deployed apps and `test_tester_cases.py` for the tester's cases.
 - `.github/`: CI workflows and their scripts, including the `AGENTS.md` check.
 
 **Config** (environment variables, loaded from a git-ignored `.env`)
@@ -98,8 +101,7 @@ Run these in order when someone asks to set up the project or the local database
 
 Phase 3 builds Team 7's Tracer service covering REQ-01, 02, 03, 06, 07, 08, 19, 22 and 23. `system-openapi.yaml` is the source of truth for paths, schemas, error codes and behavior. Where this file or a folder guide disagrees with it, the spec wins; fix the guide.
 
-- In scope: incident creation, evidence import, the five-state machine, materiality determinations, the audit trail, test control (`/test/setup`, the coverage report and `X-Test-Run` sessions), deployment, and 405/501 stubs.
-- Out of scope for now: shared fixtures and the cross-team test suite. These get their own plan.
+- In scope: incident creation, evidence import, the five-state machine, materiality determinations, the audit trail, test control (`/test/setup`, the coverage report and `X-Test-Run` sessions), the shared fixtures, the tester's cross-team test cases, deployment, and 405/501 stubs.
 - Out of scope (Phase 4): due dates, flags, filings, LLM drafts, stale-version rejection (REQ-21), and re-determination of DeterminedNotMaterial.
 
 ## Build order and work split
