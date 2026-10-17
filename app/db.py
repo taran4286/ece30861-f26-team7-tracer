@@ -28,9 +28,20 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, default=_json_default)
 
 
+# Seconds psycopg waits on each address a host resolves to while connecting (its default
+# is 130). Neon hosts resolve to three, so a silent database fails in about 15 s.
+CONNECT_TIMEOUT_SECONDS = 5
+
+
 @lru_cache
 def get_engine() -> Engine:
-    return create_engine(get_settings().database_url, json_serializer=_json_dumps)
+    # pool_pre_ping replaces connections the server dropped while idle, e.g. when Neon pauses.
+    return create_engine(
+        get_settings().database_url,
+        json_serializer=_json_dumps,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
+    )
 
 
 @lru_cache

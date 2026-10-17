@@ -4,7 +4,7 @@ Oct 4, 2026 · @t
 
 ## Directory guides
 
-Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees; `system-openapi.yaml`, the shared API contract, wins over both (see Scope).
+Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees; `system-openapi.yaml` and `tester-openapi.yaml`, the shared API contracts for the service and the tester, win over both (see Scope).
 
 - Before changing or explaining a file, read the `AGENTS.md` in its folder and in each parent folder up to the root. Not every tool loads nested guides on its own, so read them explicitly.
 - Rules that must never be missed stay in this file; folder guides hold local details.
@@ -14,9 +14,11 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 | Guide | Covers |
 | --- | --- |
 | `app/AGENTS.md` | Foundation modules: config, db, models, errors, roles, clock and audit |
+| `app/api/AGENTS.md` | The system's FastAPI app: the health check and the 501 stub |
 | `app/services/AGENTS.md` | Business logic and the steps every operation follows |
+| `tester/AGENTS.md` | Our tester's FastAPI app and the rule that it never imports `app` |
+| `tests/AGENTS.md` | The pytest suite: its files, shared helpers and fixtures, and how to run it |
 | `scripts/AGENTS.md` | `setup_db.py`, the database roles and grants |
-| `tests/AGENTS.md` | How the pytest suite runs, its shared helpers and fixtures |
 | `.github/AGENTS.md` | CI workflows, their scripts and `CODEOWNERS` |
 
 **Keeping the guides current (mandatory)**
@@ -26,24 +28,26 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 - If a change truly alters nothing a guide says, don't add a filler edit. Put one line per guide in the PR description instead, naming the guide and the reason, e.g. `AGENTS.md: no change needed because the README edit only fixes a typo`. Reviewers judge whether the reason holds.
 - Write guides as the current state, and fix or delete what the change made wrong. Never add history or "changed X" notes; `git log` holds history, and a guide that grows into a changelog buries the rules.
 - Don't restate this file's rules in a folder guide; point to the section instead, so the two can't drift apart.
-- Every top-level folder except `.claude/` and `.agents/` (covered here), and every Python package under `app/`, needs its own `AGENTS.md`. Add it, and a row in the table above, in the PR that creates the folder, e.g. `tests/AGENTS.md` and later `app/api/AGENTS.md`.
+- Every top-level folder except `.claude/` and `.agents/` (covered here), and every Python package under `app/`, needs its own `AGENTS.md`. Add it, and a row in the table above, in the PR that creates the folder.
 - The `AGENTS.md updated` CI check (`.github/workflows/agents-md.yml`) enforces the update rule (accepting a skip line in its place) and the own-guide rule above, failing the PR otherwise; whitespace-only edits don't count, and a skip line can't stand in for a missing guide. Run it locally before pushing (see Branches, commits and pull requests).
 - The check proves a guide changed, not that it's right; reviewers check the content.
 - A guide doesn't guarantee a rule is followed. Where a test or script can check a rule (like the AC-09 test or `setup_db.py`'s privilege check), add one.
 
 ## Stack, repo layout and config
 
-The business logic is built first, independent of the web framework; the FastAPI layer (routes, request and response models, error handlers) is added once the API is confirmed.
+The business logic stays independent of the web framework; the FastAPI layer (routes, request and response models, error handlers) lives in `app/api/`.
 
 **Stack**
 
 - Python 3.12, PostgreSQL, SQLAlchemy 2.0 with psycopg 3, pydantic-settings and pytest.
-- FastAPI for the API layer, once the API is confirmed.
+- FastAPI for the system's API layer and for the tester, both served by `server.py`.
+- Vercel runs the deployed service and Neon hosts its Postgres (see Deployment).
 - Dependencies are declared in `pyproject.toml`.
 
 **Repo layout**
 
 - `system-openapi.yaml`: the Tracer Shared System API that our service implements, copied verbatim from the version shared with Team 10 (its `info.version` names it). Don't edit it here; when the pod agrees on a new version, replace the whole file and update the guides to match.
+- `tester-openapi.yaml`: the Tracer Shared Tester API that our tester implements, with its own base URL. Copied and replaced the same way as `system-openapi.yaml`.
 - `app/config.py`: settings read from environment variables.
 - `app/db.py`: engine, `Base`, and one transaction per operation.
 - `app/models.py`: the tables in Data model and storage.
@@ -51,10 +55,13 @@ The business logic is built first, independent of the web framework; the FastAPI
 - `app/roles.py`: the `Role` enum, the permission map and `require_role()`.
 - `app/clock.py`: `today()` for every date rule and `utcnow()` for stored timestamps.
 - `app/audit.py`: the `audit()` helper.
+- `app/api/`: the system's FastAPI app, `system_app`.
 - `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination and transitions), callable without any web framework. Each operation takes the acting user's ID and role as arguments.
+- `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester` (see Deployment).
+- `tester/`: our tester's FastAPI app, `tester_app`; it never imports `app`.
 - `scripts/setup_db.py`: creates the app role, the tables and the grants (see Database roles).
 - `docker-compose.yml`: the local Postgres (see Local database).
-- `tests/`: one test file per service module.
+- `tests/`: one test file per service module, plus `test_server.py` and `test_tester.py` for the deployed apps.
 - `.github/`: CI workflows and their scripts, including the `AGENTS.md` check.
 
 **Config** (environment variables, loaded from a git-ignored `.env`)
@@ -256,7 +263,7 @@ Two roles keep the REQ-22 grants enforceable: a table's owner can always grant i
 - Nothing else: no DELETE or TRUNCATE anywhere, and no UPDATE on evidence, determinations or audit_entries.
 - Declare `audit_entries.seq` with SQLAlchemy `Identity()`, not a plain autoincrement column; if it ends up as a serial, the app role also needs USAGE on its sequence.
 - The service never creates tables at startup; the app role can't.
-- The owner role needs permission to create tables and roles. Locally that's the container's superuser; on the host, use the managed database's admin user.
+- The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
 - Use the setup script in place of migrations for Phase 3; move to Alembic once the schema starts changing.
 
 ## Incidents (REQ-01, REQ-22)
@@ -383,14 +390,38 @@ Anything not built returns 501 `NOT_IMPLEMENTED` using the `Error` schema.
 
 ## Deployment
 
-The service needs a stable HTTPS base URL and a database that keeps its data across redeploys.
+Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an HTTPS URL that stays the same for the semester, and Neon keeps the data across redeploys. Vercel builds the FastAPI app in `server.py`; Neon and `scripts/setup_db.py` don't depend on it.
 
-- Deploy behind HTTPS at a URL that won't change for the rest of the semester.
-- Store `DATABASE_URL` and any other secrets in the host's settings, never in the repo.
-- Never expose `ADMIN_DATABASE_URL` to the running service. Set it only on a release or setup step if the host supports one; otherwise don't store it on the host and run `scripts/setup_db.py` from a dev machine.
-- Use a persistent database that survives redeploys.
-- Run the server clock in UTC with NTP sync (AC-02's ±5 s).
-- Run `scripts/setup_db.py` as the owner before the service first starts and whenever the tables or grants change.
+**Neon (database)**
+
+- Create the project on neon.com, not through Vercel's Neon integration. The integration sets its own `DATABASE_URL`, pooled and possibly logging in as the owner, and can give each preview deployment its own database branch.
+- Use Postgres 18, matching the local image, in AWS US East (N. Virginia), next to Vercel's default function region `iad1`.
+- The project's `neondb_owner` role is the owner: point `ADMIN_DATABASE_URL` at it. It can create roles but isn't a superuser, so `setup_db.py` can't clear forbidden attributes here and fails instead (see Database roles). It belongs to `neon_superuser`, so it can delete rows in every table; the REQ-22 grants restrict only `tracer_app`.
+- Let `setup_db.py` create `tracer_app`; never create it in the Neon console. Roles made there join `neon_superuser`, which brings BYPASSRLS and write access, including DELETE, to every table, and `neondb_owner` can't alter them, so the run fails. Don't create helper roles there either.
+- Use the direct connection string (the host without `-pooler`). Neon's Connect dialog shows the pooled one by default, so turn off "Connection pooling" there. Change its scheme from `postgresql://` to `postgresql+psycopg://` and keep its query parameters, including `sslmode=require` and `channel_binding=require` when present; with the bare scheme, SQLAlchemy looks for psycopg2, which isn't installed. Our traffic is far below the direct connection limit, and Neon recommends direct connections for schema changes such as `setup_db.py`'s.
+- Neon rejects passwords with less than 60 bits of entropy; one from `secrets.token_urlsafe(24)` passes.
+- The free plan pauses the database after 5 idle minutes and drops its connections. The first request after a pause waits a few hundred milliseconds for it to wake, and `app/db.py` replaces the dropped connections.
+- A schema change here needs a migration, not a wipe; try it on a Neon branch first.
+
+**Running `setup_db.py` against Neon**
+
+- Run it from a dev machine before the service first starts and whenever the tables or grants change. Vercel has no separate setup step, so `ADMIN_DATABASE_URL` never goes on Vercel.
+- Set `ADMIN_DATABASE_URL` and `DATABASE_URL` to the Neon URLs as environment variables for that one run, then clear them. Environment variables override `.env`, so `.env` keeps pointing at the local database.
+- Set both: with only one set, the other still comes from `.env` and points at the local database.
+- Judge the result by the exit code, as in local setup step 5.
+
+**Vercel (service)**
+
+- Import this GitHub repo as a Vercel project. Production deploys from `main`. The system's base URL is `https://<project>.vercel.app/system` and the tester's is `https://<project>.vercel.app/tester`. Vercel names the production domain after the project, first come first served, so read the actual domain from Settings → Domains.
+- Set `DATABASE_URL` (as `tracer_app`) and `REGISTRANT_TYPE` in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and the app role can't delete them.
+- Make `DATABASE_URL` a Secret variable (write-only after saving), and redeploy after setting or changing any variable; changes only reach new deployments.
+- Never set `ADMIN_DATABASE_URL` on Vercel: every variable there reaches the running function.
+- On the Hobby plan, only the project's owner sees its variables and logs, and runtime logs are kept for 1 hour.
+- Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
+- Leave Deployment Protection at Standard: the production domain stays public for testers, while preview and deployment-specific URLs need a Vercel login.
+- No `vercel.json` is needed: the Hobby plan's default function limit of 300 s already covers the tester's longest request.
+- After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached or a setting such as `DATABASE_URL` or `REGISTRANT_TYPE` is missing or invalid; the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
+- The server clock (UTC, NTP-synced, for AC-02's ±5 s) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 
 ## Decisions settled by the Phase 3 plan
 
