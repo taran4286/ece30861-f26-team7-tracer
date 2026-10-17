@@ -39,15 +39,18 @@ def _reply(request: Request, operation: Operation, code: ErrorCode, status: int)
 
 @router.api_route("/incidents/{incident_id}/audit", methods=["PUT", "PATCH", "DELETE"])
 def audit_not_allowed(request: Request, incident_id: str) -> JSONResponse:
+    """Reject attempts to replace, edit or delete audit history."""
     # All recognized roles receive 405. READ uses the existing all-role permission.
     return _reply(request, Operation.READ, ErrorCode.METHOD_NOT_ALLOWED, 405)
 
 
 @router.patch("/incidents/{incident_id}/evidence/{evidence_id}")
 def tag_evidence_stub(request: Request, incident_id: str, evidence_id: str) -> JSONResponse:
+    """Return the placeholder response for evidence tagging after permission checks."""
     return _reply(request, Operation.TAG_EVIDENCE, ErrorCode.NOT_IMPLEMENTED, 501)
 
 
 @router.post("/groups")
 def create_group_stub(request: Request) -> JSONResponse:
+    """Return the placeholder response for group creation after permission checks."""
     return _reply(request, Operation.CREATE_GROUP, ErrorCode.NOT_IMPLEMENTED, 501)

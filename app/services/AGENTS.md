@@ -57,7 +57,7 @@ Header checks (missing `X-User-Id` or `X-User-Role`) come before step 1 and belo
 
 - `incidents.load_incident(tx, incident_id, for_update=False)` loads the path incident or raises `NOT_FOUND`; pass `for_update=True` when the operation changes the incident.
 - `incidents.incident_to_dict(tx, incident)` builds the full Incident schema (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values). Every operation that returns an Incident uses it, so the shape stays in one place.
-- Validate bodies with `validation.py`, so dates and date-times are checked the same way everywhere: `parse_date` accepts only a real `YYYY-MM-DD`, and `parse_date_time` accepts only RFC 3339 with seconds and a `Z` or `Â±HH:MM` offset, returned in UTC.
+- Validate bodies with `validation.py`, so dates and date-times are checked the same way everywhere: `parse_date` accepts only a real `YYYY-MM-DD`, and `parse_date_time` accepts only RFC 3339 with seconds and a `Z` or `±HH:MM` offset, returned in UTC.
 
 ## Rules
 

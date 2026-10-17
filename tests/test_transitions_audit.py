@@ -18,6 +18,7 @@ ALLOWED = {(State.DETERMINED_MATERIAL, State.DISCLOSURE_DELAYED),
 
 
 def assert_rejected(incident_id, body, code, field=None, who=APPROVER):
+    """Check a rejected transition returns the expected error and changes nothing."""
     counts = table_counts()
     previous = get_incident(incident_id, **BOARD) if incident_id != "missing" else None
     with pytest.raises(TracerError) as error:
@@ -30,6 +31,7 @@ def assert_rejected(incident_id, body, code, field=None, who=APPROVER):
 
 @pytest.mark.parametrize("source,target", [(source, target) for source in PHASE3_STATES for target in PHASE3_STATES])
 def test_phase3_transition_pairs(incident, source, target):
+    """Check allowed state changes succeed and other Phase 3 pairs are rejected."""
     ident = incident["incident_id"]
     set_state(ident, source)
     if (source, target) not in ALLOWED:
@@ -54,20 +56,24 @@ def test_phase3_transition_pairs(incident, source, target):
     ({"to": 1, "version": 1}, "to"), ({"to": "unknown", "version": 1}, "to"),
     *[({"to": "Closed", "version": version}, "version") for version in [None, True, False, 0, -1, 1.5, "1"]]])
 def test_body_before_state(incident, body, field):
+    """Check invalid request fields are reported before a disallowed state change."""
     assert_rejected(incident["incident_id"], body, ErrorCode.VALIDATION_ERROR, field)
 
 
 @pytest.mark.parametrize("who", [RESPONDER, BOARD])
 def test_role_before_existence_and_body(who):
+    """Check permission errors come before incident and body errors."""
     assert_rejected("missing", None, ErrorCode.FORBIDDEN_ROLE, who=who)
 
 
 def test_existence_before_body():
+    """Check an unknown incident is reported before an invalid body."""
     assert_rejected("missing", None, ErrorCode.NOT_FOUND)
 
 
 @pytest.mark.parametrize("version", [1, 1.0])
 def test_stale_version_and_existing_determination(incident, version):
+    """Check transitions accept stale whole-number versions and preserve determination data."""
     ident = incident["incident_id"]
     evidence = import_evidence(ident, {"source": "ticketing", "items": [ticket()]}, **RESPONDER)
     determined = workflow.record_determination(ident, {
@@ -84,9 +90,11 @@ def test_stale_version_and_existing_determination(incident, version):
 
 
 def test_audit_failure_rolls_back_transition(incident, monkeypatch):
+    """Check an audit failure also rolls back the incident update."""
     ident = incident["incident_id"]
     set_state(ident, State.DETERMINED_NOT_MATERIAL)
     def fail(tx, *args, **kwargs):
+        """Simulate an audit failure after flushing the incident update."""
         tx.flush()  # The state update has reached PostgreSQL before the simulated failure.
         raise TracerError(ErrorCode.NOT_IMPLEMENTED, "Simulated audit failure")
     monkeypatch.setattr(workflow, "audit", fail)
@@ -95,6 +103,7 @@ def test_audit_failure_rolls_back_transition(incident, monkeypatch):
 
 @pytest.mark.parametrize("who", [RESPONDER, APPROVER, BOARD])
 def test_audit_read_is_scoped_ordered_and_does_not_write(incident, who):
+    """Check all roles can read one incident's ordered history without changing data."""
     ident = incident["incident_id"]
     import_evidence(ident, {"source": "ticketing", "items": [ticket()]}, **RESPONDER)
     set_state(ident, State.DETERMINED_MATERIAL)
@@ -117,6 +126,7 @@ def test_audit_read_is_scoped_ordered_and_does_not_write(incident, who):
 
 
 def test_unknown_audit_incident_does_not_write():
+    """Check reading an unknown incident returns NOT_FOUND and changes nothing."""
     counts = table_counts()
     with pytest.raises(TracerError) as error:
         workflow.list_audit_entries("missing", **BOARD)
