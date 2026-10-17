@@ -1,8 +1,8 @@
-# Tracer Phase 3 — Team 7 Implementation
+# Tracer — Team 7 Implementation
 
 ## Directory guides
 
-Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees; `system-openapi.yaml` and `tester-openapi.yaml`, the shared API contracts for the service and the tester, win over both (see Scope).
+Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees; `system-openapi.yaml` and `tester-openapi.yaml`, the shared API contracts for the service and the tester, win over both. They are the source of truth for paths, schemas, error codes and behavior; where a guide disagrees with them, fix the guide.
 
 - Before changing or explaining a file, read the `AGENTS.md` in its folder and in each parent folder up to the root. Not every tool loads nested guides on its own, so read them explicitly.
 - Rules that must never be missed stay in this file; folder guides hold local details.
@@ -71,7 +71,7 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 
 **Local database (Docker)**
 
-- Run Postgres locally with `docker compose up -d` from a committed `docker-compose.yml`; everyone in every group uses it, so tests run against the same Postgres version.
+- Run Postgres locally with `docker compose up -d` from a committed `docker-compose.yml`; everyone uses it, so tests run against the same Postgres version.
 - Use the `postgres:18` image, publish port 5432 on loopback only (`127.0.0.1:5432:5432`; Docker otherwise listens on every host address), and keep data in a named volume so it survives restarts; `docker compose down -v` wipes it.
 - Read `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` from `.env`, with placeholders in `.env.example`.
 - The container's `POSTGRES_USER` is the owner role: point `ADMIN_DATABASE_URL` at it, then run `python scripts/setup_db.py` to create `tracer_app`, the tables and the grants.
@@ -91,23 +91,6 @@ Run these in order when someone asks to set up the project or the local database
 - A re-run only creates missing tables and types; it doesn't alter existing ones. After changing a column or an enum's values in `app/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Deployment).
 - `docker compose stop` keeps the data; `docker compose down -v` wipes it, after which steps 4 and 5 rebuild it.
 - The image reads `POSTGRES_PASSWORD` only when it initializes an empty volume, so changing it later has no effect: wipe with `docker compose down -v` and redo steps 4 and 5.
-
-## Scope
-
-Phase 3 builds Team 7's Tracer service covering REQ-01, 02, 03, 06, 07, 08, 19, 22 and 23. `system-openapi.yaml` and `tester-openapi.yaml` are the source of truth for paths, schemas, error codes and behavior. Where this file or a folder guide disagrees with them, the spec wins; fix the guide.
-
-- In scope: incident creation, evidence import, the five-state machine, materiality determinations, the audit trail, test control (`/test/setup`, the coverage report and `X-Test-Run` sessions), our tester, the shared fixture files, the cross-team test suite, deployment, and 405/501 stubs.
-- Out of scope (Phase 4): due dates, flags, filings, LLM drafts, stale-version rejection (REQ-21), and re-determination of DeterminedNotMaterial.
-
-## Work split
-
-Three groups own the work; folder guides don't repeat it.
-
-| Group | Owns |
-| --- | --- |
-| A. Foundation | Config, database, local Docker database, tables, database roles and `setup_db.py`, error type, role checks, `audit()` helper, deployment, the tester |
-| B. Incidents and evidence | Incident create and get, the 405s, evidence import |
-| C. Workflow | Determination, transitions, audit endpoint, 501 stubs |
 
 ## Cross-cutting rules
 
@@ -158,11 +141,11 @@ Every operation follows these rules. The services apply roles, validation, no pa
 
 - New incidents start at `version: 1`.
 - Increment by 1 on each determination and successful transition; evidence import leaves it unchanged.
-- Accept `version` in request bodies and validate it as an integer ≥ 1, but accept stale values (stale-version rejection is Phase 4).
+- Accept `version` in request bodies and validate it as an integer ≥ 1, but accept stale values.
 
 ## Data model and storage
 
-Four tables hold everything in Phase 3. IDs are opaque, globally unique strings (e.g. prefixed UUIDs), and all timestamps are UTC.
+Four tables hold everything. IDs are opaque, globally unique strings (e.g. prefixed UUIDs), and all timestamps are UTC.
 
 **incidents**
 
@@ -173,15 +156,15 @@ Four tables hold everything in Phase 3. IDs are opaque, globally unique strings 
 | discovery_date | date, not null | not after today |
 | state | State enum, not null | starts as UnderAssessment |
 | required_form | FormType enum, nullable | null until a Material determination |
-| due_date | date, nullable | always null in Phase 3 |
-| group_id | text, nullable | always null in Phase 3 |
+| due_date | date, nullable | always null |
+| group_id | text, nullable | always null |
 | version | integer, not null | starts at 1; +1 on each determination and transition |
 
 **determinations**
 
 | Field | Type | Rules |
 | --- | --- | --- |
-| incident_id | text, primary key, references incidents | one per incident in Phase 3 |
+| incident_id | text, primary key, references incidents | one per incident |
 | decision | `Material` or `NotMaterial`, not null | |
 | determination_date | date, not null | on or after discovery_date, not after today |
 | rationale | text, not null | non-empty |
@@ -247,14 +230,14 @@ Two roles keep the REQ-22 grants enforceable: a table's owner can always grant i
 - Grant the app role exactly:
   - USAGE on the schema.
   - `incidents`: SELECT, INSERT, UPDATE.
-  - `evidence`: SELECT, INSERT (Phase 4 adds UPDATE for tagging).
+  - `evidence`: SELECT, INSERT.
   - `determinations`: SELECT, INSERT.
   - `audit_entries`: SELECT, INSERT.
 - Nothing else: no DELETE or TRUNCATE anywhere, and no UPDATE on evidence, determinations or audit_entries.
 - Declare `audit_entries.seq` with SQLAlchemy `Identity()`, not a plain autoincrement column; if it ends up as a serial, the app role also needs USAGE on its sequence.
 - The service never creates tables at startup; the app role can't.
 - The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
-- Use the setup script in place of migrations for Phase 3; move to Alembic once the schema starts changing.
+- Use the setup script in place of migrations.
 
 ## Incidents (REQ-01, REQ-22)
 
@@ -272,7 +255,7 @@ Incidents are created in UnderAssessment at version 1 and are never replaced or 
 **`GET /incidents/{incident_id}`** (all roles)
 
 - Return the full Incident; unknown ID → 404.
-- Always return `flags: []` and `due_date: null` in Phase 3.
+- Always return `flags: []` and `due_date: null`.
 
 **`PUT` and `DELETE /incidents/{incident_id}`**
 
@@ -306,7 +289,7 @@ Each request is one `ImportRequest` body of simulated ticketing or SIEM items; o
 **Other evidence routes**
 
 - `DELETE /incidents/{id}/evidence/{evidence_id}` → 405, nothing changed.
-- `PATCH /incidents/{id}/evidence/{evidence_id}` → 501 unless REQ-05 is built (see Stubs).
+- `PATCH /incidents/{id}/evidence/{evidence_id}` → 501 (see Stubs).
 
 ## Materiality determination (REQ-07, REQ-08)
 
@@ -318,7 +301,7 @@ Only a DisclosureApprover can record a determination, only from UnderAssessment,
 - Require `decision` ∈ {Material, NotMaterial}, `determination_date`, non-empty `rationale`, `evidence_refs` and `version`; a missing field → 400 naming it.
 - Require `determination_date` ≥ `discovery_date` and ≤ `today()`; both boundaries are valid (AC-20).
 - Require `evidence_refs` to have at least one unique ID, each belonging to this incident; an unknown ref or one from another incident → 400 `field: "evidence_refs"`.
-- If `voluntary_disclosure` is present and REQ-18 isn't built → 501.
+- If `voluntary_disclosure` is present → 501 (see Stubs).
 - State not UnderAssessment → 409 `INVALID_TRANSITION` (checked after body validation, per error order).
 - Set `state` to DeterminedMaterial or DeterminedNotMaterial.
 - Set `required_form` from the configured registrant type: Material + Domestic → `8-K Item 1.05`; Material + FPI → `6-K`; NotMaterial → `null`.
@@ -335,7 +318,7 @@ Only a DisclosureApprover can record a determination, only from UnderAssessment,
 
 ## State machine and transitions (REQ-06)
 
-Only five moves succeed in Phase 3; every other pair, including staying in the same state, returns 409 `INVALID_TRANSITION` with nothing changed.
+Only five moves succeed; every other pair, including staying in the same state, returns 409 `INVALID_TRANSITION` with nothing changed.
 
 | From | To | Endpoint |
 | --- | --- | --- |
@@ -350,7 +333,7 @@ Only five moves succeed in Phase 3; every other pair, including staying in the s
 - Responder or Board → 403.
 - Validate `to` against the full `State` enum (an unknown value → 400) and `version` as an integer ≥ 1.
 - Encode the allowed set as data: `{(DM, DisclosureDelayed), (DisclosureDelayed, DM), (DNM, Closed)}`; check `(current, to)` against it.
-- Return 409 for every pair not in the set, including UA → DM/DNM (those go through `/determination`), DNM → DM (re-determination is Phase 4) and any `to: DisclosureRecorded` (filings, Phase 4).
+- Return 409 for every pair not in the set, including UA → DM/DNM (those go through `/determination`), DNM → DM and any `to: DisclosureRecorded`.
 - On success, set `state`, increment `version`, keep `determination` and `required_form` untouched, and return 200 with the full Incident.
 - Write a `transition` audit entry: `before: {state, version}`, `after: {state, version}`.
 - For `to: AmendmentPending`, validate that `info_available_date` and `elements` are present and well formed first (400 if not), then return 409 for the disallowed pair.
@@ -415,7 +398,7 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 
 ## Settled decisions
 
-- `voluntary_disclosure`: either boolean value, `true` or `false`, returns 501 while REQ-18 isn't built; non-boolean values return 400 `VALIDATION_ERROR` on `voluntary_disclosure`.
+- `voluntary_disclosure`: either boolean value, `true` or `false`, returns 501; non-boolean values return 400 `VALIDATION_ERROR` on `voluntary_disclosure`.
 - 405 routes: validate headers, then return 403 for Responder and Board, per the spec's role rules; DisclosureApprover reaches 405.
 - `to: AmendmentPending`: the error order puts invalid body (400) before wrong state (409). Missing or malformed `info_available_date` or `elements` → 400; with valid fields, the disallowed pair → 409.
 
@@ -461,18 +444,6 @@ Write pytest tests against the service modules using a real local Postgres datab
 
 - A 10-action sequence produces 10 matching entries, oldest first.
 - Under the app's DB user, UPDATE and DELETE on audit_entries fail, and DELETE on incidents and evidence fails.
-
-## Done checklist
-
-Phase 3 is done for Team 7 when the deployed service does all of the following.
-
-- Creates incidents with distinct IDs in UnderAssessment.
-- Imports ticketing and SIEM items as normalized evidence, rejecting any batch with a bad item.
-- Records a determination only as DisclosureApprover and sets the correct `required_form`.
-- Rejects disallowed transitions with 409 and leaves state unchanged.
-- Writes an audit entry for every action and rejects edits and deletes (405, after the role check; see Settled decisions).
-- Leaves stored data unchanged on every error.
-- Is ready to demo the audit table's DB permissions (AC-23).
 
 ## Branches, commits and pull requests
 

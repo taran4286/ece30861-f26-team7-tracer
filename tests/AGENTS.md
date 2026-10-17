@@ -8,7 +8,7 @@ The root "Tests to write" section lists what each area must cover; this file cov
 | `helpers.py` | Acting users (`RESPONDER`, `APPROVER`, `BOARD`), `ticket()` and `alert()` item builders, `table_counts()`, `audit_entries()` and `set_state()` |
 | `test_incidents.py` | `app/services/incidents.py`: create and get |
 | `test_evidence.py` | `app/services/evidence.py`: import, normalization and all-or-nothing rejection |
-| `test_workflow.py` | Determinations, all state targets from Phase 3 states, date/error order, version handling, preservation, audit rollback and retrieval, the AC-09 materiality-write guardrail, and NUL-character rejection on create and import |
+| `test_workflow.py` | Determinations, all state targets from each state the workflow reaches, date/error order, version handling, preservation, audit rollback and retrieval, the AC-09 materiality-write guardrail, and NUL-character rejection on create and import |
 | `test_server.py` | `server.py`'s mounts, captioned photo, health check, catch-all, and explicit audit 405 / standalone 501 responses with header, role and no-database checks |
 | `test_tester.py` | The tester's captioned photo page and 501 stub, and that `tester/` never imports `app` |
 

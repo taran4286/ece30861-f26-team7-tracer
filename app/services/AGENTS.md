@@ -2,12 +2,12 @@
 
 One module per area, callable without any web framework. The root `AGENTS.md` holds the rules for each endpoint, and its Cross-cutting rules and Audit trail sections cover transactions, audit entries and versions; this file covers how an operation is built.
 
-| Module | Owner | Operations | Tests |
-| --- | --- | --- | --- |
-| `incidents.py` | Group B | Create and get an incident | `tests/test_incidents.py` |
-| `evidence.py` | Group B | Import evidence | `tests/test_evidence.py` |
-| `validation.py` | Group B | Shared body checks: `require_object`, `require_string`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
-| `workflow.py` | Group C | Record a determination, transitions, list audit entries | `tests/test_workflow.py` |
+| Module | Operations | Tests |
+| --- | --- | --- |
+| `incidents.py` | Create and get an incident | `tests/test_incidents.py` |
+| `evidence.py` | Import evidence | `tests/test_evidence.py` |
+| `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
+| `workflow.py` | Record a determination, transitions, list audit entries | `tests/test_workflow.py` |
 
 Add a row for each new module.
 
