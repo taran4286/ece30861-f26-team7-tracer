@@ -1,5 +1,6 @@
 """server.py's mounts, the system's health check and its 501 stub."""
 
+import base64
 import socket
 import time
 
@@ -81,12 +82,13 @@ def test_health_gives_up_on_a_silent_database(monkeypatch, fresh_settings):
 
 
 @pytest.mark.parametrize("path", ["/system", "/system/"])
-def test_base_url_shows_the_system_photo(path):
+def test_base_url_shows_the_captioned_system_photo(path):
     # /system redirects to /system/; TestClient follows it.
     response = client.get(path)
     assert response.status_code == 200
-    assert response.headers["content-type"] == "image/png"
-    assert response.content == system_api.PHOTO.read_bytes()
+    assert response.headers["content-type"].startswith("text/html")
+    assert "<p style=\"margin:0;font-size:1.25rem\">Team 7 service</p>" in response.text
+    assert base64.b64encode(system_api.PHOTO.read_bytes()).decode() in response.text
 
 
 @pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])

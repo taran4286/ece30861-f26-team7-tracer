@@ -1,13 +1,14 @@
 """The system's FastAPI app; server.py mounts it at /system.
 
-It serves a photo at GET /, GET /health, and 501 for every other path.
+It serves a captioned photo at GET /, GET /health, and 501 for every other path.
 """
 
+import base64
 import logging
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -20,14 +21,27 @@ logger = logging.getLogger(__name__)
 ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 
 PHOTO = Path(__file__).with_name("system.png")
+CAPTION = "Team 7 service"
+# The photo is inlined, so the page needs no second route.
+PAGE = """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>{caption}</title></head>
+<body style="margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:12px;font-family:sans-serif">
+<img src="data:image/png;base64,{photo}" alt="{caption}">
+<p style="margin:0;font-size:1.25rem">{caption}</p>
+</body>
+</html>
+"""
 
 system_app = FastAPI(title="Tracer system")
 
 
 @system_app.get("/")
-def photo() -> FileResponse:
-    """Show a photo at the base URL, so a browser shows the deploy is up. Not part of the spec."""
-    return FileResponse(PHOTO, media_type="image/png")
+def photo() -> HTMLResponse:
+    """Show a captioned photo, so a browser shows the deploy is up. Not part of the spec."""
+    # Read per request, not at import: a missing file then breaks only this page.
+    encoded = base64.b64encode(PHOTO.read_bytes()).decode()
+    return HTMLResponse(PAGE.format(caption=CAPTION, photo=encoded))
 
 
 @system_app.get("/health")

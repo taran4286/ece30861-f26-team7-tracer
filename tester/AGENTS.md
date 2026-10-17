@@ -4,7 +4,7 @@ Our tester service from the shared Tester API; group A owns it. `server.py` moun
 
 ## What it serves
 
-- `GET /` returns `tester.png` (`image/png`), so a browser shows the deploy is up; `/tester` without the slash redirects there with a 307. It's outside the spec.
+- `GET /` returns an HTML page with `tester.png` inlined and captioned "Team 7 tester", so a browser shows the deploy is up; `/tester` without the slash redirects there with a 307. It's outside the spec, and reads the photo per request, so a missing file breaks only this page.
 - Every other path apart from the docs pages below returns 501 for GET, POST, PUT, PATCH and DELETE, with `{"message": …, "source": "tester"}`, the test-control error shape.
 - FastAPI's generated `/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json` also answer, and other methods such as `HEAD` and `OPTIONS` get FastAPI's 405; both are outside the spec.
 
