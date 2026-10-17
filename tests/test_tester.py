@@ -1,6 +1,7 @@
 """The tester's 501 stub and the rule that tester/ never imports app."""
 
 import ast
+import base64
 from pathlib import Path
 
 import pytest
@@ -14,12 +15,13 @@ client = TestClient(server_app)
 
 
 @pytest.mark.parametrize("path", ["/tester", "/tester/"])
-def test_base_url_shows_the_tester_photo(path):
+def test_base_url_shows_the_captioned_tester_photo(path):
     # /tester redirects to /tester/; TestClient follows it.
     response = client.get(path)
     assert response.status_code == 200
-    assert response.headers["content-type"] == "image/png"
-    assert response.content == (TESTER_DIR / "tester.png").read_bytes()
+    assert response.headers["content-type"].startswith("text/html")
+    assert "<p style=\"margin:0;font-size:1.25rem\">Team 7 tester</p>" in response.text
+    assert base64.b64encode((TESTER_DIR / "tester.png").read_bytes()).decode() in response.text
 
 
 @pytest.mark.parametrize(

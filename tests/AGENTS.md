@@ -8,8 +8,8 @@ The root "Tests to write" section lists what each area must cover; this file cov
 | `helpers.py` | Acting users (`RESPONDER`, `APPROVER`, `BOARD`), `ticket()` and `alert()` item builders, `table_counts()`, `audit_entries()` and `set_state()` |
 | `test_incidents.py` | `services/incidents.py`: create and get |
 | `test_evidence.py` | `services/evidence.py`: import, normalization and all-or-nothing rejection |
-| `test_server.py` | `server.py`'s mounts, the system's photo, `/health` check and 501 stub |
-| `test_tester.py` | The tester's photo and 501 stub, and that `tester/` never imports `app` |
+| `test_server.py` | `server.py`'s mounts, the system's captioned photo page, `/health` check and 501 stub |
+| `test_tester.py` | The tester's captioned photo page and 501 stub, and that `tester/` never imports `app` |
 
 ## Running
 
