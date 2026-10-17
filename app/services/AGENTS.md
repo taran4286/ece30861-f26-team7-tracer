@@ -6,13 +6,12 @@ One module per area, callable without any web framework. The root `AGENTS.md` ho
 | --- | --- | --- | --- |
 | `incidents.py` | Group B | Create and get an incident | `tests/test_incidents.py` |
 | `evidence.py` | Group B | Import evidence | `tests/test_evidence.py` |
+| `validation.py` | Group B | Shared body checks: `require_object`, `require_string`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
 | `workflow.py` | Group C | Record a determination, transitions, list audit entries | `tests/test_workflow.py` |
 
-`incidents.py`, `evidence.py`, determination recording and the listed test files
-are planned. `workflow.py` provides `transition_incident(incident_id, body, *,
-user_id, role)` and `list_audit_entries(incident_id, *, user_id, role)`. Both return
-plain response dictionaries with ISO-formatted dates and enum values, ready for
-the future API layer. Add a row for any new module.
+`incidents.py` and `evidence.py` implement incident creation, retrieval and evidence
+import. `workflow.py` implements determination recording, state transitions and
+audit retrieval. Workflow tests remain to be added.
 
 `ALLOWED_TRANSITIONS` contains the three Phase 3 transition pairs. The transition
 operation locks the incident, validates the raw body, updates state and version,
@@ -57,10 +56,25 @@ def record_determination(incident_id: str, body: dict, *, user_id: str, role: Ro
 
 Header checks (missing `X-User-Id` or `X-User-Role`) come before step 1 and belong to the API layer.
 
+## Shared helpers
+
+- `incidents.load_incident(tx, incident_id, for_update=False)` loads the path incident or raises `NOT_FOUND`; pass `for_update=True` when the operation changes the incident.
+- `incidents.incident_to_dict(tx, incident)` builds the full Incident schema (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values). Every operation that returns an Incident uses it, so the shape stays in one place.
+- Validate bodies with `validation.py`, so dates and date-times are checked the same way everywhere: `parse_date` accepts only a real `YYYY-MM-DD`, and `parse_date_time` accepts only RFC 3339 with seconds and a `Z` or `±HH:MM` offset, returned in UTC.
+
 ## Rules
 
 - Services take the raw request body and do all body validation themselves. A 400 must come after the 404 check, so API request models must not reject a body before the service runs.
 - Unknown IDs inside a body, like `evidence_refs`, are 400s on that field; only IDs in the path are 404s.
 - When an operation changes the incident (determination, transition), load it with `with_for_update=True`, so two concurrent requests can't both pass the state check or bump `version` from the same value.
 - Keep materiality writes in `workflow.py`'s determination operation, and the allowed transitions as a data set in `workflow.py`.
+- Evidence import validates items field by field in a fixed order (ticketing: `ticket_id`, `summary`, `created_at`; SIEM: `alert_id`, `rule_name`, `severity`, `detected_at`), then rejects any key only the other source sends (`items[i].<key>`). Other extra keys are allowed and kept in `raw_item`.
 - Call `get_settings()` inside the operation, not at import time, so a test can switch the registrant type.
+
+## Materiality determination implementation
+
+`workflow.record_determination(incident_id, body, *, user_id, role)` implements the Phase 3 determination operation. It locks the incident before checking its state, validates the required fields and incident-owned evidence references, and writes the determination, incident update and audit entry in one transaction. Only a DisclosureApprover may call it successfully, and only from UnderAssessment.
+
+Material decisions select `8-K Item 1.05` for Domestic registrants or `6-K` for FPI registrants; NotMaterial leaves `required_form` null. A successful determination increments the stored version, while a valid stale request version is accepted in Phase 3. Any supplied `voluntary_disclosure` value, including false or null, raises `NOT_IMPLEMENTED` after required body validation and before the state check.
+
+The operation currently builds its JSON-ready Incident response locally. Consolidate this with `incidents.incident_to_dict` when integrating the services. HTTP routing and identity-header validation remain API-layer work. Determination behavior tests and the guardrail ensuring other handlers never write materiality are deferred and must be added before Phase 3 is considered complete.
