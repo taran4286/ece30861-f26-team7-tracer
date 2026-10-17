@@ -8,7 +8,28 @@ One module per area, callable without any web framework. The root `AGENTS.md` ho
 | `evidence.py` | Group B | Import evidence | `tests/test_evidence.py` |
 | `workflow.py` | Group C | Record a determination, transitions, list audit entries | `tests/test_workflow.py` |
 
-The table lists the planned modules; add a row for any new one.
+`incidents.py`, `evidence.py`, determination recording and the listed test files
+are planned. `workflow.py` provides `transition_incident(incident_id, body, *,
+user_id, role)` and `list_audit_entries(incident_id, *, user_id, role)`. Both return
+plain response dictionaries with ISO-formatted dates and enum values, ready for
+the future API layer. Add a row for any new module.
+
+`ALLOWED_TRANSITIONS` contains the three Phase 3 transition pairs. The transition
+operation locks the incident, validates the raw body, updates state and version,
+and records its audit entry in one transaction. The supplied version is validated
+but not compared with the stored version. Its response includes the existing
+determination and evidence; neither is changed. Incident response assembly is
+local to workflow until the incident service supplies a shared response helper.
+
+For the disallowed `AmendmentPending` target, validation currently requires a real
+`YYYY-MM-DD` `info_available_date` and a non-empty array of non-empty strings in
+`elements`, before the state check. Element names await the pod's final API schema;
+no Phase 4 amendment behavior is implemented.
+
+Audit retrieval checks the incident exists, filters by its target ID and orders
+by `seq`. It returns `{"entries": [...]}` without exposing the internal sequence
+column and without adding an audit entry for the read. HTTP header checks, routes,
+and 405/501 responses belong to the future API layer.
 
 ## Shape of every operation
 
