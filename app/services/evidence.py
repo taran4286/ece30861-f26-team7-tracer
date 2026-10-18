@@ -16,6 +16,7 @@ from app.services.validation import (
     require_object,
     require_string,
 )
+from app.sessions import load_session
 
 
 @dataclass(frozen=True)
@@ -48,12 +49,13 @@ class _NormalizedItem:
 
 
 def import_evidence(
-    incident_id: str, body: Any, *, user_id: str, role: Role | str
+    incident_id: str, body: Any, *, user_id: str, role: Role | str, session_id: str
 ) -> dict[str, list[dict[str, Any]]]:
     """POST /incidents/{incident_id}/evidence/import: all items or none, in any state."""
-    require_role(role, Operation.IMPORT_EVIDENCE)
     with transaction() as tx:
-        load_incident(tx, incident_id)
+        load_session(tx, session_id)
+        require_role(role, Operation.IMPORT_EVIDENCE)
+        load_incident(tx, incident_id, session_id=session_id)
         source, items = _validate(body)
 
         imported_at = utcnow()
@@ -76,7 +78,10 @@ def import_evidence(
         tx.flush()
         # Import never changes the incident's version, so it isn't in the entry.
         after = {"source": source.value, "evidence_ids": [row.evidence_id for row in rows]}
-        audit(tx, AuditAction.IMPORT_EVIDENCE, incident_id, None, after, user_id=user_id)
+        audit(
+            tx, AuditAction.IMPORT_EVIDENCE, incident_id, None, after,
+            user_id=user_id, session_id=session_id,
+        )
         return {"evidence": [evidence_to_dict(row) for row in rows]}
 
 

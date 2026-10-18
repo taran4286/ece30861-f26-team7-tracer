@@ -16,6 +16,7 @@ def audit(
     after: dict[str, Any],
     *,
     user_id: str,
+    session_id: str,
 ) -> AuditEntry:
     """Record one audit entry inside `tx`, so it commits or rolls back with the change.
 
@@ -23,6 +24,7 @@ def audit(
     """
     entry = AuditEntry(
         entry_id=new_id("aud"),
+        session_id=session_id,
         user_id=user_id,
         timestamp=utcnow(),
         action=action,

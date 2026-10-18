@@ -7,25 +7,43 @@ from pathlib import Path
 import pytest
 
 from app import clock, db
-from app.config import get_settings
 from app.errors import ErrorCode, TracerError
-from app.models import Determination, Incident, State
+from app.models import Determination, Incident, RegistrantType, State
 from app.services import workflow
 from app.services.evidence import import_evidence
 from app.services.incidents import create_incident, get_incident
-from tests.helpers import APPROVER, BOARD, RESPONDER, audit_entries, set_state, table_counts, ticket
+from tests.helpers import (
+    APPROVER,
+    BOARD,
+    RESPONDER,
+    SESSION_ID,
+    TODAY,
+    audit_entries,
+    in_session,
+    new_session,
+    set_state,
+    table_counts,
+    ticket,
+)
+
+pytestmark = pytest.mark.usefixtures("default_session")
 
 
-@pytest.fixture
-def case(incident):
+def new_case(incident, responder=RESPONDER):
+    """Two evidence items on the incident, and a complete Material determination body citing them."""
     evidence = import_evidence(incident['incident_id'], {
         'source': 'ticketing', 'items': [ticket(1), ticket(2)]
-    }, **RESPONDER)['evidence']
+    }, **responder)['evidence']
     return incident['incident_id'], {
         'decision': 'Material', 'determination_date': incident['discovery_date'],
         'rationale': 'Significant impact', 'evidence_refs': [e['evidence_id'] for e in evidence],
         'version': 1,
     }
+
+
+@pytest.fixture
+def case(incident):
+    return new_case(incident)
 
 
 def rejected(case, code=ErrorCode.VALIDATION_ERROR, field=None, who=APPROVER):
@@ -41,45 +59,39 @@ def rejected(case, code=ErrorCode.VALIDATION_ERROR, field=None, who=APPROVER):
         assert get_incident(incident_id, **BOARD) == previous
 
 
-def clear_caches():
-    db._session_factory.cache_clear()
-    db.get_engine.cache_clear()
-    get_settings.cache_clear()
-
-
 @pytest.mark.parametrize('registrant,decision,state,form', [
     ('Domestic', 'Material', 'DeterminedMaterial', '8-K Item 1.05'),
     ('FPI', 'Material', 'DeterminedMaterial', '6-K'),
     ('Domestic', 'NotMaterial', 'DeterminedNotMaterial', None),
     ('FPI', 'NotMaterial', 'DeterminedNotMaterial', None),
 ])
-def test_success(case, monkeypatch, registrant, decision, state, form):
-    monkeypatch.setenv('REGISTRANT_TYPE', registrant)
-    clear_caches()
-    try:
-        incident_id, body = case
-        body['decision'] = decision
-        start = clock.utcnow()
-        result = workflow.record_determination(incident_id, body, **APPROVER)
-        assert result == get_incident(incident_id, **BOARD)
-        assert (result['state'], result['required_form'], result['version']) == (state, form, 2)
-        assert result['due_date'] is None and result['flags'] == []
-        with db.transaction() as tx:
-            stored = tx.get(Determination, incident_id)
-            assert stored.decision.value == decision
-            assert stored.determination_date.isoformat() == body['determination_date']
-            assert stored.rationale == body['rationale'] and stored.evidence_refs == body['evidence_refs']
-            assert stored.voluntary_disclosure is False and stored.recorded_by == APPROVER['user_id']
-            assert start <= stored.recorded_at <= clock.utcnow()
-        entries = audit_entries(incident_id)
-        assert len(entries) == 3
-        entry = entries[-1]
-        assert entry.action.value == 'record_determination' and entry.user_id == APPROVER['user_id']
-        assert entry.before == {'state': 'UnderAssessment', 'determination': None, 'version': 1}
-        assert entry.after == {'state': state, 'required_form': form, 'version': 2,
-                               'determination': {'decision': decision, 'determination_date': body['determination_date']}}
-    finally:
-        clear_caches()
+def test_success(registrant, decision, state, form):
+    # The registrant type is fixed per session, so each case gets its own.
+    session_id = new_session(registrant_type=RegistrantType(registrant))
+    responder, approver, board = (in_session(who, session_id) for who in (RESPONDER, APPROVER, BOARD))
+    incident = create_incident({"title": "Ransomware", "discovery_date": "2026-10-01"}, **responder)
+    incident_id, body = new_case(incident, responder)
+    body['decision'] = decision
+    start = clock.utcnow()
+    result = workflow.record_determination(incident_id, body, **approver)
+    assert result == get_incident(incident_id, **board)
+    assert (result['state'], result['required_form'], result['version']) == (state, form, 2)
+    assert result['due_date'] is None and result['flags'] == []
+    with db.transaction() as tx:
+        stored = tx.get(Determination, incident_id)
+        assert stored.decision.value == decision
+        assert stored.determination_date.isoformat() == body['determination_date']
+        assert stored.rationale == body['rationale'] and stored.evidence_refs == body['evidence_refs']
+        assert stored.voluntary_disclosure is False and stored.recorded_by == APPROVER['user_id']
+        assert start <= stored.recorded_at <= clock.utcnow()
+    entries = audit_entries(incident_id)
+    assert len(entries) == 3
+    entry = entries[-1]
+    assert entry.action.value == 'record_determination' and entry.user_id == APPROVER['user_id']
+    assert entry.session_id == session_id
+    assert entry.before == {'state': 'UnderAssessment', 'determination': None, 'version': 1}
+    assert entry.after == {'state': state, 'required_form': form, 'version': 2,
+                           'determination': {'decision': decision, 'determination_date': body['determination_date']}}
 
 
 @pytest.mark.parametrize('who', [RESPONDER, BOARD])
@@ -135,7 +147,7 @@ def test_other_incident_ref(case):
 
 @pytest.mark.parametrize('offset', [-1, 1])
 def test_out_of_range_dates(case, offset):
-    day = date.fromisoformat(case[1]['determination_date']) if offset < 0 else clock.today()
+    day = date.fromisoformat(case[1]['determination_date']) if offset < 0 else TODAY
     case[1]['determination_date'] = (day + timedelta(days=offset)).isoformat()
     rejected(case, field='determination_date')
 
@@ -143,7 +155,7 @@ def test_out_of_range_dates(case, offset):
 @pytest.mark.parametrize('boundary', ['discovery', 'today'])
 def test_date_boundaries(case, boundary):
     if boundary == 'today':
-        case[1]['determination_date'] = clock.today().isoformat()
+        case[1]['determination_date'] = TODAY.isoformat()
     assert workflow.record_determination(case[0], case[1], **APPROVER)['version'] == 2
 
 
@@ -288,6 +300,7 @@ def test_phase3_transition_pairs(incident, source, target):
     assert len(saved) == len(entries) + 1
     entry = saved[-1]
     assert entry.action.value == "transition" and entry.user_id == APPROVER["user_id"]
+    assert entry.session_id == SESSION_ID
     assert start <= entry.timestamp <= clock.utcnow()
     assert entry.before == {"state": source.value, "version": 1}
     assert entry.after == {"state": target.value, "version": 2}
@@ -366,6 +379,36 @@ def test_audit_read_is_scoped_ordered_and_does_not_write(incident, who):
     assert get_incident(ident, **BOARD) == previous
 
 
+WORKFLOW_CALLS = {
+    "determination": lambda ident, who: workflow.record_determination(ident, {}, **who),
+    "transition": lambda ident, who: workflow.transition_incident(ident, {}, **who),
+    "audit": lambda ident, who: workflow.list_audit_entries(ident, **who),
+}
+
+
+@pytest.mark.parametrize("operation", WORKFLOW_CALLS)
+def test_unknown_session_before_role(operation):
+    """Check an unknown session is reported before the role, the incident and the body."""
+    counts = table_counts()
+    with pytest.raises(TracerError) as error:
+        WORKFLOW_CALLS[operation]("missing", in_session(BOARD, "pytest-missing"))
+    assert (error.value.code, error.value.field) == (ErrorCode.NOT_FOUND, None)
+    assert table_counts() == counts
+
+
+@pytest.mark.parametrize("operation", WORKFLOW_CALLS)
+def test_another_sessions_incident_is_not_found(incident, operation):
+    """Check an incident is invisible to every other session, before its body is checked."""
+    ident = incident["incident_id"]
+    other = in_session(APPROVER, new_session())
+    counts = table_counts()
+    with pytest.raises(TracerError) as error:
+        WORKFLOW_CALLS[operation](ident, other)
+    assert (error.value.code, error.value.field) == (ErrorCode.NOT_FOUND, None)
+    assert table_counts() == counts
+    assert get_incident(ident, **BOARD) == incident
+
+
 def test_unknown_audit_incident_does_not_write():
     """Check reading an unknown incident returns NOT_FOUND and changes nothing."""
     counts = table_counts()
@@ -379,7 +422,7 @@ def test_unknown_audit_incident_does_not_write():
 def test_amendment_date_validation_before_state(incident, value):
     """Reject missing, invalid and future amendment dates before checking the state."""
     if value == "future":
-        value = (clock.today() + timedelta(days=1)).isoformat()
+        value = (TODAY + timedelta(days=1)).isoformat()
     assert_rejected(incident["incident_id"], {
         "to": "AmendmentPending", "version": 1,
         "info_available_date": value, "elements": ["nature"],
@@ -391,5 +434,5 @@ def test_amendment_date_today_reaches_state_check(incident):
     """Accept today's date as input, then reject the Phase 4 transition."""
     assert_rejected(incident["incident_id"], {
         "to": "AmendmentPending", "version": 1,
-        "info_available_date": clock.today().isoformat(), "elements": ["nature"],
+        "info_available_date": TODAY.isoformat(), "elements": ["nature"],
     }, ErrorCode.INVALID_TRANSITION)
