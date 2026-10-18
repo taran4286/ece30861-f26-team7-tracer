@@ -1,5 +1,6 @@
-"""server.py's landing page and mounts, and the system's API over HTTP: health check, test
-control, project operations, 405s and 501s, with statuses, error shapes and error order."""
+"""server.py's landing page and mounts, and the system's API over HTTP: status page, health
+check, test control, project operations, 405s and 501s, with statuses, error shapes and error
+order."""
 
 import base64
 import re
@@ -16,6 +17,7 @@ from sqlalchemy.exc import OperationalError
 import app.api as system_api
 import app.db as db
 import app.services.control as control_service
+from app.api import pages
 from app.config import get_settings
 from server import app as server_app
 from tester.spec import response_errors
@@ -89,13 +91,45 @@ def test_health_gives_up_on_a_silent_database(monkeypatch, fresh_settings):
 
 
 @pytest.mark.parametrize("path", ["/system", "/system/"])
-def test_base_url_shows_the_captioned_system_photo(path):
+def test_base_url_shows_the_status_page(path):
     # /system redirects to /system/; TestClient follows it.
     response = client.get(path)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "<p style=\"margin:0;font-size:1.25rem\">Team 7 service</p>" in response.text
-    assert base64.b64encode(system_api.PHOTO.read_bytes()).decode() in response.text
+    assert "<h1>Team 7 — Tracer system</h1>" in response.text
+    assert "Team 7 service" not in response.text
+    assert base64.b64encode(pages.PHOTO.read_bytes()).decode() in response.text
+    assert 'Database: <strong class="ok">reachable</strong>' in response.text
+    assert "Tracer Shared System API 1.1.0-proposed" in response.text
+    for method, path, _ in pages.operations():
+        status = pages.STATUS[(method, path)]
+        assert (f"<td><code>{method}</code></td><td><code>{path}</code></td>"
+                f'<td class="{pages.STATUS_CLASS[status]}">{status}</td>') in response.text
+
+
+def test_status_page_matches_how_each_operation_is_answered():
+    spec = yaml.safe_load(SPEC.read_text(encoding="utf-8"))
+    operations = {(method.upper(), path) for path, item in spec["paths"].items()
+                  for method in item if method in METHODS}
+    assert set(pages.STATUS) == operations
+    # REFUSED and NOT_BUILT are the route tests' lists below, so the page can't drift from them.
+    refused = {(method, template) for method, template, _ in REFUSED}
+    not_built = {(method, template) for method, template, _ in NOT_BUILT}
+    not_built.add(("PATCH", "/test/sessions/{session_id}/settings"))
+    for operation, status in pages.STATUS.items():
+        expected = (pages.REFUSED if operation in refused
+                    else pages.NOT_BUILT if operation in not_built else pages.BUILT)
+        assert status == expected, operation
+
+
+def test_status_page_loads_without_the_database(monkeypatch):
+    def failing_engine():
+        raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+    monkeypatch.setattr(system_api, "get_engine", failing_engine)
+    response = client.get("/system/")
+    assert response.status_code == 200
+    assert 'Database: <strong class="bad">unavailable</strong>' in response.text
 
 
 @pytest.mark.parametrize("method,path", [
@@ -121,6 +155,8 @@ def test_root_links_to_health_system_and_tester():
     assert re.findall(r'href="([^"]*)"', response.text) == ["/system/health", "/system/", "/tester/"]
     for label in ["Health", "System", "Tester"]:
         assert f">{label}</a>" in response.text
+    assert "<h1>Team 7 — Tracer</h1>" in response.text
+    assert "<img" not in response.text
 
 
 # --- The system's API: helpers -------------------------------------------------------------

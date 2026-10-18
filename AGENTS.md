@@ -451,7 +451,7 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 **Vercel (service)**
 
 - Import this GitHub repo as a Vercel project. Production deploys from `main`. The system's base URL is `https://<project>.vercel.app/system` and the tester's is `https://<project>.vercel.app/tester`. Vercel names the production domain after the project, first come first served, so read the actual domain from Settings → Domains.
-- The domain's root, `GET /`, is a landing page in neither spec: buttons link to `/system/health`, `/system/` and `/tester/`. It never touches the database, so it also works on previews.
+- The domain's root, `GET /`, is a landing page in neither spec: the title "Team 7 — Tracer" and buttons to `/system/health`, `/system/` and `/tester/`, in the same colors as the system and tester pages. It never touches the database, so it also works on previews.
 - Set `DATABASE_URL` (as `tracer_app`) and `TESTER_DATABASE_URL` (as `tracer_tester`) in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and neither login role can delete them.
 - Make `DATABASE_URL` and `TESTER_DATABASE_URL` Secret variables (write-only after saving), and redeploy after setting or changing any variable; changes only reach new deployments.
 - Never set `ADMIN_DATABASE_URL` on Vercel: every variable there reaches the running function.

@@ -4,7 +4,7 @@ Our tester service, implementing `tester-openapi.yaml`. `server.py` mounts `test
 
 ## What it serves
 
-- `GET /` returns an HTML page with `tester.png` inlined and captioned "Team 7 tester", so a browser shows the deploy is up; `/tester` without the slash redirects there with a 307. It's outside the spec, and reads the photo per request, so a missing file breaks only this page.
+- `GET /` returns an HTML page (`pages.py`): `tester.png` beside the title "Team 7 — Tracer tester", how to run setup, run and report with the time limits, and a form whose `?session_id=` shows that session's stored report as tables: totals, per-criterion counts, coverage, and every test with its message. Without a session ID it never touches storage, so it also loads on previews; an unknown or unfinished session, or unreachable storage, shows why there's no report. It only reads reports, never starts a run. `/tester` without the slash redirects there with a 307. It's outside the spec, and reads the photo per request, so a missing file breaks only this page.
 - `POST /test/setup` with `{target_url}` prepares a session on the target and returns 201 `{session_id}` (see "Setup and run"). A `target_url` that isn't an http or https system base URL, or that has a `/test` suffix, a query, a fragment or credentials, gets 400. A target error is passed on with its status, message and source, with `source: "system"` when its body isn't a `TestControlError`. No answer within 20 s gets 500 with `source: "communication"`.
 - `POST /test/run` with `{session_id}` runs every planned case once and returns 200 with the stored `SuiteReport`, failed tests included. A missing or blank `session_id` gets 400, an unknown session 404, and a session that has already started 409. An aborted run stores its partial report and gets 500 with `source: "tester"`.
 - `GET /test/report?session_id=` returns the stored `SuiteReport` of a finished or aborted run and never starts or repeats one. A missing or blank `session_id` gets 400, an unknown session 404, and a session whose run hasn't ended 409.
@@ -66,6 +66,7 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 
 - Never import `app`. The tester checks systems, ours included, only through their HTTP API; `tests/test_tester.py` fails on any `app` import here.
 - Test-control errors carry `message` and `source`, never the project `Error` schema.
+- HTML-escape everything `pages.py` shows from a report or the query: messages quote other teams' systems.
 - The 501 catch-all matches every path, so declare every other route before it.
 - Each storage function is one short transaction. A run never holds a transaction open while it calls the target.
 - Settings are read on first use, not at import, so the tester still loads without `TESTER_DATABASE_URL`. Preview deployments don't have it, so the report route answers 500 there.
