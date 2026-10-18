@@ -152,7 +152,7 @@ def test_another_sessions_incident_is_not_found(incident):
         code=ErrorCode.NOT_FOUND,
         who=in_session(RESPONDER, new_session()),
     )
-    assert get_incident(incident["incident_id"], **BOARD)["evidence"] == []
+    assert get_incident(incident["incident_id"], **BOARD) == incident
 
 
 @pytest.mark.parametrize("state", list(State))
