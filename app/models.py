@@ -81,6 +81,11 @@ class SiemSeverity(StrEnum):
     CRITICAL = "critical"
 
 
+class RegistrantType(StrEnum):
+    DOMESTIC = "Domestic"
+    FPI = "FPI"
+
+
 def _db_enum(enum_cls: type[StrEnum], name: str) -> Enum:
     # Store the enum's values ("8-K Item 1.05"), not its member names (FORM_8K_ITEM_105).
     return Enum(
@@ -98,10 +103,33 @@ UtcDateTime = DateTime(timezone=True)
 # --- Tables ------------------------------------------------------------------
 
 
+class TestSession(Base):
+    """One test session's settings, stored by POST /test/setup and named by X-Test-Run."""
+
+    __tablename__ = "test_sessions"
+    # Not a pytest test class, though its name starts with Test.
+    __test__ = False
+
+    # Supplied by the tester or staff, not generated.
+    session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # Every date rule in the session uses this instant's UTC date as today.
+    test_now: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    registrant_type: Mapped[RegistrantType] = mapped_column(
+        _db_enum(RegistrantType, "registrant_type"), nullable=False
+    )
+    at_risk_threshold_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    llm_base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+
+
 class Incident(Base):
     __tablename__ = "incidents"
 
     incident_id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("inc"))
+    # Lookups find an incident only in the session that created it.
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("test_sessions.session_id"), nullable=False, index=True
+    )
     title: Mapped[str] = mapped_column(Text, nullable=False)
     discovery_date: Mapped[date] = mapped_column(Date, nullable=False)
     state: Mapped[State] = mapped_column(
@@ -162,6 +190,9 @@ class AuditEntry(Base):
     seq: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     entry_id: Mapped[str] = mapped_column(
         Text, unique=True, nullable=False, default=lambda: new_id("aud")
+    )
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("test_sessions.session_id"), nullable=False, index=True
     )
     user_id: Mapped[str] = mapped_column(Text, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)

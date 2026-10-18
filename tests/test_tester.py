@@ -495,7 +495,9 @@ def test_the_tester_role_cannot_delete_sessions():
     assert isinstance(error.value.orig, InsufficientPrivilege)
 
 
-@pytest.mark.parametrize("table", ["incidents", "evidence", "determinations", "audit_entries"])
+@pytest.mark.parametrize(
+    "table", ["test_sessions", "incidents", "evidence", "determinations", "audit_entries"]
+)
 def test_the_tester_role_cannot_read_system_tables(table):
     with pytest.raises(DBAPIError) as error, tester_db.transaction() as tx:
         tx.execute(text(f"SELECT 1 FROM {table}"))

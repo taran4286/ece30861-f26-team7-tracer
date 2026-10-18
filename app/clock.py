@@ -1,6 +1,8 @@
-"""Time helpers. Every date rule uses today(); stored timestamps use utcnow()."""
+"""Time helpers. Every date rule uses today(session); stored timestamps use utcnow()."""
 
 from datetime import UTC, date, datetime
+
+from app.models import TestSession
 
 
 def utcnow() -> datetime:
@@ -8,6 +10,6 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def today() -> date:
-    """The current UTC date. Switches to the run's test_now once test control is added."""
-    return utcnow().date()
+def today(session: TestSession) -> date:
+    """The spec's "today": the UTC date of the session's test_now."""
+    return session.test_now.astimezone(UTC).date()

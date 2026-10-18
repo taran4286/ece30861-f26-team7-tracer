@@ -1,18 +1,28 @@
 """Phase 3 determinations, state transitions and audit retrieval."""
 
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
 
 from app import clock
 from app.audit import audit
-from app.config import RegistrantType, get_settings
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
-from app.models import AuditAction, AuditEntry, Decision, Determination, Evidence, FormType, State
+from app.models import (
+    AuditAction,
+    AuditEntry,
+    Decision,
+    Determination,
+    Evidence,
+    FormType,
+    RegistrantType,
+    State,
+)
 from app.roles import Operation, Role, require_role
 from app.services.incidents import incident_to_dict, load_incident
 from app.services.validation import invalid, parse_date, require_object, require_string
+from app.sessions import load_session
 
 
 # Allowed (current state, requested state) pairs from the Phase 3 guide.
@@ -26,7 +36,7 @@ ALLOWED_TRANSITIONS = frozenset(
 )
 
 
-def _transition_target(body: Any) -> State:
+def _transition_target(body: Any, today: date) -> State:
     """Check the request fields and return the requested state."""
     body = require_object(body)
     target = body.get("to")
@@ -49,7 +59,7 @@ def _transition_target(body: Any) -> State:
     if target == State.AMENDMENT_PENDING:
         # Validate the extra fields before rejecting this Phase 4 transition.
         # TODO: Match the pod contract's element names and uniqueness.
-        if parse_date(body.get("info_available_date"), "info_available_date") > clock.today():
+        if parse_date(body.get("info_available_date"), "info_available_date") > today:
             raise invalid("info_available_date", "info_available_date must not be after today")
         elements = body.get("elements")
         if not isinstance(elements, list) or not elements:
@@ -61,20 +71,21 @@ def _transition_target(body: Any) -> State:
 
 
 def transition_incident(
-    incident_id: str, body: Any, *, user_id: str, role: Role | str
+    incident_id: str, body: Any, *, user_id: str, role: Role | str, session_id: str
 ) -> dict[str, Any]:
     """Apply a requested state change and return the updated incident.
 
     body contains `to` and `version`; user_id identifies the actor in the audit.
     Only DisclosureApprover may transition. The change and audit entry save together.
     """
-    require_role(role, Operation.TRANSITION)
     # Roll back the operation if any step fails.
     with transaction() as tx:
+        session = load_session(tx, session_id)
+        require_role(role, Operation.TRANSITION)
         # Lock the incident so simultaneous requests cannot overwrite each other.
-        incident = load_incident(tx, incident_id, for_update=True)
+        incident = load_incident(tx, incident_id, session_id=session_id, for_update=True)
         # Check existence before input, as required by the error order.
-        target = _transition_target(body)
+        target = _transition_target(body, clock.today(session))
         if (incident.state, target) not in ALLOWED_TRANSITIONS:
             raise TracerError(
                 ErrorCode.INVALID_TRANSITION,
@@ -86,21 +97,25 @@ def transition_incident(
         incident.version += 1
         after = {"state": incident.state.value, "version": incident.version}
         # Save one audit entry in the same transaction as the change.
-        audit(tx, AuditAction.TRANSITION, incident_id, before, after, user_id=user_id)
+        audit(
+            tx, AuditAction.TRANSITION, incident_id, before, after,
+            user_id=user_id, session_id=session_id,
+        )
         return incident_to_dict(tx, incident)
 
 
 def list_audit_entries(
-    incident_id: str, *, user_id: str, role: Role | str
+    incident_id: str, *, user_id: str, role: Role | str, session_id: str
 ) -> dict[str, Any]:
     """Return one incident's audit entries, oldest first. All roles may read.
 
     user_id keeps the common service signature; reads do not create audit entries.
     An unknown incident raises NOT_FOUND; an empty history returns {"entries": []}.
     """
-    require_role(role, Operation.READ)
     with transaction() as tx:
-        load_incident(tx, incident_id)
+        load_session(tx, session_id)
+        require_role(role, Operation.READ)
+        load_incident(tx, incident_id, session_id=session_id)
         # Include all actions for this incident. Order by sequence, since timestamps can tie.
         entries = tx.scalars(
             select(AuditEntry)
@@ -125,23 +140,24 @@ def list_audit_entries(
 
 
 def record_determination(
-    incident_id: str, body: Any, *, user_id: str, role: Role | str
+    incident_id: str, body: Any, *, user_id: str, role: Role | str, session_id: str
 ) -> dict[str, Any]:
     """Record one determination and return the full incident as JSON-ready data.
 
-    Identity headers belong to the future API layer. Service error order is role,
-    incident existence, body validation, then state. Stale versions are accepted.
+    Identity headers belong to the future API layer. Service error order is session,
+    role, incident existence, body validation, then state. Stale versions are accepted.
     """
-    require_role(role, Operation.RECORD_DETERMINATION)
     with transaction() as tx:
-        incident = load_incident(tx, incident_id, for_update=True)
+        session = load_session(tx, session_id)
+        require_role(role, Operation.RECORD_DETERMINATION)
+        incident = load_incident(tx, incident_id, session_id=session_id, for_update=True)
         body = require_object(body)
         value = body.get("decision")
         if not isinstance(value, str) or value not in {d.value for d in Decision}:
             raise invalid("decision", "Expected Material or NotMaterial")
         decision = Decision(value)
         determination_date = parse_date(body.get("determination_date"), "determination_date")
-        if not incident.discovery_date <= determination_date <= clock.today():
+        if not incident.discovery_date <= determination_date <= clock.today(session):
             raise invalid("determination_date", "Date must be between discovery and today")
         rationale = require_string(body, "rationale", "rationale")
         refs = body.get("evidence_refs")
@@ -180,7 +196,7 @@ def record_determination(
         if decision == Decision.MATERIAL:
             incident.state = State.DETERMINED_MATERIAL
             incident.required_form = (
-                FormType.FORM_6K if get_settings().registrant_type == RegistrantType.FPI
+                FormType.FORM_6K if session.registrant_type == RegistrantType.FPI
                 else FormType.FORM_8K_ITEM_105
             )
         else:
@@ -193,5 +209,5 @@ def record_determination(
             "determination": {"decision": decision.value, "determination_date": determination_date.isoformat()},
             "required_form": incident.required_form.value if incident.required_form else None,
             "version": incident.version,
-        }, user_id=user_id)
+        }, user_id=user_id, session_id=session_id)
         return incident_to_dict(tx, incident)

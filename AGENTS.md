@@ -53,10 +53,11 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 - `app/models.py`: the tables in Data model and storage.
 - `app/errors.py`: `ErrorCode`, with each code's HTTP status beside it, and a `TracerError` exception carrying the error code, message and field.
 - `app/roles.py`: the `Role` enum, the permission map and `require_role()`.
-- `app/clock.py`: `today()` for every date rule and `utcnow()` for stored timestamps.
+- `app/clock.py`: `today(session)` for every date rule and `utcnow()` for stored timestamps.
+- `app/sessions.py`: `load_session()`, the test session a request names in `X-Test-Run`.
 - `app/audit.py`: the `audit()` helper.
 - `app/api/`: the system's FastAPI app, `system_app`.
-- `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination, transitions and the audit list), with shared body checks in `validation.py`, callable without any web framework. Each operation takes the acting user's ID and role as arguments.
+- `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination, transitions and the audit list), with shared body checks in `validation.py`, callable without any web framework. Each operation takes the acting user's ID and role and the request's session ID as arguments.
 - `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester`, and serves a landing page at `/` (see Deployment).
 - `tester/`: our tester's FastAPI app, `tester_app`, its session storage, and the cross-team test cases it runs against a target system; it never imports `app`.
 - `fixtures/`: the incident, ticketing and SIEM fixtures our tester sends.
@@ -70,7 +71,6 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 - `DATABASE_URL`: the app role's connection, used by the service and tests, e.g. `postgresql+psycopg://tracer_app:pass@127.0.0.1:5432/tracer`.
 - `TESTER_DATABASE_URL`: the tester role's connection, used by the tester's session storage and tests and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_tester:pass@127.0.0.1:5432/tracer`.
 - `ADMIN_DATABASE_URL`: the owner role's connection, used only by `scripts/setup_db.py` and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_owner:pass@127.0.0.1:5432/tracer`.
-- `REGISTRANT_TYPE`: `Domestic` or `FPI`, defaulting to `Domestic`.
 - Commit a `.env.example` with placeholder values; never commit real credentials.
 
 **Local database (Docker)**
@@ -98,12 +98,18 @@ Run these in order when someone asks to set up the project or the local database
 
 ## Cross-cutting rules
 
-Every operation follows these rules. The services apply roles, validation, no partial writes, dates, registrant type and version in error order (see `app/services/AGENTS.md`); the API layer checks identity headers before calling them.
+Every operation follows these rules. The services apply the test session, roles, validation, no partial writes, dates, registrant type and version in error order (see `app/services/AGENTS.md`); the API layer checks identity headers before calling them.
 
 **Identity headers**
 
 - Require `X-User-Id` (non-empty), `X-User-Role` (Responder, DisclosureApprover, Board) and `X-Test-Run` (the test session ID), in that order, on every project route. Test-control routes take no identity headers.
 - Missing or invalid header → 400 `VALIDATION_ERROR` with `field` set to the header name.
+
+**Test sessions**
+
+- `X-Test-Run` names a session stored by `POST /test/setup`, and every project lookup is scoped to it. An unknown session → 404 `NOT_FOUND`, with nothing written.
+- An incident belongs to the session that created it; in any other session it's unknown (404). Evidence and determinations belong to their incident, and each audit entry records its request's session.
+- The session fixes `test_now` and `registrant_type` for every operation in it (see Dates and Registrant type).
 
 **Roles**
 
@@ -113,10 +119,11 @@ Every operation follows these rules. The services apply roles, validation, no pa
 **Error order** (return the first that applies)
 
 1. Missing or invalid headers → 400
-2. Wrong role → 403
-3. Unknown incident (or evidence) → 404
-4. Invalid body → 400
-5. Wrong state → 409
+2. Unknown session → 404
+3. Wrong role → 403
+4. Unknown incident (or evidence) → 404
+5. Invalid body → 400
+6. Wrong state → 409
 
 - Implement as an ordered pipeline so no handler can return these out of order.
 
@@ -134,12 +141,12 @@ Every operation follows these rules. The services apply roles, validation, no pa
 
 **Dates**
 
-- Write one helper `today()` and use it for every date rule. The spec defines today as the date of the run's `test_now`.
+- Use `clock.today(session)`, the UTC date of the session's `test_now`, for every date rule; the spec defines today that way. Never use the real date for one.
 - Use real server time (UTC, NTP-synced) for `imported_at`, `recorded_at` and audit `timestamp`.
 
 **Registrant type**
 
-- Read `registrant_type` (Domestic or FPI) from config.
+- Read `registrant_type` (Domestic or FPI) from the session; it's fixed for the session's life.
 
 **Version**
 
@@ -149,13 +156,25 @@ Every operation follows these rules. The services apply roles, validation, no pa
 
 ## Data model and storage
 
-Four tables hold the system's data; the tester keeps its sessions and reports in a fifth, `tester_sessions` (see `tester/AGENTS.md`). IDs are opaque, globally unique strings (e.g. prefixed UUIDs), and all timestamps are UTC.
+Five tables hold the system's data; the tester keeps its sessions and reports in a sixth, `tester_sessions` (see `tester/AGENTS.md`). IDs are opaque, globally unique strings (e.g. prefixed UUIDs), and all timestamps are UTC.
+
+**test_sessions**
+
+| Field | Type | Rules |
+| --- | --- | --- |
+| session_id | text, primary key | supplied by the tester or staff, not generated |
+| test_now | timestamp, not null | its UTC date is today in the session |
+| registrant_type | RegistrantType enum, not null | fixed for the session |
+| at_risk_threshold_days | integer, not null | |
+| llm_base_url | text, not null | |
+| created_at | timestamp, not null | real server time |
 
 **incidents**
 
 | Field | Type | Rules |
 | --- | --- | --- |
 | incident_id | text, primary key | generated by the server |
+| session_id | text, not null, references test_sessions | the session that created it; indexed |
 | title | text, not null | non-empty |
 | discovery_date | date, not null | not after today |
 | state | State enum, not null | starts as UnderAssessment |
@@ -198,6 +217,7 @@ Four tables hold the system's data; the tester keeps its sessions and reports in
 | --- | --- | --- |
 | seq | bigint identity, primary key | sets "oldest first" order |
 | entry_id | text, unique, not null | generated by the server |
+| session_id | text, not null, references test_sessions | the request's session; indexed |
 | user_id | text, not null | the acting user |
 | timestamp | timestamp, not null | real server time |
 | action | AuditAction enum, not null | |
@@ -211,6 +231,7 @@ Four tables hold the system's data; the tester keeps its sessions and reports in
 - FormType: `8-K Item 1.05`, `8-K Item 8.01`, `6-K`, `8-K/A`.
 - ImpactCategory: operational, financial, legal_regulatory, reputational, data_compromised.
 - AuditAction: create_incident, import_evidence, record_determination, transition. The spec also lists tag_evidence, record_filing, accept_draft and create_group; each is added with its operation.
+- RegistrantType: Domestic, FPI.
 
 **Storage rules**
 
@@ -228,12 +249,13 @@ Three roles keep the grants enforceable: a table's owner can always grant itself
 | Tester (`tracer_tester`) | `TESTER_DATABASE_URL` | No | The tester's session storage and tests |
 
 - `scripts/setup_db.py` runs as the owner, in one transaction, and is safe to re-run. It creates the app and tester roles from the users and passwords in `DATABASE_URL` and `TESTER_DATABASE_URL` if missing, creates the system's and the tester's tables, then applies the grants.
-- Each run resets both login roles, so leftover privileges don't survive: set each one's password from its URL, revoke every role membership it holds, make the owner role the owner of all five tables and their enum types, and revoke all privileges on them from both roles and from `PUBLIC` before granting.
+- Each run resets both login roles, so leftover privileges don't survive: set each one's password from its URL, revoke every role membership it holds, make the owner role the owner of all six tables and their enum types, and revoke all privileges on them from both roles and from `PUBLIC` before granting.
 - Check each login role's attributes in `pg_roles` and fail if `rolsuper`, `rolcreatedb`, `rolcreaterole`, `rolreplication` or `rolbypassrls` is set. Clear them with `ALTER ROLE` only when the owner is a superuser; a managed host's admin user usually can't change these attributes, so there the check fails the run instead.
 - Fail if either login role owns the database or schema `public`: a schema's owner always has CREATE on it and can drop any table in it, which no revoke or table grant check catches. Revoke CREATE on `public` from `PUBLIC` (already the default since Postgres 15).
-- End the run by checking each login role's effective privileges on all five tables with `has_table_privilege` and `has_schema_privilege`, both granted and forbidden ones (including no CREATE on `public`), and fail if any differ; this doubles as the AC-23 demo.
+- End the run by checking each login role's effective privileges on all six tables with `has_table_privilege` and `has_schema_privilege`, both granted and forbidden ones (including no CREATE on `public`), and fail if any differ; this doubles as the AC-23 demo.
 - Grant the app role exactly:
   - USAGE on the schema.
+  - `test_sessions`: SELECT, INSERT.
   - `incidents`: SELECT, INSERT, UPDATE.
   - `evidence`: SELECT, INSERT.
   - `determinations`: SELECT, INSERT.
@@ -241,7 +263,7 @@ Three roles keep the grants enforceable: a table's owner can always grant itself
 - Grant the tester role exactly:
   - USAGE on the schema.
   - `tester_sessions`: SELECT, INSERT, UPDATE.
-- Nothing else: no DELETE or TRUNCATE anywhere, no UPDATE on evidence, determinations or audit_entries, and neither login role gets anything on the other's tables.
+- Nothing else: no DELETE or TRUNCATE anywhere, no UPDATE on test_sessions, evidence, determinations or audit_entries, and neither login role gets anything on the other's tables.
 - Declare `audit_entries.seq` with SQLAlchemy `Identity()`, not a plain autoincrement column; if it ends up as a serial, the app role also needs USAGE on its sequence.
 - Neither the service nor the tester creates tables at startup; their roles can't.
 - The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
@@ -254,8 +276,8 @@ Incidents are created in UnderAssessment at version 1 and are never replaced or 
 **`POST /incidents`** (Responder, DisclosureApprover)
 
 - Require `title` (non-empty string) → else 400 `field: "title"`.
-- Require `discovery_date` as a valid date not after `today()` → else 400 `field: "discovery_date"`; equal to today is valid.
-- Insert with `state: UnderAssessment`, `determination: null`, `required_form: null`, `due_date: null`, `flags: []`, `filings: []`, `evidence: []`, `group_id: null`, `version: 1`.
+- Require `discovery_date` as a valid date not after `today(session)` → else 400 `field: "discovery_date"`; equal to today is valid.
+- Insert in the request's session with `state: UnderAssessment`, `determination: null`, `required_form: null`, `due_date: null`, `flags: []`, `filings: []`, `evidence: []`, `group_id: null`, `version: 1`.
 - Write a `create_incident` audit entry: `before: null`, `after: {state, title, discovery_date, version}`.
 - Return 201 with the full Incident.
 - Board → 403.
@@ -307,12 +329,12 @@ Only a DisclosureApprover can record a determination, only from UnderAssessment,
 
 - Responder or Board → 403, nothing written (AC-08).
 - Require `decision` ∈ {Material, NotMaterial}, `determination_date`, non-empty `rationale`, `evidence_refs` and `version`; a missing field → 400 naming it.
-- Require `determination_date` ≥ `discovery_date` and ≤ `today()`; both boundaries are valid (AC-20).
+- Require `determination_date` ≥ `discovery_date` and ≤ `today(session)`; both boundaries are valid (AC-20).
 - Require `evidence_refs` to have at least one unique ID, each belonging to this incident; an unknown ref or one from another incident → 400 `field: "evidence_refs"`.
 - If `voluntary_disclosure` is present → 501 (see Stubs).
 - State not UnderAssessment → 409 `INVALID_TRANSITION` (checked after body validation, per error order).
 - Set `state` to DeterminedMaterial or DeterminedNotMaterial.
-- Set `required_form` from the configured registrant type: Material + Domestic → `8-K Item 1.05`; Material + FPI → `6-K`; NotMaterial → `null`.
+- Set `required_form` from the session's registrant type: Material + Domestic → `8-K Item 1.05`; Material + FPI → `6-K`; NotMaterial → `null`.
 - Keep `due_date: null` and `flags: []`.
 - Store the determination with `voluntary_disclosure: false` by default, `recorded_by` from `X-User-Id`, and `recorded_at` as server time.
 - Increment `version`.
@@ -350,8 +372,8 @@ Only five moves succeed; every other pair, including staying in the same state, 
 
 Every successful create, import request, determination and transition writes exactly one append-only entry; failed requests write none.
 
-- Write one helper `audit(tx, action, target_id, before, after, *, user_id)` and call it inside the same transaction as the change.
-- Fill `entry_id`, `user_id` from `X-User-Id`, `timestamp` as server time, `action`, `target_id`, `before` and `after`.
+- Write one helper `audit(tx, action, target_id, before, after, *, user_id, session_id)` and call it inside the same transaction as the change.
+- Fill `entry_id`, `session_id` from `X-Test-Run`, `user_id` from `X-User-Id`, `timestamp` as server time, `action`, `target_id`, `before` and `after`.
 - Include `version` in `before` and `after` for incident changes.
 - Use the shapes defined above: `create_incident`, `import_evidence` (one per request), `record_determination`, `transition`.
 - `GET /incidents/{incident_id}/audit` (all roles): return `{"entries": [...]}` oldest first by sequence; unknown incident → 404.
@@ -395,14 +417,14 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 
 - Import this GitHub repo as a Vercel project. Production deploys from `main`. The system's base URL is `https://<project>.vercel.app/system` and the tester's is `https://<project>.vercel.app/tester`. Vercel names the production domain after the project, first come first served, so read the actual domain from Settings → Domains.
 - The domain's root, `GET /`, is a landing page in neither spec: buttons link to `/system/health`, `/system/` and `/tester/`. It never touches the database, so it also works on previews.
-- Set `DATABASE_URL` (as `tracer_app`), `TESTER_DATABASE_URL` (as `tracer_tester`) and `REGISTRANT_TYPE` in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and neither login role can delete them.
+- Set `DATABASE_URL` (as `tracer_app`) and `TESTER_DATABASE_URL` (as `tracer_tester`) in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and neither login role can delete them.
 - Make `DATABASE_URL` and `TESTER_DATABASE_URL` Secret variables (write-only after saving), and redeploy after setting or changing any variable; changes only reach new deployments.
 - Never set `ADMIN_DATABASE_URL` on Vercel: every variable there reaches the running function.
 - On the Hobby plan, only the project's owner sees its variables and logs, and runtime logs are kept for 1 hour.
 - Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
 - Leave Deployment Protection at Standard: the production domain stays public for testers, while preview and deployment-specific URLs need a Vercel login.
 - No `vercel.json` is needed: the Hobby plan's default function limit of 300 s already covers the tester's longest request.
-- After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached, a setting is missing or invalid (no `DATABASE_URL`, or a `REGISTRANT_TYPE` other than Domestic or FPI), or the URL names a driver we don't install (a bare `postgresql://`); the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
+- After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached, `DATABASE_URL` is missing, or the URL names a driver we don't install (a bare `postgresql://`); the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
 - The server clock (UTC, NTP-synced, for AC-02's ±5 s) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 
 ## Settled decisions
@@ -414,6 +436,12 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 ## Tests to write
 
 Write pytest tests against the service modules using a real local Postgres database. Every rejection test also checks that stored data is unchanged; HTTP-level tests (status codes, headers, error order) go in `tests/test_server.py`.
+
+**Sessions**
+
+- Every operation gets `NOT_FOUND` for an unknown session before the role is checked, and for another session's incident, with nothing written.
+- Today is the UTC date of the session's `test_now`, and a session's registrant type sets `required_form`.
+- Each new incident and audit entry records its request's session.
 
 **Incidents**
 

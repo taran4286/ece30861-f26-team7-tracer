@@ -11,12 +11,17 @@ from tests.helpers import (
     APPROVER,
     BOARD,
     RESPONDER,
+    SESSION_ID,
     alert,
     audit_entries,
+    in_session,
+    new_session,
     set_state,
     table_counts,
     ticket,
 )
+
+pytestmark = pytest.mark.usefixtures("default_session")
 
 
 def _rejected(incident_id, body, code=ErrorCode.VALIDATION_ERROR, field=None, who=RESPONDER):
@@ -136,6 +141,20 @@ def test_role_is_checked_before_the_incident():
     _rejected("inc_missing", {}, code=ErrorCode.FORBIDDEN_ROLE, who=BOARD)
 
 
+def test_unknown_session_is_not_found_before_the_role():
+    _rejected("inc_missing", {}, code=ErrorCode.NOT_FOUND, who=in_session(BOARD, "pytest-missing"))
+
+
+def test_another_sessions_incident_is_not_found(incident):
+    _rejected(
+        incident["incident_id"],
+        {"source": "siem", "items": [alert()]},
+        code=ErrorCode.NOT_FOUND,
+        who=in_session(RESPONDER, new_session()),
+    )
+    assert get_incident(incident["incident_id"], **BOARD) == incident
+
+
 @pytest.mark.parametrize("state", list(State))
 def test_import_works_in_every_state_and_keeps_the_version(incident, state):
     incident_id = incident["incident_id"]
@@ -157,13 +176,15 @@ def test_each_import_writes_one_audit_entry(incident):
         "evidence"
     ]
     entries = [e for e in audit_entries(incident_id) if e.action == AuditAction.IMPORT_EVIDENCE]
-    assert [(e.user_id, e.before, e.after) for e in entries] == [
+    assert [(e.session_id, e.user_id, e.before, e.after) for e in entries] == [
         (
+            SESSION_ID,
             RESPONDER["user_id"],
             None,
             {"source": "ticketing", "evidence_ids": [e["evidence_id"] for e in first]},
         ),
         (
+            SESSION_ID,
             APPROVER["user_id"],
             None,
             {"source": "siem", "evidence_ids": [e["evidence_id"] for e in second]},

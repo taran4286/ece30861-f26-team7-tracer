@@ -4,9 +4,9 @@ The root "Tests to write" section lists what each area must cover; this file cov
 
 | File | Covers |
 | --- | --- |
-| `conftest.py` | The `incident` fixture: a fresh UnderAssessment incident created by a Responder |
-| `helpers.py` | Acting users (`RESPONDER`, `APPROVER`, `BOARD`), `ticket()` and `alert()` item builders, `table_counts()`, `audit_entries()` and `set_state()` |
-| `test_incidents.py` | `app/services/incidents.py`: create and get |
+| `conftest.py` | The `default_session` fixture, which stores `SESSION_ID` once per test run, and the `incident` fixture: a fresh UnderAssessment incident created by a Responder in that session |
+| `helpers.py` | Acting users (`RESPONDER`, `APPROVER`, `BOARD`), all working in `SESSION_ID`, whose `test_now` is `TEST_NOW` and whose today is `TODAY` (2026-10-05); `new_session()` and `in_session()` for other sessions; `ticket()` and `alert()` item builders, `table_counts()`, `audit_entries()` and `set_state()` |
+| `test_incidents.py` | `app/services/incidents.py`: create and get, session scoping and the session's today |
 | `test_evidence.py` | `app/services/evidence.py`: import, normalization and all-or-nothing rejection |
 | `test_workflow.py` | Determinations, all state targets from each state the workflow reaches, date/error order, version handling, preservation, audit rollback and retrieval, the AC-09 materiality-write guardrail, and NUL-character rejection on create and import |
 | `test_server.py` | `server.py`'s landing page and mounts, captioned photo, health check, catch-all, and explicit audit 405 / standalone 501 responses with header, role and no-database checks |
@@ -27,7 +27,10 @@ The root "Tests to write" section lists what each area must cover; this file cov
 - A test that rejects a writing call checks the error code and the `field`, that `table_counts()` is unchanged and, for a call on an existing incident, that the incident reads back the same, since counts can't see changed rows.
 - The placeholder route tests instead use the `no_database` fixture, which fails the test if `db.get_engine` or `db._session_factory` is called. The generic catch-all tests exclude the explicit audit 405 methods.
 - To put an incident straight into a state without the workflow, use `set_state()`; it changes only `state` and writes no audit entry.
-- A test that changes a setting or the environment clears the three cached objects before and after (see `app/AGENTS.md`): the `fresh_settings` fixture in `test_server.py`, `clear_caches()` in `test_workflow.py`.
+- Every service operation needs a stored session, so each service test file starts with `pytestmark = pytest.mark.usefixtures("default_session")`; a new one does the same.
+- Date checks compare against `TODAY`, or against the date of a session made with `new_session(test_now=...)`, never the real date.
+- A test that needs other session settings, such as FPI, makes its own session with `new_session()` and acts in it through `in_session()`; never change a stored session. Make it before taking `table_counts()`, since it writes a row.
+- A test that changes a setting or the environment clears the three cached objects before and after (see `app/AGENTS.md`), as the `fresh_settings` fixture in `test_server.py` does.
 - pytest collects every function whose name starts with `test` and every class whose name starts with `Test` in a test file, imported ones included, and `tester_…` and `Tester…` names match. Import the module instead, e.g. `from tester import db as tester_db`, not `TesterSettings` or a `tester_…` alias.
 - `FakeSystem` stands in for a target system, not for our service; never test `app` through it. When a case's expected answer changes, change `FakeSystem` to match, and when a case is added to catch a fault, add that fault to `BUGS` and a test that the case fails on it.
 - The setup and run route tests point the runner at `FakeSystem` by patching `tester.runner.client_for`, and patch `tester.runner.planned` to a few cases when a test doesn't need the full suite. One module-scoped fixture, `finished`, does the only full run.

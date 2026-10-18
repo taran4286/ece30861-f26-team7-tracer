@@ -1,16 +1,54 @@
 """Shared test data and database checks for the service tests."""
 
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select, update
 
+from app.clock import utcnow
 from app.db import transaction
-from app.models import AuditEntry, Determination, Evidence, Incident, State
+from app.models import (
+    AuditEntry,
+    Determination,
+    Evidence,
+    Incident,
+    RegistrantType,
+    State,
+    TestSession,
+)
 from app.roles import Role
 
-RESPONDER = {"user_id": "u-responder", "role": Role.RESPONDER}
-APPROVER = {"user_id": "u-approver", "role": Role.DISCLOSURE_APPROVER}
-BOARD = {"user_id": "u-board", "role": Role.BOARD}
+# The session the acting users below work in; conftest's default_session stores it.
+SESSION_ID = f"pytest-{uuid.uuid4().hex}"
+# The spec's default test_now, so "today" in that session is 2026-10-05.
+TEST_NOW = datetime(2026, 10, 5, 15, tzinfo=UTC)
+TODAY = TEST_NOW.date()
+
+RESPONDER = {"user_id": "u-responder", "role": Role.RESPONDER, "session_id": SESSION_ID}
+APPROVER = {"user_id": "u-approver", "role": Role.DISCLOSURE_APPROVER, "session_id": SESSION_ID}
+BOARD = {"user_id": "u-board", "role": Role.BOARD, "session_id": SESSION_ID}
+
+
+def new_session(session_id: str | None = None, **settings: Any) -> str:
+    """Store a test session with the spec's defaults, overridden by `settings`; returns its ID."""
+    session_id = session_id or f"pytest-{uuid.uuid4().hex}"
+    defaults = {
+        "test_now": TEST_NOW,
+        "registrant_type": RegistrantType.DOMESTIC,
+        "at_risk_threshold_days": 7,
+        "llm_base_url": "https://llm.invalid/v1",
+    }
+    with transaction() as tx:
+        tx.add(TestSession(
+            session_id=session_id, created_at=utcnow(), **{**defaults, **settings}
+        ))
+    return session_id
+
+
+def in_session(who: dict[str, Any], session_id: str) -> dict[str, Any]:
+    """An acting user from above, working in another session."""
+    return {**who, "session_id": session_id}
 
 
 def ticket(n: int = 1, **overrides: Any) -> dict[str, Any]:
@@ -37,7 +75,7 @@ def table_counts() -> dict[str, int]:
     with transaction() as tx:
         return {
             model.__tablename__: tx.scalar(select(func.count()).select_from(model))
-            for model in (Incident, Evidence, Determination, AuditEntry)
+            for model in (TestSession, Incident, Evidence, Determination, AuditEntry)
         }
 
 

@@ -26,7 +26,7 @@ from sqlalchemy.exc import DBAPIError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db import Base  # noqa: E402
-from app.models import AuditEntry, Determination, Evidence, Incident  # noqa: E402
+from app.models import AuditEntry, Determination, Evidence, Incident, TestSession  # noqa: E402
 from tester.db import Base as TesterBase  # noqa: E402
 from tester.models import StoredSession  # noqa: E402
 
@@ -34,6 +34,7 @@ SCHEMA = "public"
 
 # Exactly what the app role gets (REQ-22). No DELETE or TRUNCATE anywhere.
 GRANTS: dict[str, frozenset[str]] = {
+    TestSession.__tablename__: frozenset({"SELECT", "INSERT"}),
     Incident.__tablename__: frozenset({"SELECT", "INSERT", "UPDATE"}),
     # Phase 4 adds UPDATE for tagging.
     Evidence.__tablename__: frozenset({"SELECT", "INSERT"}),
