@@ -14,7 +14,7 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 | `app/AGENTS.md` | Foundation modules: config, db, models, errors, roles, clock and audit |
 | `app/api/AGENTS.md` | The system's FastAPI app: the photo page, health check, `stubs.py` placeholders and the 501 catch-all |
 | `app/services/AGENTS.md` | Business logic and the steps every operation follows |
-| `tester/AGENTS.md` | Our tester's FastAPI app and the rule that it never imports `app` |
+| `tester/AGENTS.md` | Our tester's FastAPI app, its session storage and cross-team test cases, and the rule that it never imports `app` |
 | `fixtures/AGENTS.md` | The incident, ticketing and SIEM fixtures our tester sends |
 | `tests/AGENTS.md` | The pytest suite: its files, shared helpers and fixtures, and how to run it |
 | `scripts/AGENTS.md` | How `setup_db.py` is built and what to update when changing it |
@@ -40,6 +40,7 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 
 - Python 3.12, PostgreSQL, SQLAlchemy 2.0 with psycopg 3, pydantic-settings and pytest.
 - FastAPI for the system's API layer and for the tester, both served by `server.py`.
+- httpx2 for the tester's calls to target systems, and jsonschema with PyYAML to check their responses against `system-openapi.yaml`.
 - Vercel runs the deployed service and Neon hosts its Postgres (see Deployment).
 - Dependencies are declared in `pyproject.toml`.
 
@@ -57,11 +58,11 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 - `app/api/`: the system's FastAPI app, `system_app`.
 - `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination, transitions and the audit list), with shared body checks in `validation.py`, callable without any web framework. Each operation takes the acting user's ID and role as arguments.
 - `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester` (see Deployment).
-- `tester/`: our tester's FastAPI app, `tester_app`; it never imports `app`.
+- `tester/`: our tester's FastAPI app, `tester_app`, its session storage, and the cross-team test cases it runs against a target system; it never imports `app`.
 - `fixtures/`: the incident, ticketing and SIEM fixtures our tester sends.
 - `scripts/setup_db.py`: creates the app and tester roles, the tables and the grants (see Database roles).
 - `docker-compose.yml`: the local Postgres (see Local database).
-- `tests/`: one test file per service module (`validation.py` is covered through them), plus `test_server.py` and `test_tester.py` for the deployed apps.
+- `tests/`: one test file per service module (`validation.py` is covered through them), plus `test_server.py` and `test_tester.py` for the deployed apps and `test_tester_cases.py` for the tester's cases.
 - `.github/`: CI workflows and their scripts, including the `AGENTS.md` check.
 
 **Config** (environment variables, loaded from a git-ignored `.env`)
