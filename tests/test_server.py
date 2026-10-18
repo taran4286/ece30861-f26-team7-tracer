@@ -1,6 +1,7 @@
-"""server.py's mounts, the system's health check and its 501 stub."""
+"""server.py's landing page and mounts, the system's health check and its 501 stub."""
 
 import base64
+import re
 import socket
 import time
 
@@ -103,8 +104,13 @@ def test_other_system_paths_return_501(method, path):
     assert "field" not in body
 
 
-def test_root_serves_nothing():
-    assert client.get("/").status_code == 404
+def test_root_links_to_health_system_and_tester():
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert re.findall(r'href="([^"]*)"', response.text) == ["/system/health", "/system/", "/tester/"]
+    for label in ["Health", "System", "Tester"]:
+        assert f">{label}</a>" in response.text
 
 
 HEADERS = {"X-User-Id": "stub-reader", "X-User-Role": "Responder", "X-Test-Run": "stub-run"}
