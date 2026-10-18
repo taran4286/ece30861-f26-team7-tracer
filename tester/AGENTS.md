@@ -5,8 +5,11 @@ Our tester service, implementing `tester-openapi.yaml`. `server.py` mounts `test
 ## What it serves
 
 - `GET /` returns an HTML page with `tester.png` inlined and captioned "Team 7 tester", so a browser shows the deploy is up; `/tester` without the slash redirects there with a 307. It's outside the spec, and reads the photo per request, so a missing file breaks only this page.
-- `GET /test/report?session_id=` returns the stored `SuiteReport` of a finished or aborted run and never starts or repeats one. A missing or blank `session_id` gets 400, an unknown session 404, a session whose run hasn't ended 409, and unreachable storage 500, each with `source: "tester"`.
-- Any other GET, POST, PUT, PATCH or DELETE request, including the spec's `/test/setup` and `/test/run`, returns 501 `{"message": "/<path> is not implemented", "source": "tester"}`, the spec's `TestControlError` shape.
+- `POST /test/setup` with `{target_url}` prepares a session on the target and returns 201 `{session_id}` (see "Setup and run"). A `target_url` that isn't an http or https system base URL, or that has a `/test` suffix, a query, a fragment or credentials, gets 400. A target error is passed on with its status, message and source, with `source: "system"` when its body isn't a `TestControlError`. No answer within 20 s gets 500 with `source: "communication"`.
+- `POST /test/run` with `{session_id}` runs every planned case once and returns 200 with the stored `SuiteReport`, failed tests included. A missing or blank `session_id` gets 400, an unknown session 404, and a session that has already started 409. An aborted run stores its partial report and gets 500 with `source: "tester"`.
+- `GET /test/report?session_id=` returns the stored `SuiteReport` of a finished or aborted run and never starts or repeats one. A missing or blank `session_id` gets 400, an unknown session 404, and a session whose run hasn't ended 409.
+- On all three, unreachable storage gets 500 "Tester storage is unavailable" and any other fault in our code 500 "Tester fault: …", both with `source: "tester"`.
+- Any other GET, POST, PUT, PATCH or DELETE request returns 501 `{"message": "/<path> is not implemented", "source": "tester"}`, the spec's `TestControlError` shape.
 - GET and HEAD on FastAPI's generated `/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json` also answer, and other methods such as `HEAD` and `OPTIONS` elsewhere get FastAPI's 405; both are outside the spec.
 
 ## Session storage
@@ -27,15 +30,29 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 3. `finish_run` stores the report and moves `running` to `finished` or `aborted`, committing before it returns. It changes only a running session, so a stored report is never replaced; any other call is a tester bug and raises 500.
 4. `get_report` returns the stored report: 404 for an unknown session, 409 while it's `ready` or `running`.
 
+## Setup and run
+
+`runner.py` does the work behind the setup and run routes, which call it in FastAPI's thread pool because it blocks on the target and the database.
+
+- `prepare(target_url)` generates a session ID (`t7-` and a UUID), sends `{session_id, setup: {}}` to the target's `/test/setup` with a 20 s timeout (`SETUP_TIMEOUT_SECONDS`), and stores the session as `ready` only after a 201 that names that ID.
+- `run_session(session_id)` builds the case list with `planned()`, starts the run with `start_run`, runs the cases through `run_cases`, builds the report and checks it with `report_problems`, then stores it with `finish_run`. Planning reads the fixture files, so it comes before `start_run`: if it fails, the session stays `ready`.
+- The run's `Target` gets a deadline 105 s after the run starts (`CALL_CUTOFF_SECONDS`), inside the 130 s run limit. After it, `Target.call` sends nothing and raises `Stopped`; `run_cases` records that case as an `error` from the tester and every later case as `skip`, and the run is aborted. The coverage request isn't held to the deadline.
+- Coverage counts what the run exercised, not what passed:
+  - `code` is the target's own measure from `GET /test/report?session_id=`. It becomes null counts with the reason in `basis` when that request gets no answer, a status other than 200, a body that breaks the spec, or more covered than total.
+  - `component` counts the system spec's 7 tags with at least one request in `Target.called`.
+  - `system` counts the criteria, by test ID prefix, with at least one case not skipped.
+- `report_problems` checks a report against `SuiteReport` in `tester-openapi.yaml`, plus the rules the schema can't express: every planned test appears once, test IDs are unique, and `covered` is never above `total`. A report that fails is a tester bug: it's stored as `aborted` and the run gets 500.
+- A fault after `start_run` outside the cases, the report check included, also stores an aborted report, with the cases' results if they all ran and every case skipped otherwise, so the session never stays `running`.
+
 ## Cross-team test cases
 
-`cases.run_suite(target)` runs every planned case, in order, against one prepared session of a target system and returns one `TestResult` per case. No route calls it; `tests/test_tester_cases.py` runs it against `tests/fake_system.py`.
+`cases.planned()` lists every case in run order. `runner.run_session` runs them against a prepared session, and `tests/test_tester_cases.py` runs them against `tests/fake_system.py`.
 
 | Module | Does |
 | --- | --- |
-| `client.py` | `Target`: sends a call to the target's base URL with `X-Test-Run`, `X-User-Id` and `X-User-Role` and a 10 s timeout, no retry, and checks the reply against the spec; `Actor` holds the identity headers |
-| `spec.py` | Loads `system-openapi.yaml` from the repo root and checks JSON against its schemas, `date` and `date-time` formats included |
-| `suite.py` | `run_cases()`, the outcome rules, `expect()`, and `Run`: shared setups (`once`, `forget`) and the snapshot baseline for "stored data unchanged" checks |
+| `client.py` | `Target`: sends a call to the target's base URL with `X-Test-Run`, `X-User-Id` and `X-User-Role` and a 10 s timeout, no retry, and checks the reply against the spec. It records each (method, template) it sends in `called`, refuses calls after its deadline with `Stopped`, and asks for the session's coverage report with `coverage()`. `Actor` holds the identity headers |
+| `spec.py` | Loads `system-openapi.yaml` and `tester-openapi.yaml` from the repo root and checks JSON against their schemas, `date` and `date-time` formats included; also gives the system spec's tags and each operation's tags |
+| `suite.py` | `run_cases()`, the outcome rules (a `Stopped` case is an error from the tester and the rest are skipped), `expect()`, and `Run`: shared setups (`once`, `forget`) and the snapshot baseline for "stored data unchanged" checks |
 | `cases.py` | The cases, by criterion: AC-02, 03, 07, 08, 20, 06, 09 (a), 23 (a)–(c), then 01, each with normal cases and edge cases |
 
 - Outcomes: `pass` when the reply meets the pass rule, an expected 403, 404 or 409 included. `fail` when it doesn't, including a body that breaks its spec schema and a 501 on a route the case needs. `error` with `source: system` for any other 5xx, `communication` when no response arrives, and `tester` for a fault in our code. `skip` for a case not run.
@@ -57,5 +74,6 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 - Check only what the spec states. It sets no order between errors, so each rejection case's request has one thing wrong with it. No case checks due dates or flags.
 - Dates in the cases assume the session's `test_now` is the spec's default, 2026-10-05T15:00:00Z (`TODAY` in `cases.py`), so the runner's setup must send `setup: {}`.
 - Make every project call through `Run.call`, never `Target.call`: it ends the saved snapshot baseline, so a rejection is never compared with stale data.
+- Build HTTP clients for a target only through `runner.client_for`, so tests can serve `FakeSystem` there instead of the network.
 - Test IDs are stable and unique, and start with their criterion (`AC-06-DM-to-Closed`); reports from both teams are compared by them.
 - `spec.py` and the cases read `system-openapi.yaml` and `fixtures/` when first needed, so a missing file fails only the run, not the app.

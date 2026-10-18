@@ -1,8 +1,9 @@
 """HTTP access to one target system for one test session."""
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx2
 
@@ -30,6 +31,10 @@ class TargetError(Exception):
         self.message = message
 
 
+class Stopped(Exception):
+    """The run passed its deadline, so this call was never sent."""
+
+
 @dataclass
 class Reply:
     label: str
@@ -49,12 +54,17 @@ class Target:
     """Sends project and test-control calls to a system base URL as one session.
 
     `http` is an httpx2 client whose base URL is the system base URL. Every reply is
-    checked against the spec's schema for its operation and status.
+    checked against the spec's schema for its operation and status. `deadline` is a
+    `time.monotonic()` value after which `call` sends nothing; `called` records each
+    (method, template) sent, for component coverage.
     """
 
-    def __init__(self, http: httpx2.Client, session_id: str):
+    def __init__(self, http: httpx2.Client, session_id: str, deadline: float | None = None):
         self.http = http
         self.session_id = session_id
+        self.deadline = deadline
+        self.stopped = False
+        self.called: set[tuple[str, str]] = set()
 
     def call(
         self,
@@ -67,10 +77,40 @@ class Target:
     ) -> Reply:
         """Send one call; `template` is the spec path, filled from `path`.
 
-        Raises TargetError("communication") when no response arrives.
+        Raises Stopped once the deadline has passed, and TargetError("communication") when no
+        response arrives.
         """
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            self.stopped = True
+            raise Stopped(f"{method} {template} wasn't sent: the run reached its time limit")
+        return self._send(method, template, actor, json=json, path=path)
+
+    def coverage(self) -> Reply:
+        """The session's code coverage report (TEST-02).
+
+        Not held to the deadline: the run asks for it after its last case, aborted or not.
+        """
+        return self._send("GET", "/test/report", None, query={"session_id": self.session_id})
+
+    def snapshot(self) -> Reply:
+        """The session's stored incidents, groups and audit entries (TEST-06)."""
+        return self.call("GET", "/test/report/{run_id}", None, run_id=self.session_id)
+
+    def _send(
+        self,
+        method: str,
+        template: str,
+        actor: Actor | None,
+        *,
+        json: Any = NO_BODY,
+        path: dict[str, str] | None = None,
+        query: dict[str, str] | None = None,
+    ) -> Reply:
         label = f"{method} {template}"
-        url = template.format(**{k: quote(str(v), safe="") for k, v in path.items()})
+        self.called.add((method, template))
+        url = template.format(**{k: quote(str(v), safe="") for k, v in (path or {}).items()})
+        if query:
+            url += f"?{urlencode(query)}"
         headers = {}
         if actor is not None:
             # Project calls carry the session; test-control calls take no identity headers.
@@ -95,7 +135,3 @@ class Target:
             return Reply(label, response.status_code, response.headers, None, ["body is not JSON"])
         errors = response_errors(method, template, response.status_code, body)
         return Reply(label, response.status_code, response.headers, body, errors)
-
-    def snapshot(self) -> Reply:
-        """The session's stored incidents, groups and audit entries (TEST-06)."""
-        return self.call("GET", "/test/report/{run_id}", None, run_id=self.session_id)
