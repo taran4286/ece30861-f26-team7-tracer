@@ -59,7 +59,7 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 - `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester` (see Deployment).
 - `tester/`: our tester's FastAPI app, `tester_app`; it never imports `app`.
 - `fixtures/`: the incident, ticketing and SIEM fixtures our tester sends.
-- `scripts/setup_db.py`: creates the app role, the tables and the grants (see Database roles).
+- `scripts/setup_db.py`: creates the app and tester roles, the tables and the grants (see Database roles).
 - `docker-compose.yml`: the local Postgres (see Local database).
 - `tests/`: one test file per service module (`validation.py` is covered through them), plus `test_server.py` and `test_tester.py` for the deployed apps.
 - `.github/`: CI workflows and their scripts, including the `AGENTS.md` check.
@@ -67,6 +67,7 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 **Config** (environment variables, loaded from a git-ignored `.env`)
 
 - `DATABASE_URL`: the app role's connection, used by the service and tests, e.g. `postgresql+psycopg://tracer_app:pass@127.0.0.1:5432/tracer`.
+- `TESTER_DATABASE_URL`: the tester role's connection, used by the tester's session storage and tests and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_tester:pass@127.0.0.1:5432/tracer`.
 - `ADMIN_DATABASE_URL`: the owner role's connection, used only by `scripts/setup_db.py` and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_owner:pass@127.0.0.1:5432/tracer`.
 - `REGISTRANT_TYPE`: `Domestic` or `FPI`, defaulting to `Domestic`.
 - Commit a `.env.example` with placeholder values; never commit real credentials.
@@ -76,8 +77,8 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 - Run Postgres locally with `docker compose up -d` from a committed `docker-compose.yml`; everyone uses it, so tests run against the same Postgres version.
 - Use the `postgres:18` image, publish port 5432 on loopback only (`127.0.0.1:5432:5432`; Docker otherwise listens on every host address), and keep data in a named volume so it survives restarts; `docker compose down -v` wipes it.
 - Read `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` from `.env`, with placeholders in `.env.example`.
-- The container's `POSTGRES_USER` is the owner role: point `ADMIN_DATABASE_URL` at it, then run `python scripts/setup_db.py` to create `tracer_app`, the tables and the grants.
-- Point `DATABASE_URL` at the container as `tracer_app`, never as `POSTGRES_USER`; it's a superuser and skips every permission check.
+- The container's `POSTGRES_USER` is the owner role: point `ADMIN_DATABASE_URL` at it, then run `python scripts/setup_db.py` to create `tracer_app`, `tracer_tester`, the tables and the grants.
+- Point `DATABASE_URL` and `TESTER_DATABASE_URL` at the container as `tracer_app` and `tracer_tester`, never as `POSTGRES_USER`; it's a superuser and skips every permission check.
 
 **Local setup steps**
 
@@ -87,10 +88,10 @@ Run these in order when someone asks to set up the project or the local database
 2. Install the project into a virtual environment: `python -m venv .venv`, activate it, then `pip install -e ".[dev]"`.
 3. If `.env` doesn't exist, copy `.env.example` to `.env` and replace each `change-me-*` placeholder with a random value, e.g. `python -c "import secrets; print(secrets.token_urlsafe(24))"`. The owner password appears twice (`POSTGRES_PASSWORD` and `ADMIN_DATABASE_URL`) and must match; URL-safe values need no escaping. Never print, commit or overwrite an existing `.env`.
 4. Start the database with `docker compose up -d` and wait until `docker compose ps` shows `healthy`.
-5. Run `python scripts/setup_db.py`. It prints the app role's privileges; judge the result by the exit code. 0 is success, and the last line starts with `setup_db: done;`. 1 is failure, and the error message says what went wrong; once the script has reached the database, it also says whether anything was changed.
+5. Run `python scripts/setup_db.py`. It prints the app and tester roles' privileges; judge the result by the exit code. 0 is success, and the last line starts with `setup_db: done;`. 1 is failure, and the error message says what went wrong; once the script has reached the database, it also says whether anything was changed.
 
 - Re-run `scripts/setup_db.py` after adding a table or changing the grants; it is safe to re-run.
-- A re-run only creates missing tables and types; it doesn't alter existing ones. After changing a column or an enum's values in `app/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Deployment).
+- A re-run only creates missing tables and types; it doesn't alter existing ones. After changing a column or an enum's values in `app/models.py` or `tester/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Deployment).
 - `docker compose stop` keeps the data; `docker compose down -v` wipes it, after which steps 4 and 5 rebuild it.
 - The image reads `POSTGRES_PASSWORD` only when it initializes an empty volume, so changing it later has no effect: wipe with `docker compose down -v` and redo steps 4 and 5.
 
@@ -147,7 +148,7 @@ Every operation follows these rules. The services apply roles, validation, no pa
 
 ## Data model and storage
 
-Four tables hold everything. IDs are opaque, globally unique strings (e.g. prefixed UUIDs), and all timestamps are UTC.
+Four tables hold the system's data; the tester keeps its sessions and reports in a fifth, `tester_sessions` (see `tester/AGENTS.md`). IDs are opaque, globally unique strings (e.g. prefixed UUIDs), and all timestamps are UTC.
 
 **incidents**
 
@@ -217,27 +218,31 @@ Four tables hold everything. IDs are opaque, globally unique strings (e.g. prefi
 
 **Database roles**
 
-Two roles keep the REQ-22 grants enforceable: a table's owner can always grant itself more, and a superuser skips permission checks, so the service must never connect as either.
+Three roles keep the grants enforceable: a table's owner can always grant itself more, and a superuser skips permission checks, so neither the service nor the tester may connect as either.
 
 | Role | Connects via | Owns the tables | Used by |
 | --- | --- | --- | --- |
 | Owner (e.g. `tracer_owner`) | `ADMIN_DATABASE_URL` | Yes | `scripts/setup_db.py` only |
 | App (`tracer_app`) | `DATABASE_URL` | No | The service and tests |
+| Tester (`tracer_tester`) | `TESTER_DATABASE_URL` | No | The tester's session storage and tests |
 
-- `scripts/setup_db.py` runs as the owner, in one transaction, and is safe to re-run. It creates the app role from the user and password in `DATABASE_URL` if missing, runs `Base.metadata.create_all`, then applies the grants.
-- Each run resets the app role, so leftover privileges don't survive: set its password from `DATABASE_URL`, revoke every role membership it holds, make the owner role the owner of the four tables and their enum types, and revoke all privileges on them from the app role and from `PUBLIC` before granting.
-- Check the app role's attributes in `pg_roles` and fail if `rolsuper`, `rolcreatedb`, `rolcreaterole`, `rolreplication` or `rolbypassrls` is set. Clear them with `ALTER ROLE` only when the owner is a superuser; a managed host's admin user usually can't change these attributes, so there the check fails the run instead.
-- Fail if the app role owns the database or schema `public`: a schema's owner always has CREATE on it and can drop any table in it, which no revoke or table grant check catches. Revoke CREATE on `public` from `PUBLIC` (already the default since Postgres 15).
-- End the run by checking the app role's effective privileges with `has_table_privilege` and `has_schema_privilege`, both granted and forbidden ones (including no CREATE on `public`), and fail if any differ; this doubles as the AC-23 demo.
+- `scripts/setup_db.py` runs as the owner, in one transaction, and is safe to re-run. It creates the app and tester roles from the users and passwords in `DATABASE_URL` and `TESTER_DATABASE_URL` if missing, creates the system's and the tester's tables, then applies the grants.
+- Each run resets both login roles, so leftover privileges don't survive: set each one's password from its URL, revoke every role membership it holds, make the owner role the owner of all five tables and their enum types, and revoke all privileges on them from both roles and from `PUBLIC` before granting.
+- Check each login role's attributes in `pg_roles` and fail if `rolsuper`, `rolcreatedb`, `rolcreaterole`, `rolreplication` or `rolbypassrls` is set. Clear them with `ALTER ROLE` only when the owner is a superuser; a managed host's admin user usually can't change these attributes, so there the check fails the run instead.
+- Fail if either login role owns the database or schema `public`: a schema's owner always has CREATE on it and can drop any table in it, which no revoke or table grant check catches. Revoke CREATE on `public` from `PUBLIC` (already the default since Postgres 15).
+- End the run by checking each login role's effective privileges on all five tables with `has_table_privilege` and `has_schema_privilege`, both granted and forbidden ones (including no CREATE on `public`), and fail if any differ; this doubles as the AC-23 demo.
 - Grant the app role exactly:
   - USAGE on the schema.
   - `incidents`: SELECT, INSERT, UPDATE.
   - `evidence`: SELECT, INSERT.
   - `determinations`: SELECT, INSERT.
   - `audit_entries`: SELECT, INSERT.
-- Nothing else: no DELETE or TRUNCATE anywhere, and no UPDATE on evidence, determinations or audit_entries.
+- Grant the tester role exactly:
+  - USAGE on the schema.
+  - `tester_sessions`: SELECT, INSERT, UPDATE.
+- Nothing else: no DELETE or TRUNCATE anywhere, no UPDATE on evidence, determinations or audit_entries, and neither login role gets anything on the other's tables.
 - Declare `audit_entries.seq` with SQLAlchemy `Identity()`, not a plain autoincrement column; if it ends up as a serial, the app role also needs USAGE on its sequence.
-- The service never creates tables at startup; the app role can't.
+- Neither the service nor the tester creates tables at startup; their roles can't.
 - The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
 - Use `setup_db.py` to create the tables and apply the grants. It can't change an existing table, so a schema change on a deployed database needs a migration (see Deployment).
 
@@ -371,8 +376,8 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 
 - Create the project on neon.com, not through Vercel's Neon integration. The integration sets its own `DATABASE_URL`, pooled and possibly logging in as the owner, and can give each preview deployment its own database branch.
 - Use Postgres 18, matching the local image, in AWS US East (N. Virginia), next to Vercel's default function region `iad1`.
-- The project's `neondb_owner` role is the owner: point `ADMIN_DATABASE_URL` at it. It can create roles but isn't a superuser, so `setup_db.py` can't clear forbidden attributes here and fails instead (see Database roles). It belongs to `neon_superuser`, so it can delete rows in every table; the REQ-22 grants restrict only `tracer_app`.
-- Let `setup_db.py` create `tracer_app`; never create it in the Neon console. Roles made there join `neon_superuser`, which brings BYPASSRLS and write access, including DELETE, to every table, and `neondb_owner` can't alter them, so the run fails. Don't create helper roles there either.
+- The project's `neondb_owner` role is the owner: point `ADMIN_DATABASE_URL` at it. It can create roles but isn't a superuser, so `setup_db.py` can't clear forbidden attributes here and fails instead (see Database roles). It belongs to `neon_superuser`, so it can delete rows in every table; the grants restrict only `tracer_app` and `tracer_tester`.
+- Let `setup_db.py` create `tracer_app` and `tracer_tester`; never create them in the Neon console. Roles made there join `neon_superuser`, which brings BYPASSRLS and write access, including DELETE, to every table, and `neondb_owner` can't alter them, so the run fails. Don't create helper roles there either.
 - Use the direct connection string (the host without `-pooler`). Neon's Connect dialog shows the pooled one by default, so turn off "Connection pooling" there. Change its scheme from `postgresql://` to `postgresql+psycopg://` and keep its query parameters, including `sslmode=require` and `channel_binding=require` when present; with the bare scheme, SQLAlchemy looks for psycopg2, which isn't installed. Our traffic is far below the direct connection limit, and Neon recommends direct connections for schema changes such as `setup_db.py`'s.
 - Neon rejects passwords with less than 60 bits of entropy; one from `secrets.token_urlsafe(24)` passes.
 - The free plan pauses the database after 5 idle minutes and drops its connections. The first request after a pause waits a few hundred milliseconds for it to wake, and `app/db.py` replaces the dropped connections.
@@ -381,15 +386,15 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 **Running `setup_db.py` against Neon**
 
 - Run it from a dev machine before the service first starts and whenever the tables or grants change. Vercel has no separate setup step, so `ADMIN_DATABASE_URL` never goes on Vercel.
-- Set `ADMIN_DATABASE_URL` and `DATABASE_URL` to the Neon URLs as environment variables for that one run, then clear them. Environment variables override `.env`, so `.env` keeps pointing at the local database.
-- Set both: with only one set, the other still comes from `.env` and points at the local database.
+- Set `ADMIN_DATABASE_URL`, `DATABASE_URL` and `TESTER_DATABASE_URL` to the Neon URLs as environment variables for that one run, then clear them. Environment variables override `.env`, so `.env` keeps pointing at the local database.
+- Set all three: any left unset still comes from `.env` and points at the local database.
 - Judge the result by the exit code, as in local setup step 5.
 
 **Vercel (service)**
 
 - Import this GitHub repo as a Vercel project. Production deploys from `main`. The system's base URL is `https://<project>.vercel.app/system` and the tester's is `https://<project>.vercel.app/tester`. Vercel names the production domain after the project, first come first served, so read the actual domain from Settings → Domains.
-- Set `DATABASE_URL` (as `tracer_app`) and `REGISTRANT_TYPE` in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and the app role can't delete them.
-- Make `DATABASE_URL` a Secret variable (write-only after saving), and redeploy after setting or changing any variable; changes only reach new deployments.
+- Set `DATABASE_URL` (as `tracer_app`), `TESTER_DATABASE_URL` (as `tracer_tester`) and `REGISTRANT_TYPE` in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and neither login role can delete them.
+- Make `DATABASE_URL` and `TESTER_DATABASE_URL` Secret variables (write-only after saving), and redeploy after setting or changing any variable; changes only reach new deployments.
 - Never set `ADMIN_DATABASE_URL` on Vercel: every variable there reaches the running function.
 - On the Hobby plan, only the project's owner sees its variables and logs, and runtime logs are kept for 1 hour.
 - Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
