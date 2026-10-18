@@ -57,7 +57,7 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 - `app/audit.py`: the `audit()` helper.
 - `app/api/`: the system's FastAPI app, `system_app`.
 - `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination, transitions and the audit list), with shared body checks in `validation.py`, callable without any web framework. Each operation takes the acting user's ID and role as arguments.
-- `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester` (see Deployment).
+- `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester`, and serves a landing page at `/` (see Deployment).
 - `tester/`: our tester's FastAPI app, `tester_app`, its session storage, and the cross-team test cases it runs against a target system; it never imports `app`.
 - `fixtures/`: the incident, ticketing and SIEM fixtures our tester sends.
 - `scripts/setup_db.py`: creates the app and tester roles, the tables and the grants (see Database roles).
@@ -394,6 +394,7 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 **Vercel (service)**
 
 - Import this GitHub repo as a Vercel project. Production deploys from `main`. The system's base URL is `https://<project>.vercel.app/system` and the tester's is `https://<project>.vercel.app/tester`. Vercel names the production domain after the project, first come first served, so read the actual domain from Settings → Domains.
+- The domain's root, `GET /`, is a landing page in neither spec: buttons link to `/system/health`, `/system/` and `/tester/`. It never touches the database, so it also works on previews.
 - Set `DATABASE_URL` (as `tracer_app`), `TESTER_DATABASE_URL` (as `tracer_tester`) and `REGISTRANT_TYPE` in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and neither login role can delete them.
 - Make `DATABASE_URL` and `TESTER_DATABASE_URL` Secret variables (write-only after saving), and redeploy after setting or changing any variable; changes only reach new deployments.
 - Never set `ADMIN_DATABASE_URL` on Vercel: every variable there reaches the running function.
