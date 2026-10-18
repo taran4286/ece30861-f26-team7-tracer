@@ -8,7 +8,6 @@ fields come from system-openapi.yaml.
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from email.utils import parsedate_to_datetime
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -184,14 +183,6 @@ def rejected(
     return f"{status} {error}{f' on {field}' if field else ''}; stored data unchanged"
 
 
-def server_time(reply: Reply) -> datetime:
-    value = reply.headers.get("date")
-    try:
-        return parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        raise TargetError("system", f"{reply.label} sent no readable Date header: {value!r}")
-
-
 def instant(value: str) -> datetime | None:
     """A spec timestamp as an aware datetime; None when it has no UTC offset."""
     stamp = datetime.fromisoformat(value.upper())
@@ -199,13 +190,23 @@ def instant(value: str) -> datetime | None:
 
 
 def clock_problems(name: str, value: str, reply: Reply) -> list[str]:
+    """Real server time: within 5 s of when the target handled the call.
+
+    The tester can't read the target's clock, so it brackets the call with its own, both being
+    NTP-synced UTC. The response's Date header isn't used: a host can send a stale one, as a
+    Vercel function does on its first reply after sitting idle.
+    """
     stamp = instant(value)
     if stamp is None:
         return [f"{name} {value} has no UTC offset"]
-    gap = abs(stamp - server_time(reply))
-    if gap > CLOCK_TOLERANCE:
-        return [f"{name} {value} is {gap.total_seconds():.0f} s from the response Date "
-                f"{reply.headers['date']}"]
+    if stamp < reply.sent_at - CLOCK_TOLERANCE:
+        gap = (reply.sent_at - stamp).total_seconds()
+        return [f"{name} {value} is {gap:.0f} s before the request was sent at "
+                f"{reply.sent_at.isoformat()}"]
+    if stamp > reply.received_at + CLOCK_TOLERANCE:
+        gap = (stamp - reply.received_at).total_seconds()
+        return [f"{name} {value} is {gap:.0f} s after the response arrived at "
+                f"{reply.received_at.isoformat()}"]
     return []
 
 
@@ -248,7 +249,7 @@ def ac02() -> list[Case]:
                 problems.append(f"imported_by is {evidence['imported_by']}, not {actor.user}")
             problems += clock_problems("imported_at", evidence["imported_at"], reply)
             return problems_or(problems, reply.label, f"source {source}, imported_by {actor.user}, "
-                               "imported_at within 5 s of the response Date")
+                               "imported_at within 5 s of the call")
         return case
 
     def retrievable(run: Run) -> str:
@@ -919,7 +920,7 @@ def ac23() -> list[Case]:
                       if step.after else "")
             return problems_or(entry_problems(step, entry), f"Entry for action {k + 1}",
                                f"{step.action} by {step.actor.user}{change}, timestamp within "
-                               "5 s of the response Date")
+                               "5 s of the call")
         return case
 
     def oldest_first(run: Run) -> str:

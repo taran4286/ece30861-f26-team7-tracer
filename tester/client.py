@@ -2,6 +2,7 @@
 
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -37,10 +38,15 @@ class Stopped(Exception):
 
 @dataclass
 class Reply:
+    """One response. sent_at and received_at are the tester's own UTC clock just before the
+    request went out and just after the response arrived, so the target handled it between them."""
+
     label: str
     status: int
     headers: httpx2.Headers
     body: Any
+    sent_at: datetime
+    received_at: datetime
     schema_errors: list[str] = field(default_factory=list)
 
     def detail(self) -> str:
@@ -122,6 +128,7 @@ class Target:
         kwargs: dict[str, Any] = {"headers": headers, "timeout": CALL_TIMEOUT}
         if json is not NO_BODY:
             kwargs["json"] = json
+        sent_at = datetime.now(UTC)
         try:
             # httpx2 appends a relative URL to the base URL's path, /system included.
             response = self.http.request(method, url, **kwargs)
@@ -129,9 +136,12 @@ class Target:
             raise TargetError("communication", f"{label}: no response within {CALL_TIMEOUT:g} s")
         except httpx2.TransportError as exc:
             raise TargetError("communication", f"{label}: {type(exc).__name__}: {exc}")
+        received_at = datetime.now(UTC)
+        reply = Reply(label, response.status_code, response.headers, None, sent_at, received_at)
         try:
-            body = response.json() if response.content else None
+            reply.body = response.json() if response.content else None
         except ValueError:
-            return Reply(label, response.status_code, response.headers, None, ["body is not JSON"])
-        errors = response_errors(method, template, response.status_code, body)
-        return Reply(label, response.status_code, response.headers, body, errors)
+            reply.schema_errors = ["body is not JSON"]
+            return reply
+        reply.schema_errors = response_errors(method, template, response.status_code, reply.body)
+        return reply

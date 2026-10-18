@@ -1,12 +1,16 @@
 """The tester's cross-team cases, run against the in-memory system in fake_system.py."""
 
+import time
+from datetime import UTC, datetime, timedelta
+from email.utils import formatdate
+
 import httpx2
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tester.cases import STATES, name, planned
-from tester.client import Target
+from tester.cases import STATES, clock_problems, name, planned
+from tester.client import Reply, Target
 from tester.spec import response_errors, schema_errors
 from tester.suite import Fail, run_cases
 from tests.fake_system import FakeSystem
@@ -21,6 +25,18 @@ FILING_PAIRS = {
     "AC-06-DM-to-DisclosureRecorded",
     "AC-06-DisclosureDelayed-to-DisclosureRecorded",
 }
+
+
+class StaleDate:
+    """An HTTP client whose responses carry a Date header an hour old, like a host that cached it."""
+
+    def __init__(self, http: TestClient):
+        self.http = http
+
+    def request(self, method: str, url: str, **kwargs):
+        response = self.http.request(method, url, **kwargs)
+        response.headers["date"] = formatdate(time.time() - 3600, usegmt=True)
+        return response
 
 
 class TimesOut:
@@ -102,6 +118,26 @@ def test_a_wrongly_allowed_move_doesnt_spoil_later_cases_from_that_state():
     assert results["AC-06-DNM-to-DM"]["outcome"] == "fail"
     later = ["AC-06-DNM-to-DNM", "AC-06-DNM-to-DM-via-determination", "AC-06-DNM-to-Closed"]
     assert [results[t]["outcome"] for t in later] == ["pass"] * 3
+
+
+def test_clock_checks_bracket_the_call_with_the_testers_clock():
+    sent = datetime(2026, 10, 18, 12, tzinfo=UTC)
+    # A Date header years off changes nothing: only the tester's own clock counts.
+    headers = httpx2.Headers({"date": "Mon, 01 Jan 2001 00:00:00 GMT"})
+    reply = Reply("POST /x", 201, headers, None, sent, sent + timedelta(seconds=2))
+    inside = ["2026-10-18T11:59:55Z", "2026-10-18T12:00:01Z", "2026-10-18T12:00:07+00:00",
+              "2026-10-18T08:00:03-04:00"]
+    assert [clock_problems("t", value, reply) for value in inside] == [[]] * 4
+    assert "before the request was sent" in clock_problems("t", "2026-10-18T11:59:54Z", reply)[0]
+    assert "after the response arrived" in clock_problems("t", "2026-10-18T12:00:08Z", reply)[0]
+    assert clock_problems("t", "2026-10-18T12:00:01", reply) == [
+        "t 2026-10-18T12:00:01 has no UTC offset"]
+
+
+@pytest.mark.parametrize("criterion", ["AC-02", "AC-23"])
+def test_a_stale_date_header_fails_no_case(criterion):
+    results = run_against(FakeSystem(), criterion, wrap=StaleDate)
+    assert {t: r["message"] for t, r in results.items() if r["outcome"] != "pass"} == {}
 
 
 def test_a_server_error_is_an_error_from_the_system():
