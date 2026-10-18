@@ -6,7 +6,8 @@ The system's web layer. `server.py` mounts `system_app` at `/system`, so every p
 
 | Module | Provides |
 | --- | --- |
-| `__init__.py` | `system_app`: the photo page, `/health`, the `TracerError` handler, the three routers below, then the 501 catch-all |
+| `__init__.py` | `system_app`: the status page, `/health` and the `database_ok()` check both use, the `TracerError` handler, the three routers below, then the 501 catch-all |
+| `pages.py` | The status page: `render()`, `operations()` from the spec, `STATUS` (how each spec operation is answered, the 501s included) and `shown_operations()`, the ones the page lists |
 | `calls.py` | `identity()` (the header checks), `read_body()`, `call()` (headers, then the service in the thread pool) and `error_response()` (the Error schema) |
 | `control.py` | The test-control routes, answering errors as `TestControlError` |
 | `routes.py` | The project operations this team builds, one route per service operation |
@@ -16,7 +17,7 @@ The system's web layer. `server.py` mounts `system_app` at `/system`, so every p
 
 | Route | Response |
 | --- | --- |
-| `GET /` | 200 HTML page: `system.png`, inlined, captioned "Team 7 service"; `/system` without the slash redirects here with a 307 |
+| `GET /` | 200 HTML status page: the title "Team 7 — Tracer system", whether the database is reachable, the spec's title and version linked to it, and the spec operations this system answers, marked built or 405 by design (the 501s aren't listed); `/system` without the slash redirects here with a 307 |
 | `GET /health` | 200 `{"status": "ok", "database": "ok"}` after a `SELECT 1` through `get_engine()`; 503 `{"status": "unavailable", "database": "unavailable"}` when a setting is missing or invalid (such as no `DATABASE_URL` on a preview), the URL names a driver we don't install (a bare `postgresql://` scheme), or the database can't be reached |
 | `POST /test/setup`, `GET /test/report`, `GET /test/report/{run_id}`, `PATCH /test/sessions/{session_id}/settings` | Root "Test control" |
 | `POST /incidents`, `GET /incidents/{incident_id}`, evidence import, determination, transitions, `GET` audit | The services' results: 201 for create and import, 200 for the rest |
@@ -35,6 +36,7 @@ Other methods, such as `HEAD` and `OPTIONS` elsewhere, get FastAPI's 405; no ope
 - Test-control routes catch errors themselves and answer `{message, source: "system"}`: a `TracerError` with its status, unreachable storage with 500 "System storage is unavailable", and any other fault with 500 "System fault: …". Setup must still answer when the database is down.
 - Register every route before the catch-all, which matches every path. `tests/test_server.py` checks that each project operation in `system-openapi.yaml` has its own route.
 - `/health` isn't in the spec; it's the check that a deploy reaches the database (root "Deployment"). It logs the cause of a 503 as a warning and never puts it in the response.
-- `GET /` isn't in the spec either: its captioned photo shows in a browser that the deploy is up. It never touches the database, so it also works on previews. It reads `system.png` per request, not at import, so a missing file breaks only this page. `tester/` keeps its own photo and page.
+- `GET /` isn't in the spec either: the status page shows in a browser that the deploy is up and what it answers. It still loads when the database can't be reached, showing it as unavailable, so it also works on previews. It reads `system-openapi.yaml` when first needed, not at import, so a missing file breaks only this page. `tester/` keeps its own page.
+- Keep `pages.STATUS` in step with the routes. `tests/test_server.py` checks that it lists exactly the spec's operations and that each label matches what the route tests prove.
 - Touch the database only inside a request, never at import: preview deployments have no `DATABASE_URL`, and the app must still start there.
 - Never import `tester`; the two apps meet only in `server.py`.

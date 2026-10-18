@@ -2,7 +2,7 @@
 rule that tester/ never imports app."""
 
 import ast
-import base64
+import html
 import threading
 import uuid
 from collections.abc import Callable
@@ -20,7 +20,9 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from app.db import transaction as app_transaction
 from server import app as server_app
+from tester import config as tester_config
 from tester import db as tester_db
+from tester import pages as tester_pages
 from tester.cases import planned
 from tester.models import RunStatus, StoredSession
 from tester.runner import report_problems
@@ -68,13 +70,101 @@ def stored_session_count() -> int:
 
 
 @pytest.mark.parametrize("path", ["/tester", "/tester/"])
-def test_base_url_shows_the_captioned_tester_photo(path):
+def test_base_url_shows_how_to_run_the_tester(path, monkeypatch):
+    def no_storage(session_id):
+        pytest.fail("The page reads storage only for a session ID")
+
+    monkeypatch.setattr("tester.get_report", no_storage)
     # /tester redirects to /tester/; TestClient follows it.
     response = client.get(path)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "<p style=\"margin:0;font-size:1.25rem\">Team 7 tester</p>" in response.text
-    assert base64.b64encode((TESTER_DIR / "tester.png").read_bytes()).decode() in response.text
+    assert "<h1>Team 7 — Tracer tester</h1>" in response.text
+    assert "Team 7 tester" not in response.text
+    assert "<img" not in response.text
+    assert "POST /tester/test/setup" in response.text
+    assert "Enter a session ID to see its stored report." in response.text
+
+
+def test_page_shows_a_finished_runs_report(finished):
+    session_id, response = finished
+    results = response.json()["results"]
+    page = client.get("/tester/", params={"session_id": session_id})
+    assert page.status_code == 200
+    passed = sum(result["outcome"] == "pass" for result in results)
+    assert f'{len(results)} tests, <span class="ok">{passed} pass</span>' in page.text
+    for result in results:
+        assert f"<code>{html.escape(result['test_id'])}</code>" in page.text
+        assert html.escape(result["message"]) in page.text
+
+
+@pytest.mark.parametrize("session_id,shown", [
+    ("t7-missing", "Unknown session &#x27;t7-missing&#x27;"),
+    ("t7\x00nul", "Unknown session"),
+])
+def test_page_says_why_a_report_is_missing(session_id, shown):
+    page = client.get("/tester/", params={"session_id": session_id})
+    assert page.status_code == 200
+    assert shown in page.text
+
+
+def test_page_says_a_running_session_has_no_report_yet():
+    session_id = f"t7-{uuid.uuid4().hex}"
+    create_session(session_id, TARGET_URL)
+    page = client.get("/tester/", params={"session_id": session_id})
+    assert "hasn&#x27;t finished its run" in page.text
+
+
+def test_page_says_when_storage_is_unavailable(monkeypatch):
+    def unreachable(session_id):
+        raise OperationalError("SELECT", {}, Exception("connection refused"))
+
+    monkeypatch.setattr("tester.get_report", unreachable)
+    page = client.get("/tester/", params={"session_id": "t7-any"})
+    assert page.status_code == 200
+    assert "Tester storage is unavailable" in page.text
+
+
+@pytest.fixture
+def fresh_tester_settings():
+    """Clear the tester's cached settings, engine and session factory around a test that changes
+    TESTER_DATABASE_URL, so later tests don't inherit its storage (tester/AGENTS.md)."""
+    def clear():
+        tester_config.get_tester_settings.cache_clear()
+        tester_db.get_engine.cache_clear()
+        tester_db._session_factory.cache_clear()
+
+    clear()
+    yield
+    clear()
+
+
+@pytest.mark.usefixtures("fresh_tester_settings")
+def test_a_malformed_storage_url_reads_as_unavailable(monkeypatch):
+    # A port that isn't a number: SQLAlchemy raises a plain ValueError, which db.parse_url turns
+    # into ArgumentError, a SQLAlchemyError, so the storage handlers catch it.
+    monkeypatch.setenv("TESTER_DATABASE_URL",
+                       "postgresql+psycopg://tracer_tester:secret@127.0.0.1:abc/tracer")
+    page = client.get("/tester/", params={"session_id": "t7-any"})
+    assert page.status_code == 200
+    assert "Tester storage is unavailable" in page.text
+    response = client.get("/tester/test/report", params={"session_id": "t7-any"})
+    assert response.status_code == 500
+    assert response.json() == {"message": "Tester storage is unavailable", "source": "tester"}
+
+
+def test_page_escapes_everything_from_a_report():
+    unmeasured = {"covered": None, "total": None, "basis": "<b>basis</b>"}
+    report = {
+        "session_id": "<s>id</s>", "target_url": "https://x/<t>",
+        "results": [{"test_id": "AC-02-<x>", "outcome": "fail",
+                     "message": "<script>alert(1)</script>"}],
+        "coverage": {"<u>code": unmeasured, "component": unmeasured, "system": unmeasured},
+    }
+    page = tester_pages.render("<i>typed</i>", report, None)
+    for raw in ("<script>", "<b>basis", "<s>id", "<t>", "<x>", "<i>typed", "<u>code"):
+        assert raw not in page
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
 
 
 @pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])

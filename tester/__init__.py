@@ -1,14 +1,13 @@
 """Our tester's FastAPI app; server.py mounts it at /tester.
 
-It serves a captioned photo at GET /, the Tester API's setup, run and report routes, and 501
-for every other path. runner.py does the work of setup and run; sessions and reports live in
-Postgres (see sessions.py). The tester reaches systems over HTTP only and never imports `app`.
+It serves a page at GET / with how to run it and any stored report, the Tester API's setup,
+run and report routes, and 501 for every other path. runner.py does the work of setup and run;
+sessions and reports live in Postgres (see sessions.py). The tester reaches systems over HTTP
+only and never imports `app`.
 """
 
-import base64
 import logging
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -17,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
+from tester import pages
 from tester.runner import checked_target_url, prepare, run_session
 from tester.sessions import ControlError, get_report
 
@@ -24,28 +24,29 @@ logger = logging.getLogger(__name__)
 
 ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 
-PHOTO = Path(__file__).with_name("tester.png")
-CAPTION = "Team 7 tester"
-# The photo is inlined, so the page needs no second route.
-PAGE = """<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>{caption}</title></head>
-<body style="margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:12px;font-family:sans-serif">
-<img src="data:image/png;base64,{photo}" alt="{caption}">
-<p style="margin:0;font-size:1.25rem">{caption}</p>
-</body>
-</html>
-"""
-
 tester_app = FastAPI(title="Tracer tester")
 
 
 @tester_app.get("/")
-def photo() -> HTMLResponse:
-    # Shows in a browser that the deploy is up; not part of the spec. Read per request, not at
-    # import: a missing file then breaks only this page.
-    encoded = base64.b64encode(PHOTO.read_bytes()).decode()
-    return HTMLResponse(PAGE.format(caption=CAPTION, photo=encoded))
+def page(session_id: str | None = None) -> HTMLResponse:
+    """How to run the tester, and the stored report for `session_id` when one is asked for.
+
+    Not part of the spec. Storage is read only when a session ID is given, so the page also
+    loads on previews, which have no TESTER_DATABASE_URL.
+    """
+    report = problem = None
+    if session_id and session_id.strip():
+        try:
+            if "\x00" in session_id:
+                # PostgreSQL text can't hold NUL, so no stored session has one.
+                raise ControlError(404, f"Unknown session {session_id!r}")
+            report = get_report(session_id)
+        except ControlError as error:
+            problem = error.message
+        except (ValidationError, ImportError, SQLAlchemyError):
+            logger.warning("tester storage unavailable", exc_info=True)
+            problem = "Tester storage is unavailable"
+    return HTMLResponse(pages.render(session_id, report, problem))
 
 
 async def _respond(work: Callable[[], Awaitable[Any]], status: int = 200) -> JSONResponse:
