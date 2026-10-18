@@ -276,7 +276,7 @@ Testers prepare and inspect sessions through these routes. They take no identity
 **`POST /test/setup`**
 
 - Require `session_id` as a non-blank string and `setup` as an object → else 400 naming the field.
-- `setup` may hold only `test_now` (date-time), `registrant_type` (Domestic or FPI), `at_risk_threshold_days` (integer ≥ 1) and `llm_base_url` (absolute URI); any other key or a bad value → 400 naming it, e.g. `setup.test_now`.
+- `setup` may hold only `test_now` (date-time), `registrant_type` (Domestic or FPI), `at_risk_threshold_days` (integer from 1 to 2,147,483,647, the most its column holds) and `llm_base_url` (absolute URI); any other key or a bad value → 400 naming it, e.g. `setup.test_now`.
 - A missing setting takes the pod default: `test_now` 2026-10-05T15:00:00Z, Domestic, 7, and `https://llm.invalid/v1`, a placeholder since no drafting is built.
 - Store the session and return 201 `{session_id}`. An ID already in use → 409, and the stored session is unchanged.
 - Unreachable storage → 500 "System storage is unavailable".

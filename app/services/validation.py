@@ -32,14 +32,17 @@ def require_string(obj: dict[str, Any], key: str, field: str) -> str:
     return value
 
 
-def parse_integer(value: Any, field: str, minimum: int = 1) -> int:
-    """An integer of at least `minimum`. A whole-number float such as 1.0 counts, as in JSON
-    Schema 2020-12; booleans don't, though Python treats them as integers."""
+def parse_integer(value: Any, field: str, minimum: int = 1, maximum: int | None = None) -> int:
+    """An integer of at least `minimum`, and at most `maximum` when one is given. A whole-number
+    float such as 1.0 counts, as in JSON Schema 2020-12; booleans don't, though Python treats
+    them as integers. Pass a maximum for a value stored in a column with a size limit."""
     if value is None:
         raise invalid(field, f"{field} is required")
     whole = isinstance(value, int) or (isinstance(value, float) and value.is_integer())
-    if isinstance(value, bool) or not whole or value < minimum:
-        raise invalid(field, f"{field} must be an integer of at least {minimum}")
+    too_big = maximum is not None and whole and value > maximum
+    if isinstance(value, bool) or not whole or value < minimum or too_big:
+        bounds = f"from {minimum} to {maximum}" if maximum is not None else f"of at least {minimum}"
+        raise invalid(field, f"{field} must be an integer {bounds}")
     return int(value)
 
 

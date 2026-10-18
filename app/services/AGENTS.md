@@ -61,7 +61,7 @@ Header checks (root "Identity headers") come before step 1 and belong to the API
 - Take today and the registrant type from the loaded session (`clock.today(session)`, `session.registrant_type`), never from config or the real date.
 - `record_determination` returns 501 for `voluntary_disclosure` after body validation and before the state check; the root `AGENTS.md` Materiality determination section holds its other rules.
 - `require_string` rejects missing, non-string and blank (whitespace-only) values, and NUL characters because PostgreSQL text cannot store them.
-- Check integers with `parse_integer`: it accepts a whole-number float such as `1.0`, which JSON Schema 2020-12 counts as an integer, and rejects booleans.
+- Check integers with `parse_integer`: it accepts a whole-number float such as `1.0`, which JSON Schema 2020-12 counts as an integer, and rejects booleans. Pass `maximum=control.INTEGER_MAX` for a value stored in an `Integer` column, so a value too large to store is a 400, not a failed insert.
 - `transition_incident` checks `info_available_date` and `elements` whenever they're sent, against the names in `workflow.DRAFT_ELEMENTS`, and requires them only for AmendmentPending.
 - An operation that ends in 405 or 501 goes in `placeholders.py`, which runs steps 1 to 3 before raising, so error order holds; it writes nothing.
 - `control.py` is the exception to the shape above: test control takes no identity headers or role and writes no audit entries. It raises `TracerError` like the rest (`CONFLICT` for a session ID in use), and the API layer turns that into a `TestControlError`.

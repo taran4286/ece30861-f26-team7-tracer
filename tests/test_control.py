@@ -54,6 +54,13 @@ def test_setup_stores_the_settings_sent():
     assert session.llm_base_url == "http://llm.example/v1"
 
 
+def test_the_largest_storable_threshold_is_accepted():
+    session_id = new_id()
+    control.setup_session({"session_id": session_id,
+                           "setup": {"at_risk_threshold_days": control.INTEGER_MAX}})
+    assert stored(session_id).at_risk_threshold_days == control.INTEGER_MAX
+
+
 def test_a_session_id_already_in_use_is_a_conflict():
     session_id = new_session()
     before = table_counts()
@@ -82,7 +89,8 @@ def test_a_session_id_already_in_use_is_a_conflict():
     ({"session_id": UNUSED_ID, "setup": {"registrant_type": "domestic"}}, "setup.registrant_type"),
     ({"session_id": UNUSED_ID, "setup": {"registrant_type": None}}, "setup.registrant_type"),
     *(({"session_id": UNUSED_ID, "setup": {"at_risk_threshold_days": value}},
-       "setup.at_risk_threshold_days") for value in (0, -1, 1.5, "7", True, None)),
+       "setup.at_risk_threshold_days")
+      for value in (0, -1, 1.5, "7", True, None, control.INTEGER_MAX + 1, 10**12, 1e30)),
     *(({"session_id": UNUSED_ID, "setup": {"llm_base_url": value}}, "setup.llm_base_url")
       for value in ("llm.example", "http://llm example", "", 5, None)),
 ])

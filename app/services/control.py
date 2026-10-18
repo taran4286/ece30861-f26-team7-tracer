@@ -35,6 +35,10 @@ DEFAULTS: dict[str, Any] = {
     "llm_base_url": "https://llm.invalid/v1",
 }
 
+# The largest value a PostgreSQL INTEGER column holds, such as at_risk_threshold_days. A larger
+# one would fail on insert, which would answer 500 instead of 400.
+INTEGER_MAX = 2**31 - 1
+
 # format: uri is an absolute URI: a scheme, a colon, then no whitespace.
 _URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:\S+")
 
@@ -76,7 +80,7 @@ def _settings(setup: dict[str, Any]) -> dict[str, Any]:
         settings["registrant_type"] = RegistrantType(value)
     if "at_risk_threshold_days" in setup:
         settings["at_risk_threshold_days"] = parse_integer(
-            setup["at_risk_threshold_days"], "setup.at_risk_threshold_days"
+            setup["at_risk_threshold_days"], "setup.at_risk_threshold_days", maximum=INTEGER_MAX
         )
     if "llm_base_url" in setup:
         value = setup["llm_base_url"]

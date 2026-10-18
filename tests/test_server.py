@@ -242,6 +242,9 @@ def test_setup_keeps_the_settings_sent():
     ("POST", "/system/test/setup",
      {"json": {"session_id": "pytest-never-stored", "setup": {"clock": 1}}}, 400),
     ("POST", "/system/test/setup", {"content": b"{not json"}, 400),
+    # Too large for its column: a 400, not a storage error's 500.
+    ("POST", "/system/test/setup", {"json": {"session_id": "pytest-never-stored",
+                                             "setup": {"at_risk_threshold_days": 10**12}}}, 400),
     ("POST", "/system/test/setup", {"json": {"session_id": " ", "setup": {}}}, 400),
     ("GET", "/system/test/report", {}, 400),
     ("GET", "/system/test/report", {"params": {"session_id": "pytest-missing"}}, 404),
