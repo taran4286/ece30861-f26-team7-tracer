@@ -35,14 +35,14 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 `runner.py` does the work behind the setup and run routes, which call it in FastAPI's thread pool because it blocks on the target and the database.
 
 - `prepare(target_url)` generates a session ID (`t7-` and a UUID), sends `{session_id, setup: {}}` to the target's `/test/setup` with a 20 s timeout (`SETUP_TIMEOUT_SECONDS`), and stores the session as `ready` only after a 201 that names that ID.
-- `run_session(session_id)` starts the run with `start_run`, runs `planned()` through `run_cases`, builds the report and checks it with `report_problems`, then stores it with `finish_run`.
+- `run_session(session_id)` builds the case list with `planned()`, starts the run with `start_run`, runs the cases through `run_cases`, builds the report and checks it with `report_problems`, then stores it with `finish_run`. Planning reads the fixture files, so it comes before `start_run`: if it fails, the session stays `ready`.
 - The run's `Target` gets a deadline 105 s after the run starts (`CALL_CUTOFF_SECONDS`), inside the 130 s run limit. After it, `Target.call` sends nothing and raises `Stopped`; `run_cases` records that case as an `error` from the tester and every later case as `skip`, and the run is aborted. The coverage request isn't held to the deadline.
 - Coverage counts what the run exercised, not what passed:
   - `code` is the target's own measure from `GET /test/report?session_id=`. It becomes null counts with the reason in `basis` when that request gets no answer, a status other than 200, a body that breaks the spec, or more covered than total.
   - `component` counts the system spec's 7 tags with at least one request in `Target.called`.
   - `system` counts the criteria, by test ID prefix, with at least one case not skipped.
 - `report_problems` checks a report against `SuiteReport` in `tester-openapi.yaml`, plus the rules the schema can't express: every planned test appears once, test IDs are unique, and `covered` is never above `total`. A report that fails is a tester bug: it's stored as `aborted` and the run gets 500.
-- A fault outside the cases also stores an aborted report, with the cases' results if they all ran and every case skipped otherwise, so the session never stays `running`.
+- A fault after `start_run` outside the cases, the report check included, also stores an aborted report, with the cases' results if they all ran and every case skipped otherwise, so the session never stays `running`.
 
 ## Cross-team test cases
 

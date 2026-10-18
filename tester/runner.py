@@ -97,8 +97,10 @@ def run_session(session_id: str) -> dict[str, Any]:
     the run is aborted: by the deadline, by an invalid report, or by a fault in the tester. An
     aborted run's report is stored first.
     """
-    target_url = start_run(session_id)
+    # Planned before the run starts: planning reads the fixture files, and if that fails the
+    # session stays ready instead of running.
     cases = planned()
+    target_url = start_run(session_id)
     results: list[dict[str, Any]] = []
     try:
         with client_for(target_url) as http:
@@ -114,13 +116,13 @@ def run_session(session_id: str) -> dict[str, Any]:
                     "system": system_coverage(results),
                 },
             }
+        problems = report_problems(report, cases)
     except Exception as exc:
         # A fault outside the cases, which run_cases already contains: store an aborted report
         # so the session doesn't stay running.
         unfinished = _unfinished_report(session_id, target_url, cases, results)
         finish_run(session_id, unfinished, aborted=True)
         raise ControlError(500, f"Tester fault: {type(exc).__name__}: {exc}") from exc
-    problems = report_problems(report, cases)
     finish_run(session_id, report, aborted=target.stopped or bool(problems))
     if problems:
         raise ControlError(500, f"The suite report is invalid, so the run is aborted: {problems[0]}")

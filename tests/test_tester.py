@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from psycopg.errors import InsufficientPrivilege
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 from app.db import transaction as app_transaction
@@ -59,6 +59,12 @@ def suite_report(session_id: str, outcome: str = "pass") -> dict[str, Any]:
 def stored(session_id: str) -> StoredSession:
     with tester_db.transaction() as tx:
         return tx.get(StoredSession, session_id)
+
+
+def stored_session_count() -> int:
+    """Rows in tester_sessions, to check a rejected setup stored nothing."""
+    with tester_db.transaction() as tx:
+        return tx.scalar(select(func.count()).select_from(StoredSession))
 
 
 @pytest.mark.parametrize("path", ["/tester", "/tester/"])
@@ -307,10 +313,12 @@ def report_of(session_id: str) -> dict[str, Any]:
     ],
 )
 def test_setup_rejects_a_bad_target_url(fake, body):
+    before = stored_session_count()
     response = client.post("/tester/test/setup", json=body)
     assert response.status_code == 400
     assert response.json()["source"] == "tester"
     assert fake.sessions == {}
+    assert stored_session_count() == before
 
 
 def test_setup_prepares_the_target_with_default_settings_and_stores_a_ready_session(fake):
@@ -330,17 +338,21 @@ def test_setup_passes_on_the_targets_error(monkeypatch):
         return JSONResponse({"message": "Database is waking up", "source": "system"}, 503)
 
     monkeypatch.setattr("tester.runner.client_for", serve(target))
+    before = stored_session_count()
     response = client.post("/tester/test/setup", json={"target_url": TARGET_URL})
     assert response.status_code == 503
     assert response.json() == {"message": "Database is waking up", "source": "system"}
+    assert stored_session_count() == before
 
 
 def test_setup_names_a_target_error_without_a_test_control_body(monkeypatch):
     # An app with no routes answers FastAPI's own 404 body.
     monkeypatch.setattr("tester.runner.client_for", serve(FastAPI()))
+    before = stored_session_count()
     response = client.post("/tester/test/setup", json={"target_url": TARGET_URL})
     assert response.status_code == 404
     assert response.json() == {"message": "Target setup returned 404", "source": "system"}
+    assert stored_session_count() == before
 
 
 def test_setup_without_an_answer_is_a_communication_error(monkeypatch):
@@ -348,9 +360,11 @@ def test_setup_without_an_answer_is_a_communication_error(monkeypatch):
     monkeypatch.setattr(
         "tester.runner.client_for", lambda url: Unanswered(target(url), "/test/setup")
     )
+    before = stored_session_count()
     response = client.post("/tester/test/setup", json={"target_url": TARGET_URL})
     assert response.status_code == 500
     assert response.json()["source"] == "communication"
+    assert stored_session_count() == before
 
 
 @pytest.fixture(scope="module")
@@ -431,6 +445,33 @@ def test_a_run_whose_coverage_report_gets_no_answer_still_finishes(ac08_only, mo
     code = response.json()["coverage"]["code"]
     assert (code["covered"], code["total"]) == (None, None)
     assert code["basis"].startswith("The target's coverage report gave no answer")
+
+
+def test_a_run_that_cant_plan_its_cases_leaves_the_session_ready(fake, monkeypatch):
+    session_id = setup_session()
+
+    def unreadable() -> list:
+        raise OSError("fixtures/incidents.json is missing")
+
+    monkeypatch.setattr("tester.runner.planned", unreadable)
+    response = run(session_id)
+    assert response.status_code == 500
+    assert response.json() == {"message": "Tester fault: OSError", "source": "tester"}
+    assert stored(session_id).status == RunStatus.READY
+
+
+def test_a_run_whose_report_check_fails_is_stored_as_aborted(fake, ac08_only, monkeypatch):
+    def unreadable(report: dict[str, Any], cases: list) -> list[str]:
+        raise OSError("tester-openapi.yaml is missing")
+
+    monkeypatch.setattr("tester.runner.report_problems", unreadable)
+    session_id = setup_session()
+    response = run(session_id)
+    assert response.status_code == 500
+    assert response.json()["source"] == "tester"
+    assert stored(session_id).status == RunStatus.ABORTED
+    results = report_of(session_id)["results"]
+    assert [r["test_id"] for r in results] == [test_id for test_id, _ in ac08_only]
 
 
 def test_report_problems_catch_what_the_schema_cant():
