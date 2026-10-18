@@ -13,8 +13,8 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from tester.client import NO_BODY, Actor, Reply, Target, TargetError
-from tester.suite import Case, Fail, Run, Skip, expect, run_cases
+from tester.client import NO_BODY, Actor, Reply, TargetError
+from tester.suite import Case, Fail, Run, Skip, expect
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -1090,8 +1090,3 @@ def ac01() -> list[Case]:
 def planned() -> list[Case]:
     """Every case in run order; their test IDs are stable and unique."""
     return [*ac02(), *ac03(), *ac07(), *ac08(), *ac20(), *ac06(), *ac09(), *ac23(), *ac01()]
-
-
-def run_suite(target: Target) -> list[dict[str, Any]]:
-    """Run every planned case against a prepared session; one TestResult each."""
-    return run_cases(planned(), target)

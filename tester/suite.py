@@ -2,13 +2,14 @@
 
 A case is a function that takes the Run and returns its pass message. It raises Fail when
 the target's answer breaks the pass rule, TargetError when the answer can't be evaluated,
-and Skip when it isn't run; any other exception is a tester fault.
+and Skip when it isn't run; any other exception is a tester fault. Once a call is Stopped by
+the run's deadline, every later case is skipped.
 """
 
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from tester.client import Actor, Reply, Target, TargetError
+from tester.client import Actor, Reply, Stopped, Target, TargetError
 
 
 class Fail(Exception):
@@ -126,12 +127,25 @@ def _difference(before: dict[str, Any], after: dict[str, Any]) -> str:
 
 
 def run_cases(cases: Iterable[Case], target: Target) -> list[dict[str, Any]]:
-    """Run every case in order and return one TestResult per case."""
+    """Run every case in order and return one TestResult per case.
+
+    The case the deadline stops is an error from the tester, since its evaluation was cut
+    short, and every case after it is skipped.
+    """
     run = Run(target)
     results = []
+    stopped = False
     for test_id, case in cases:
+        if stopped:
+            results.append({"test_id": test_id, "outcome": "skip",
+                            "message": "Not run: the run reached its time limit"})
+            continue
         try:
             result = {"test_id": test_id, "outcome": "pass", "message": case(run)}
+        except Stopped as exc:
+            stopped = True
+            result = {"test_id": test_id, "outcome": "error", "source": "tester",
+                      "message": f"Stopped: {exc}"}
         except Skip as exc:
             result = {"test_id": test_id, "outcome": "skip", "message": str(exc)}
         except Fail as exc:

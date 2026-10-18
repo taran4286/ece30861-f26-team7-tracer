@@ -186,6 +186,14 @@ class FakeSystem:
             return {"run": session.run, "groups": [], "audit": session.audit,
                     "incidents": [session.render(i) for i in session.incidents.values()]}
 
+        @app.get("/test/report")
+        def coverage(session_id: str):
+            if session_id not in self.sessions:
+                return JSONResponse({"message": "Unknown session", "source": "system"}, 404)
+            unmeasured = {"covered": None, "total": None,
+                          "basis": "The fake system doesn't measure code coverage"}
+            return {"session_id": session_id, "coverage": {"code": unmeasured}}
+
         @app.post("/incidents", status_code=201)
         async def create_incident(request: Request):
             session, user = self._identity(request, writers)
