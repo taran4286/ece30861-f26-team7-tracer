@@ -8,8 +8,10 @@ The root "Tests to write" section lists what each area must cover; this file cov
 | `helpers.py` | Acting users (`RESPONDER`, `APPROVER`, `BOARD`), all working in `SESSION_ID`, whose `test_now` is `TEST_NOW` and whose today is `TODAY` (2026-10-05); `new_session()` and `in_session()` for other sessions; `ticket()` and `alert()` item builders, `table_counts()`, `audit_entries()` and `set_state()` |
 | `test_incidents.py` | `app/services/incidents.py`: create and get, session scoping and the session's today |
 | `test_evidence.py` | `app/services/evidence.py`: import, normalization and all-or-nothing rejection |
-| `test_workflow.py` | Determinations, all state targets from each state the workflow reaches, date/error order, version handling, preservation, audit rollback and retrieval, the AC-09 materiality-write guardrail, and NUL-character rejection on create and import |
-| `test_server.py` | `server.py`'s landing page and mounts, captioned photo, health check, catch-all, and explicit audit 405 / standalone 501 responses with header, role and no-database checks |
+| `test_workflow.py` | Determinations, all state targets from each state the workflow reaches, AmendmentPending's `info_available_date` and `elements` checks, date/error order, version handling, preservation, audit rollback and retrieval, the AC-09 materiality-write guardrail, and NUL-character rejection on create and import |
+| `test_control.py` | `app/services/control.py`: setup defaults, settings and rejections, duplicate IDs, the coverage report and the snapshot's session scoping |
+| `test_placeholders.py` | `app/services/placeholders.py`: 405 and 501 only after the session, role, incident and evidence checks, writing nothing |
+| `test_server.py` | `server.py`'s landing page and mounts, captioned photo, health check and catch-all; and the system's API over HTTP: a route for every spec operation, test control's responses and errors, project responses checked against the spec, error order on every route, 405s with `Allow`, and 501s |
 | `test_tester.py` | The tester's captioned photo page and 501 stub; its session storage (one run per session, reports stored once); setup against `FakeSystem` (bad URLs, target errors passed on, no answer, each storing no session), a full run's stored report and coverage, the deadline abort, a missing coverage report, and runs whose planning or report check fails; `GET /test/report`; the tester and app roles' table access; and that `tester/` never imports `app` |
 | `fake_system.py` | `FakeSystem`: an in-memory system following `system-openapi.yaml` as far as the cases and the runner need, coverage report included, with switchable `BUGS` |
 | `test_tester_cases.py` | The tester's cases against `FakeSystem` under `/system`: all pass on a conforming system, each bug fails its case, and errors get the right source |
@@ -25,7 +27,8 @@ The root "Tests to write" section lists what each area must cover; this file cov
 
 - Neither the app role nor the tester role can delete, so nothing is cleaned up between tests. Assert on rows a test created itself (by incident or session ID), never on global contents; `table_counts()` is only for before-and-after comparisons around one call that must not write.
 - A test that rejects a writing call checks the error code and the `field`, that `table_counts()` is unchanged and, for a call on an existing incident, that the incident reads back the same, since counts can't see changed rows.
-- The placeholder route tests instead use the `no_database` fixture, which fails the test if `db.get_engine` or `db._session_factory` is called. The generic catch-all tests exclude the explicit audit 405 methods.
+- HTTP tests in `test_server.py` check bodies against the spec with `matches_spec()`, which uses the tester's `spec.response_errors`. That reports nothing for a status the spec doesn't list, so assert the status too.
+- Header-error tests use the `no_database` fixture, which fails the test if `db.get_engine` or `db._session_factory` is called: header errors come before any database access. The catch-all tests use paths and methods no route handles.
 - To put an incident straight into a state without the workflow, use `set_state()`; it changes only `state` and writes no audit entry.
 - Every service operation needs a stored session, so each service test file starts with `pytestmark = pytest.mark.usefixtures("default_session")`; a new one does the same.
 - Date checks compare against `TODAY`, or against the date of a session made with `new_session(test_now=...)`, never the real date.

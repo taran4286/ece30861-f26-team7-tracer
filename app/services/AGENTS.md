@@ -6,8 +6,10 @@ One module per area, callable without any web framework. The root `AGENTS.md` ho
 | --- | --- | --- |
 | `incidents.py` | Create and get an incident | `tests/test_incidents.py` |
 | `evidence.py` | Import evidence | `tests/test_evidence.py` |
-| `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
+| `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
 | `workflow.py` | Record a determination, transitions, list audit entries | `tests/test_workflow.py` |
+| `control.py` | Test control: set up a session, its coverage report, its snapshot | `tests/test_control.py` |
+| `placeholders.py` | The 405 and 501 operations: `refuse_change` and `not_built` | `tests/test_placeholders.py` |
 
 Add a row for each new module.
 
@@ -45,7 +47,9 @@ Header checks (root "Identity headers") come before step 1 and belong to the API
 ## Shared helpers
 
 - `incidents.load_incident(tx, incident_id, *, session_id, for_update=False)` loads the path incident or raises `NOT_FOUND`, treating another session's incident as unknown. Evidence and determinations need no session check of their own: they're reached through an incident already loaded this way. Pass `for_update=True` when the operation changes the incident (determination, transition), so two concurrent requests can't both pass the state check or bump `version` from the same value.
-- `incidents.incident_to_dict(tx, incident)` builds the full Incident schema (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values). Every operation that returns an Incident uses it, so the shape stays in one place. `evidence_to_dict` and `determination_to_dict` build the EvidenceItem and Determination parts; `raw_item` is never returned.
+- `evidence.load_evidence(tx, incident_id, evidence_id)` loads evidence named in the path, after its incident, or raises `NOT_FOUND`; evidence of another incident counts as unknown.
+- `incidents.incident_to_dict(tx, incident)` builds the full Incident schema (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values). Every operation that returns an Incident uses it, so the shape stays in one place. `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations and evidence; `incident_to_dict` is that for one incident. `evidence_to_dict` and `determination_to_dict` build the EvidenceItem and Determination parts; `raw_item` is never returned.
+- `workflow.audit_entry_to_dict(entry)` builds the AuditEntry schema for the audit list and the snapshot.
 - Validate bodies with `validation.py`, so dates and date-times are checked the same way everywhere: `parse_date` accepts only a real `YYYY-MM-DD`, and `parse_date_time` accepts only RFC 3339 with seconds and a `Z` or `±HH:MM` offset, returned in UTC.
 
 ## Rules
@@ -57,4 +61,8 @@ Header checks (root "Identity headers") come before step 1 and belong to the API
 - Take today and the registrant type from the loaded session (`clock.today(session)`, `session.registrant_type`), never from config or the real date.
 - `record_determination` returns 501 for `voluntary_disclosure` after body validation and before the state check; the root `AGENTS.md` Materiality determination section holds its other rules.
 - `require_string` rejects missing, non-string and blank (whitespace-only) values, and NUL characters because PostgreSQL text cannot store them.
-- `record_determination` and `transition_incident` accept a whole-number float `version` such as `1.0`, which JSON Schema 2020-12 counts as an integer.
+- Check integers with `parse_integer`: it accepts a whole-number float such as `1.0`, which JSON Schema 2020-12 counts as an integer, and rejects booleans.
+- `transition_incident` checks `info_available_date` and `elements` whenever they're sent, against the names in `workflow.DRAFT_ELEMENTS`, and requires them only for AmendmentPending.
+- An operation that ends in 405 or 501 goes in `placeholders.py`, which runs steps 1 to 3 before raising, so error order holds; it writes nothing.
+- `control.py` is the exception to the shape above: test control takes no identity headers or role and writes no audit entries. It raises `TracerError` like the rest (`CONFLICT` for a session ID in use), and the API layer turns that into a `TestControlError`.
+- Don't name a service function with a leading `test`: pytest would collect it from any test file that imports it. The snapshot's TestRun builder is `control.run_to_dict` for that reason.

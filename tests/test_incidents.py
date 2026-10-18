@@ -58,9 +58,11 @@ def test_get_returns_the_stored_incident_for_every_role(incident):
         assert get_incident(incident["incident_id"], **who) == incident
 
 
-def test_get_unknown_incident_is_not_found():
+@pytest.mark.parametrize("incident_id", ["inc_missing", "inc\x00nul"])
+def test_get_unknown_incident_is_not_found(incident_id):
+    # PostgreSQL text can't hold NUL, so that ID is unknown without a query that would fail.
     with pytest.raises(TracerError) as err:
-        get_incident("inc_missing", **BOARD)
+        get_incident(incident_id, **BOARD)
     assert err.value.code == ErrorCode.NOT_FOUND
 
 
@@ -152,6 +154,12 @@ def test_board_cannot_create_an_incident():
         code=ErrorCode.FORBIDDEN_ROLE,
         who=BOARD,
     )
+
+
+def test_forbidden_message_names_the_role():
+    with pytest.raises(TracerError) as err:
+        create_incident({"title": "Phishing", "discovery_date": "2026-10-01"}, **BOARD)
+    assert err.value.message == "Role 'Board' is not allowed to create_incident"
 
 
 def test_role_is_checked_before_the_body():

@@ -32,6 +32,17 @@ def require_string(obj: dict[str, Any], key: str, field: str) -> str:
     return value
 
 
+def parse_integer(value: Any, field: str, minimum: int = 1) -> int:
+    """An integer of at least `minimum`. A whole-number float such as 1.0 counts, as in JSON
+    Schema 2020-12; booleans don't, though Python treats them as integers."""
+    if value is None:
+        raise invalid(field, f"{field} is required")
+    whole = isinstance(value, int) or (isinstance(value, float) and value.is_integer())
+    if isinstance(value, bool) or not whole or value < minimum:
+        raise invalid(field, f"{field} must be an integer of at least {minimum}")
+    return int(value)
+
+
 def parse_date(value: Any, field: str) -> date:
     """A real YYYY-MM-DD date."""
     if value is None:

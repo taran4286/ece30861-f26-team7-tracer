@@ -51,13 +51,13 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 - `app/config.py`: settings read from environment variables.
 - `app/db.py`: engine, `Base`, and one transaction per operation.
 - `app/models.py`: the tables in Data model and storage.
-- `app/errors.py`: `ErrorCode`, with each code's HTTP status beside it, and a `TracerError` exception carrying the error code, message and field.
+- `app/errors.py`: `ErrorCode`, each code's HTTP status in `HTTP_STATUS`, and a `TracerError` exception carrying the error code, message and field.
 - `app/roles.py`: the `Role` enum, the permission map and `require_role()`.
 - `app/clock.py`: `today(session)` for every date rule and `utcnow()` for stored timestamps.
 - `app/sessions.py`: `load_session()`, the test session a request names in `X-Test-Run`.
 - `app/audit.py`: the `audit()` helper.
 - `app/api/`: the system's FastAPI app, `system_app`.
-- `app/services/`: business logic in `incidents.py`, `evidence.py` and `workflow.py` (determination, transitions and the audit list), with shared body checks in `validation.py`, callable without any web framework. Each operation takes the acting user's ID and role and the request's session ID as arguments.
+- `app/services/`: business logic in `incidents.py`, `evidence.py`, `workflow.py` (determination, transitions and the audit list), `control.py` (test control) and `placeholders.py` (the 405s and 501s), with shared body checks in `validation.py`, callable without any web framework. Each operation takes the acting user's ID and role and the request's session ID as arguments.
 - `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester`, and serves a landing page at `/` (see Deployment).
 - `tester/`: our tester's FastAPI app, `tester_app`, its session storage, and the cross-team test cases it runs against a target system; it never imports `app`.
 - `fixtures/`: the incident, ticketing and SIEM fixtures our tester sends.
@@ -269,6 +269,32 @@ Three roles keep the grants enforceable: a table's owner can always grant itself
 - The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
 - Use `setup_db.py` to create the tables and apply the grants. It can't change an existing table, so a schema change on a deployed database needs a migration (see Deployment).
 
+## Test control (TEST-01, TEST-02, TEST-06)
+
+Testers prepare and inspect sessions through these routes. They take no identity headers, write no audit entries, and answer errors with the spec's `TestControlError`, `{message, source: "system"}`, never the project `Error` schema.
+
+**`POST /test/setup`**
+
+- Require `session_id` as a non-blank string and `setup` as an object → else 400 naming the field.
+- `setup` may hold only `test_now` (date-time), `registrant_type` (Domestic or FPI), `at_risk_threshold_days` (integer ≥ 1) and `llm_base_url` (absolute URI); any other key or a bad value → 400 naming it, e.g. `setup.test_now`.
+- A missing setting takes the pod default: `test_now` 2026-10-05T15:00:00Z, Domestic, 7, and `https://llm.invalid/v1`, a placeholder since no drafting is built.
+- Store the session and return 201 `{session_id}`. An ID already in use → 409, and the stored session is unchanged.
+- Unreachable storage → 500 "System storage is unavailable".
+
+**`GET /test/report?session_id=`**
+
+- Return 200 `{session_id, coverage: {code: {covered: null, total: null, basis}}}`: code coverage isn't measured, so `basis` says so, as the spec allows.
+- Missing or blank `session_id` → 400; unknown session → 404.
+
+**`GET /test/report/{run_id}`**
+
+- Return 200 `{run, incidents, groups: [], audit}`: the session's `TestRun` (`run_id` is the session ID, `implemented_optional: []`), its incidents as full Incidents, and its audit entries oldest first.
+- Unknown session → 404.
+
+**`PATCH /test/sessions/{session_id}/settings`**
+
+- An optional pod extension that isn't built → 501.
+
 ## Incidents (REQ-01, REQ-22)
 
 Incidents are created in UnderAssessment at version 1 and are never replaced or deleted.
@@ -289,8 +315,7 @@ Incidents are created in UnderAssessment at version 1 and are never replaced or 
 
 **`PUT` and `DELETE /incidents/{incident_id}`**
 
-- Return 405 `METHOD_NOT_ALLOWED` and change nothing.
-- Register these routes explicitly so the framework doesn't fall back to its own 404 or 405 body.
+- Return 405 `METHOD_NOT_ALLOWED` and change nothing (see Stubs).
 
 ## Evidence import (REQ-02, REQ-03)
 
@@ -318,7 +343,7 @@ Each request is one `ImportRequest` body of simulated ticketing or SIEM items; o
 
 **Other evidence routes**
 
-- `DELETE /incidents/{id}/evidence/{evidence_id}` → 405, nothing changed.
+- `DELETE /incidents/{id}/evidence/{evidence_id}` → 405, nothing changed (see Stubs).
 - `PATCH /incidents/{id}/evidence/{evidence_id}` → 501 (see Stubs).
 
 ## Materiality determination (REQ-07, REQ-08)
@@ -366,7 +391,8 @@ Only five moves succeed; every other pair, including staying in the same state, 
 - Return 409 for every pair not in the set, including UA → DM/DNM (those go through `/determination`), DNM → DM and any `to: DisclosureRecorded`.
 - On success, set `state`, increment `version`, keep `determination` and `required_form` untouched, and return 200 with the full Incident.
 - Write a `transition` audit entry: `before: {state, version}`, `after: {state, version}`.
-- For `to: AmendmentPending`, validate that `info_available_date` and `elements` are present and well formed first (400 if not), then return 409 for the disallowed pair.
+- For `to: AmendmentPending`, require `info_available_date` (a date not after today) and `elements` (a non-empty array of unique names from nature, scope, timing and impact), 400 naming the field if not, then return 409 for the disallowed pair.
+- For any other target, check those two fields the same way when they're sent, since the request schema types them for every target, but don't require them.
 
 ## Audit trail (REQ-22)
 
@@ -378,18 +404,27 @@ Every successful create, import request, determination and transition writes exa
 - Use the shapes defined above: `create_incident`, `import_evidence` (one per request), `record_determination`, `transition`.
 - `GET /incidents/{incident_id}/audit` (all roles): return `{"entries": [...]}` oldest first by sequence; unknown incident → 404.
 - Include entries whose `target_id` is the incident, including import entries.
-- `PUT`, `PATCH`, `DELETE /incidents/{incident_id}/audit` → 405, nothing changed.
+- `PUT`, `PATCH`, `DELETE /incidents/{incident_id}/audit` → 405, nothing changed (see Stubs).
 - Enforce append-only in the DB as well (INSERT/SELECT grant only) and be ready to demo it for AC-23.
 - Don't audit GETs or rejected requests.
 
 ## Stubs
 
-Any system operation this team doesn't build returns 501 `NOT_IMPLEMENTED` using the `Error` schema.
+Edits and deletes of records return 405 `METHOD_NOT_ALLOWED`, and spec operations this team doesn't build return 501 `NOT_IMPLEMENTED`, both with the `Error` schema and nothing written. Each first runs the full error order: headers, session, role, then the IDs in its path (404 if unknown), so a 405 or 501 never hides another error.
 
-- `PATCH /incidents/{id}/evidence/{evidence_id}` (REQ-05) → 501.
-- `POST /groups` (REQ-04) → 501.
-- `voluntary_disclosure` on a determination (REQ-18) → 501.
-- Run the usual header and role checks before returning 501, so error order stays consistent.
+| Operation | Roles that pass | Path IDs looked up | Result |
+| --- | --- | --- | --- |
+| `PUT`, `DELETE /incidents/{id}` | DisclosureApprover | incident | 405, `Allow: GET` |
+| `DELETE /incidents/{id}/evidence/{evidence_id}` | DisclosureApprover | incident, evidence | 405, `Allow: PATCH` |
+| `PUT`, `PATCH`, `DELETE /incidents/{id}/audit` | DisclosureApprover | incident | 405, `Allow: GET` |
+| `PATCH /incidents/{id}/evidence/{evidence_id}` (REQ-05) | Responder, DisclosureApprover | incident, evidence | 501 |
+| `POST /groups` (REQ-04) | Responder, DisclosureApprover | none | 501 |
+| `POST /incidents/{id}/filings` | DisclosureApprover | incident | 501 |
+| `POST /incidents/{id}/drafts` | DisclosureApprover | incident | 501 |
+| `POST /drafts/{draft_id}/accept` | DisclosureApprover | none: no drafts exist | 501 |
+
+- `voluntary_disclosure` on a determination (REQ-18) → 501 (see Materiality determination).
+- The 501 operations don't validate their bodies.
 
 ## Deployment
 
@@ -430,8 +465,9 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 ## Settled decisions
 
 - `voluntary_disclosure`: either boolean value, `true` or `false`, returns 501; non-boolean values return 400 `VALIDATION_ERROR` on `voluntary_disclosure`.
-- 405 routes: validate headers, then return 403 for Responder and Board, per the spec's role rules; DisclosureApprover reaches 405.
+- 405 routes: after the headers and session, Responder and Board get 403, per the spec's roles rule; a DisclosureApprover gets the incident lookup (404) and then 405.
 - `to: AmendmentPending`: the error order puts invalid body (400) before wrong state (409). Missing or malformed `info_available_date` or `elements` → 400; with valid fields, the disallowed pair → 409.
+- An unknown session is a 404 checked before the role, the order Team 10's system uses.
 
 ## Tests to write
 
@@ -481,6 +517,26 @@ Write pytest tests against the service modules using a real local Postgres datab
 
 - A 10-action sequence produces 10 matching entries, oldest first.
 - Under the app's DB user, UPDATE and DELETE on audit_entries fail, and DELETE on incidents and evidence fails.
+
+**Test control**
+
+- Empty setup stores the pod defaults, and sent settings are stored as sent.
+- Each invalid setup field, and an ID already in use, is rejected with nothing stored.
+- Coverage has null counts with a reason; unknown and missing sessions are rejected.
+- The snapshot holds exactly its session's incidents and audit entries.
+
+**Stubs**
+
+- Only a DisclosureApprover reaches a 405, after the session, incident and evidence lookups; Responder and Board get `FORBIDDEN_ROLE`.
+- Each unbuilt operation returns `NOT_IMPLEMENTED` to its allowed roles and `FORBIDDEN_ROLE` to the rest, after the same checks.
+- Neither writes anything.
+
+**API (`tests/test_server.py`)**
+
+- Every project operation in `system-openapi.yaml` has an explicit route.
+- Success and error bodies match the spec's schemas, and errors leave out an unset `field`.
+- Headers, session, role, incident and body errors come in the root error order on every route.
+- 405 responses carry `Allow`, and test-control errors use `{message, source}`.
 
 ## Branches, commits and pull requests
 

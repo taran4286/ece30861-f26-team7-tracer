@@ -1,56 +1,75 @@
-"""Explicit Phase 3 placeholders and protection for the append-only audit trail."""
+"""Routes that end in 405 or 501 (root "Stubs"), after the same checks as a real operation.
+
+Each checks the identity headers, then its placeholder service checks the session, the role
+and the IDs in the path, so the 405 or 501 comes last in the error order.
+"""
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.api.calls import call, error_response
 from app.errors import ErrorCode, TracerError
-from app.roles import Operation, Role, require_role
+from app.roles import Operation
+from app.services import placeholders
 
 router = APIRouter()
 
 
-def _check_headers(request: Request) -> Role:
-    """Check raw headers here so missing headers return the contract's 400, not 422."""
-    user_id = request.headers.get("X-User-Id")
-    if not user_id or not user_id.strip():
-        raise TracerError(ErrorCode.VALIDATION_ERROR, "User ID is required", field="X-User-Id")
+async def _refuse(request: Request, allow: str, *ids: str) -> JSONResponse:
+    """405 METHOD_NOT_ALLOWED, with an Allow header naming the methods the path does have."""
     try:
-        role = Role(request.headers.get("X-User-Role"))
-    except (ValueError, TypeError):
-        raise TracerError(ErrorCode.VALIDATION_ERROR, "Invalid user role", field="X-User-Role")
-    run = request.headers.get("X-Test-Run")
-    if not run or not run.strip():
-        raise TracerError(ErrorCode.VALIDATION_ERROR, "Test run is required", field="X-Test-Run")
-    return role
-
-
-def _reply(request: Request, operation: Operation, code: ErrorCode, status: int) -> JSONResponse:
-    """Headers and permissions come before the placeholder response; nothing is written."""
-    try:
-        require_role(_check_headers(request), operation)
+        return await call(request, placeholders.refuse_change, *ids)
     except TracerError as error:
-        body = {key: value for key, value in error.to_dict().items() if value is not None}
-        return JSONResponse(body, status_code=400 if error.code == ErrorCode.VALIDATION_ERROR else 403)
-    return JSONResponse({"error": code.value, "message": (
-        "Audit entries cannot be edited or deleted" if status == 405
-        else "This feature is not implemented in Phase 3"
-    )}, status_code=status)
+        if error.code != ErrorCode.METHOD_NOT_ALLOWED:
+            raise
+        return error_response(error, headers={"Allow": allow})
+
+
+@router.api_route("/incidents/{incident_id}", methods=["PUT", "DELETE"])
+async def incident_not_allowed(request: Request, incident_id: str) -> JSONResponse:
+    """Incidents are never replaced or deleted (REQ-22)."""
+    return await _refuse(request, "GET", incident_id)
+
+
+@router.delete("/incidents/{incident_id}/evidence/{evidence_id}")
+async def evidence_not_allowed(request: Request, incident_id: str, evidence_id: str) -> JSONResponse:
+    """Evidence is never deleted (REQ-22)."""
+    return await _refuse(request, "PATCH", incident_id, evidence_id)
 
 
 @router.api_route("/incidents/{incident_id}/audit", methods=["PUT", "PATCH", "DELETE"])
-def audit_not_allowed(request: Request, incident_id: str) -> JSONResponse:
-    """Reject attempts to replace, edit or delete audit history."""
-    # Responder and Board receive 403 before DisclosureApprover reaches the 405.
-    return _reply(request, Operation.EDIT_AUDIT, ErrorCode.METHOD_NOT_ALLOWED, 405)
+async def audit_not_allowed(request: Request, incident_id: str) -> JSONResponse:
+    """The audit trail is append-only (REQ-22)."""
+    return await _refuse(request, "GET", incident_id)
 
 
 @router.patch("/incidents/{incident_id}/evidence/{evidence_id}")
-def tag_evidence_stub(request: Request, incident_id: str, evidence_id: str) -> JSONResponse:
-    """Return the placeholder response for evidence tagging after permission checks."""
-    return _reply(request, Operation.TAG_EVIDENCE, ErrorCode.NOT_IMPLEMENTED, 501)
+async def tag_evidence(request: Request, incident_id: str, evidence_id: str) -> JSONResponse:
+    """Tagging evidence (REQ-05) isn't built."""
+    return await call(
+        request, placeholders.not_built, Operation.TAG_EVIDENCE, incident_id, evidence_id
+    )
 
 
 @router.post("/groups")
-def create_group_stub(request: Request) -> JSONResponse:
-    """Return the placeholder response for group creation after permission checks."""
-    return _reply(request, Operation.CREATE_GROUP, ErrorCode.NOT_IMPLEMENTED, 501)
+async def create_group(request: Request) -> JSONResponse:
+    """Incident groups (REQ-04) aren't built."""
+    return await call(request, placeholders.not_built, Operation.CREATE_GROUP)
+
+
+@router.post("/incidents/{incident_id}/filings")
+async def record_filing(request: Request, incident_id: str) -> JSONResponse:
+    """Filings aren't built."""
+    return await call(request, placeholders.not_built, Operation.RECORD_FILING, incident_id)
+
+
+@router.post("/incidents/{incident_id}/drafts")
+async def request_draft(request: Request, incident_id: str) -> JSONResponse:
+    """Drafts aren't built."""
+    return await call(request, placeholders.not_built, Operation.REQUEST_DRAFT, incident_id)
+
+
+@router.post("/drafts/{draft_id}/accept")
+async def accept_draft(request: Request, draft_id: str) -> JSONResponse:
+    """Drafts aren't built, so no draft exists to look up."""
+    return await call(request, placeholders.not_built, Operation.ACCEPT_DRAFT)

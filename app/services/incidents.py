@@ -1,5 +1,6 @@
 """Create and get incidents (REQ-01, REQ-22), and the full Incident every operation returns."""
 
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import select
@@ -68,7 +69,10 @@ def load_incident(
     tx: Session, incident_id: str, *, session_id: str, for_update: bool = False
 ) -> Incident:
     """The incident named in the path, or NOT_FOUND; another session's incident counts as unknown."""
-    incident = tx.get(Incident, incident_id, with_for_update=for_update)
+    # PostgreSQL text can't hold NUL, so no stored ID has one, and querying for it would fail.
+    incident = None if "\x00" in incident_id else tx.get(
+        Incident, incident_id, with_for_update=for_update
+    )
     if incident is None or incident.session_id != session_id:
         raise TracerError(ErrorCode.NOT_FOUND, f"Incident {incident_id!r} not found")
     return incident
@@ -76,12 +80,34 @@ def load_incident(
 
 def incident_to_dict(tx: Session, incident: Incident) -> dict[str, Any]:
     """The full Incident schema, JSON-ready. Every operation that returns an Incident uses this."""
-    determination = tx.get(Determination, incident.incident_id)
-    evidence = tx.scalars(
+    [result] = incidents_to_dicts(tx, [incident])
+    return result
+
+
+def incidents_to_dicts(tx: Session, incidents: Sequence[Incident]) -> list[dict[str, Any]]:
+    """incident_to_dict for many incidents, loading all their determinations and evidence in
+    one query each instead of two per incident."""
+    ids = [incident.incident_id for incident in incidents]
+    determinations = {
+        row.incident_id: row
+        for row in tx.scalars(select(Determination).where(Determination.incident_id.in_(ids)))
+    }
+    evidence: dict[str, list[Evidence]] = {incident_id: [] for incident_id in ids}
+    for item in tx.scalars(
         select(Evidence)
-        .where(Evidence.incident_id == incident.incident_id)
+        .where(Evidence.incident_id.in_(ids))
         .order_by(Evidence.imported_at, Evidence.evidence_id)
-    ).all()
+    ):
+        evidence[item.incident_id].append(item)
+    return [
+        _incident_dict(incident, determinations.get(incident.incident_id), evidence[incident.incident_id])
+        for incident in incidents
+    ]
+
+
+def _incident_dict(
+    incident: Incident, determination: Determination | None, evidence: list[Evidence]
+) -> dict[str, Any]:
     return {
         "incident_id": incident.incident_id,
         "title": incident.title,
