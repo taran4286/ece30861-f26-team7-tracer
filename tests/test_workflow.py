@@ -436,3 +436,48 @@ def test_amendment_date_today_reaches_state_check(incident):
         "to": "AmendmentPending", "version": 1,
         "info_available_date": TODAY.isoformat(), "elements": ["nature"],
     }, ErrorCode.INVALID_TRANSITION)
+
+
+@pytest.mark.parametrize("elements,field", [
+    (None, "elements"), ([], "elements"), ("nature", "elements"),
+    (["nature", "cause"], "elements[1]"), (["Nature"], "elements[0]"), ([None], "elements[0]"),
+    (["scope", "impact", "scope"], "elements[2]"),
+])
+def test_amendment_elements_are_unique_element_names(incident, elements, field):
+    """Reject elements that aren't nature, scope, timing or impact, or that repeat one."""
+    body = {"to": "AmendmentPending", "version": 1, "info_available_date": TODAY.isoformat()}
+    if elements is not None:
+        body["elements"] = elements
+    assert_rejected(incident["incident_id"], body, ErrorCode.VALIDATION_ERROR, field)
+
+
+def test_all_four_amendment_elements_reach_state_check(incident):
+    """Accept every element name once, then reject the Phase 4 transition."""
+    assert_rejected(incident["incident_id"], {
+        "to": "AmendmentPending", "version": 1, "info_available_date": TODAY.isoformat(),
+        "elements": list(workflow.DRAFT_ELEMENTS),
+    }, ErrorCode.INVALID_TRANSITION)
+
+
+@pytest.mark.parametrize("extra,field", [
+    ({"info_available_date": "2026-02-30"}, "info_available_date"),
+    ({"info_available_date": (TODAY + timedelta(days=1)).isoformat()}, "info_available_date"),
+    ({"elements": ["cause"]}, "elements[0]"),
+    ({"elements": []}, "elements"),
+])
+def test_amendment_fields_are_checked_for_every_target(incident, extra, field):
+    """The request schema types the amendment fields for every target, so a bad one is a 400."""
+    ident = incident["incident_id"]
+    set_state(ident, State.DETERMINED_NOT_MATERIAL)
+    assert_rejected(ident, {"to": "Closed", "version": 1, **extra},
+                    ErrorCode.VALIDATION_ERROR, field)
+
+
+def test_valid_amendment_fields_dont_block_another_target(incident):
+    ident = incident["incident_id"]
+    set_state(ident, State.DETERMINED_NOT_MATERIAL)
+    result = workflow.transition_incident(ident, {
+        "to": "Closed", "version": 1, "info_available_date": TODAY.isoformat(),
+        "elements": ["impact"],
+    }, **APPROVER)
+    assert result["state"] == "Closed"

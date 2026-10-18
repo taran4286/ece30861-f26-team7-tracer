@@ -4,9 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from app.audit import audit
 from app.clock import utcnow
 from app.db import transaction
+from app.errors import ErrorCode, TracerError
 from app.models import AuditAction, Evidence, EvidenceSource, SiemSeverity, new_id
 from app.roles import Operation, Role, require_role
 from app.services.incidents import evidence_to_dict, load_incident
@@ -83,6 +86,16 @@ def import_evidence(
             user_id=user_id, session_id=session_id,
         )
         return {"evidence": [evidence_to_dict(row) for row in rows]}
+
+
+def load_evidence(tx: Session, incident_id: str, evidence_id: str) -> Evidence:
+    """The evidence item named in the path, or NOT_FOUND. Load its incident first with
+    load_incident, which checks the session; an item of another incident counts as unknown."""
+    # PostgreSQL text can't hold NUL, so no stored ID has one, and querying for it would fail.
+    evidence = None if "\x00" in evidence_id else tx.get(Evidence, evidence_id)
+    if evidence is None or evidence.incident_id != incident_id:
+        raise TracerError(ErrorCode.NOT_FOUND, f"Evidence {evidence_id!r} not found")
+    return evidence
 
 
 def _validate(body: Any) -> tuple[EvidenceSource, list[_NormalizedItem]]:

@@ -9,8 +9,8 @@ The building blocks every service uses. Business logic lives in `services/` (see
 | `config.py` | `Settings` (`database_url`) through the cached `get_settings()` |
 | `db.py` | `Base`, the cached `get_engine()`, and `transaction()`: one session per operation, committed on success and rolled back on any error |
 | `models.py` | The five tables (`TestSession` first), their enums, `SiemSeverity` (checked on import, not stored) and `new_id(prefix)` |
-| `errors.py` | `ErrorCode` and `TracerError(code, message, field=None)`; `to_dict()` returns `error`, `message` and `field`, with `field` as `None` when unset, while the Error schema wants it left out (see `api/AGENTS.md`) |
-| `roles.py` | `Role`, `Operation`, the `PERMISSIONS` map and `require_role(role, operation)` |
+| `errors.py` | `ErrorCode`, `HTTP_STATUS` (each code's status) and `TracerError(code, message, field=None)`, whose `status` comes from that map; `to_dict()` returns `error`, `message` and `field`, with `field` as `None` when unset, while the Error schema wants it left out (see `api/AGENTS.md`) |
+| `roles.py` | `Role`, `Operation`, the `PERMISSIONS` map and `require_role(role, operation)`. `Operation.REPLACE_OR_DELETE` covers the 405 routes: only DisclosureApprover passes it, and then gets 405 |
 | `clock.py` | `today(session)`, the UTC date of the session's `test_now`, for every date rule, and `utcnow()` for stored timestamps |
 | `sessions.py` | `load_session(tx, session_id)`: the `TestSession` a request names in `X-Test-Run`, or `NOT_FOUND` |
 | `audit.py` | `audit(tx, action, target_id, before, after, *, user_id, session_id)`, which adds one entry inside the caller's transaction |
@@ -19,7 +19,8 @@ The building blocks every service uses. Business logic lives in `services/` (see
 
 - Keep `app/` free of web framework imports, apart from `app/api/`; services must stay callable without one.
 - Never call `datetime.now()` or `date.today()` outside `clock.py`; use `clock` (root "Dates").
-- Raise only `TracerError`, with a path-style `field` on validation errors; each `ErrorCode`'s HTTP status is noted beside it in `errors.py`.
+- Raise only `TracerError`, with a path-style `field` on validation errors. A new `ErrorCode` needs its status in `HTTP_STATUS`.
+- Loaders (`load_session`, `load_incident`, `load_evidence`) treat an ID containing NUL as unknown without querying: PostgreSQL text can't hold NUL, so the query would fail instead of returning nothing.
 - Make IDs with `new_id()`. Prefixes in use: `inc`, `ev`, `aud`. Session IDs are the exception: the tester supplies them.
 - `TestSession` sets `__test__ = False`, so pytest doesn't collect it as a test class when a test file imports it.
 - `config.py` never reads `ADMIN_DATABASE_URL`; only `scripts/setup_db.py` does.

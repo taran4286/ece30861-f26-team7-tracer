@@ -1,22 +1,25 @@
 """The system's FastAPI app; server.py mounts it at /system.
 
-It serves a captioned photo, health check, and explicit Phase 3 placeholders.
-Other unfinished paths fall back to 501.
+It serves a captioned photo, a health check, the test-control routes, the project operations
+this team builds, and 405 or 501 for the rest of the spec's operations. Other paths get 501.
 """
 
 import base64
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.db import get_engine
-from app.errors import ErrorCode
+from app.api.calls import error_response
+from app.api.control import router as control_router
+from app.api.routes import router as project_router
 from app.api.stubs import router as stub_router
+from app.db import get_engine
+from app.errors import ErrorCode, TracerError
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +63,15 @@ def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "database": "ok"})
 
 
-# Specific placeholders must be registered before the catch-all.
+@system_app.exception_handler(TracerError)
+async def tracer_error(request: Request, error: TracerError) -> JSONResponse:
+    """A project operation's error, as the Error schema with the code's status."""
+    return error_response(error)
+
+
+# Every route must be registered before the catch-all.
+system_app.include_router(control_router)
+system_app.include_router(project_router)
 system_app.include_router(stub_router)
 
 

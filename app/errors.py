@@ -1,16 +1,28 @@
-"""The one exception services raise; the API layer maps it to HTTP responses later."""
+"""The one exception services raise; the API layer turns it into an HTTP response."""
 
 from enum import StrEnum
 
 
 class ErrorCode(StrEnum):
-    VALIDATION_ERROR = "VALIDATION_ERROR"  # 400
-    FORBIDDEN_ROLE = "FORBIDDEN_ROLE"  # 403
-    # The plan doesn't name the 404 code; rewire once the final API arrives.
-    NOT_FOUND = "NOT_FOUND"  # 404
-    METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"  # 405
-    INVALID_TRANSITION = "INVALID_TRANSITION"  # 409
-    NOT_IMPLEMENTED = "NOT_IMPLEMENTED"  # 501
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    FORBIDDEN_ROLE = "FORBIDDEN_ROLE"
+    NOT_FOUND = "NOT_FOUND"
+    METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
+    INVALID_TRANSITION = "INVALID_TRANSITION"
+    CONFLICT = "CONFLICT"
+    NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+
+
+# Each code's HTTP status, from the spec's shared responses.
+HTTP_STATUS: dict[ErrorCode, int] = {
+    ErrorCode.VALIDATION_ERROR: 400,
+    ErrorCode.FORBIDDEN_ROLE: 403,
+    ErrorCode.NOT_FOUND: 404,
+    ErrorCode.METHOD_NOT_ALLOWED: 405,
+    ErrorCode.INVALID_TRANSITION: 409,
+    ErrorCode.CONFLICT: 409,
+    ErrorCode.NOT_IMPLEMENTED: 501,
+}
 
 
 class TracerError(Exception):
@@ -21,6 +33,10 @@ class TracerError(Exception):
         self.code = code
         self.message = message
         self.field = field
+
+    @property
+    def status(self) -> int:
+        return HTTP_STATUS[self.code]
 
     def to_dict(self) -> dict[str, str | None]:
         return {"error": self.code.value, "message": self.message, "field": self.field}

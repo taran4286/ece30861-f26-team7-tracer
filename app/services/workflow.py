@@ -21,7 +21,13 @@ from app.models import (
 )
 from app.roles import Operation, Role, require_role
 from app.services.incidents import incident_to_dict, load_incident
-from app.services.validation import invalid, parse_date, require_object, require_string
+from app.services.validation import (
+    invalid,
+    parse_date,
+    parse_integer,
+    require_object,
+    require_string,
+)
 from app.sessions import load_session
 
 
@@ -35,6 +41,9 @@ ALLOWED_TRANSITIONS = frozenset(
     }
 )
 
+# The spec's DraftElementName values, which AmendmentPending's `elements` must come from.
+DRAFT_ELEMENTS = ("nature", "scope", "timing", "impact")
+
 
 def _transition_target(body: Any, today: date) -> State:
     """Check the request fields and return the requested state."""
@@ -47,27 +56,29 @@ def _transition_target(body: Any, today: date) -> State:
         target = State(target)
     except ValueError:
         raise invalid("to", "Unknown state")
-    version = body.get("version")
-    # Exclude True/False, which Python otherwise treats as integers.
     # Stale versions are not rejected in Phase 3.
-    if (
-        isinstance(version, bool)
-        or not (isinstance(version, int) or (isinstance(version, float) and version.is_integer()))
-        or version < 1
-    ):
-        raise invalid("version", "Expected an integer greater than or equal to 1")
-    if target == State.AMENDMENT_PENDING:
-        # Validate the extra fields before rejecting this Phase 4 transition.
-        # TODO: Match the pod contract's element names and uniqueness.
+    parse_integer(body.get("version"), "version")
+    # Required for AmendmentPending, and checked whenever sent, since the request schema types
+    # them for every target. Validated before this Phase 4 transition is refused.
+    amendment = target == State.AMENDMENT_PENDING
+    if amendment or "info_available_date" in body:
         if parse_date(body.get("info_available_date"), "info_available_date") > today:
             raise invalid("info_available_date", "info_available_date must not be after today")
-        elements = body.get("elements")
-        if not isinstance(elements, list) or not elements:
-            raise invalid("elements", "Expected a non-empty array of element names")
-        for index, element in enumerate(elements):
-            if not isinstance(element, str) or not element.strip():
-                raise invalid(f"elements[{index}]", "Expected a non-empty element name")
+    if amendment or "elements" in body:
+        _check_elements(body.get("elements"))
     return target
+
+
+def _check_elements(elements: Any) -> None:
+    """A non-empty array of unique DraftElementName values."""
+    if not isinstance(elements, list) or not elements:
+        raise invalid("elements", "Expected a non-empty array of element names")
+    for index, element in enumerate(elements):
+        if not isinstance(element, str) or element not in DRAFT_ELEMENTS:
+            allowed = ", ".join(DRAFT_ELEMENTS)
+            raise invalid(f"elements[{index}]", f"Expected one of: {allowed}")
+        if element in elements[:index]:
+            raise invalid(f"elements[{index}]", f"{element} appears more than once")
 
 
 def transition_incident(
@@ -122,21 +133,20 @@ def list_audit_entries(
             .where(AuditEntry.target_id == incident_id)
             .order_by(AuditEntry.seq)
         ).all()
-        # seq controls ordering but is not part of the response.
-        return {
-            "entries": [
-                {
-                    "entry_id": entry.entry_id,
-                    "user_id": entry.user_id,
-                    "timestamp": entry.timestamp.isoformat(),
-                    "action": entry.action.value,
-                    "target_id": entry.target_id,
-                    "before": entry.before,
-                    "after": entry.after,
-                }
-                for entry in entries
-            ]
-        }
+        return {"entries": [audit_entry_to_dict(entry) for entry in entries]}
+
+
+def audit_entry_to_dict(entry: AuditEntry) -> dict[str, Any]:
+    """The AuditEntry schema. seq sets the order but isn't part of it, and neither is session_id."""
+    return {
+        "entry_id": entry.entry_id,
+        "user_id": entry.user_id,
+        "timestamp": entry.timestamp.isoformat(),
+        "action": entry.action.value,
+        "target_id": entry.target_id,
+        "before": entry.before,
+        "after": entry.after,
+    }
 
 
 def record_determination(
@@ -144,7 +154,7 @@ def record_determination(
 ) -> dict[str, Any]:
     """Record one determination and return the full incident as JSON-ready data.
 
-    Identity headers belong to the future API layer. Service error order is session,
+    The API layer checks the identity headers first. Service error order is session,
     role, incident existence, body validation, then state. Stale versions are accepted.
     """
     with transaction() as tx:
@@ -173,13 +183,7 @@ def record_determination(
         )))
         if owned_refs != set(refs):
             raise invalid("evidence_refs", "Every evidence ID must belong to this incident")
-        version = body.get("version")
-        if (
-            isinstance(version, bool)
-            or not (isinstance(version, int) or (isinstance(version, float) and version.is_integer()))
-            or version < 1
-        ):
-            raise invalid("version", "Expected an integer greater than or equal to 1")
+        parse_integer(body.get("version"), "version")
         if "voluntary_disclosure" in body:
             if not isinstance(body["voluntary_disclosure"], bool):
                 raise invalid("voluntary_disclosure", "Expected a boolean")
