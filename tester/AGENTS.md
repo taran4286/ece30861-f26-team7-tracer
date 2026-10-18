@@ -4,7 +4,7 @@ Our tester service, implementing `tester-openapi.yaml`. `server.py` mounts `test
 
 ## What it serves
 
-- `GET /` returns an HTML page (`pages.py`): `tester.png` beside the title "Team 7 — Tracer tester", how to run setup, run and report with the time limits, and a form whose `?session_id=` shows that session's stored report as tables: totals, per-criterion counts, coverage, and every test with its message. Without a session ID it never touches storage, so it also loads on previews; an unknown or unfinished session, or unreachable storage, shows why there's no report. It only reads reports, never starts a run. `/tester` without the slash redirects there with a 307. It's outside the spec, and reads the photo per request, so a missing file breaks only this page.
+- `GET /` returns an HTML page (`pages.py`): the title "Team 7 — Tracer tester", how to run setup, run and report with the time limits, and a form whose `?session_id=` shows that session's stored report as tables: totals, per-criterion counts, coverage, and every test with its message. Without a session ID it never touches storage, so it also loads on previews; an unknown or unfinished session, or unreachable storage, shows why there's no report. It only reads reports, never starts a run. `/tester` without the slash redirects there with a 307. It's outside the spec.
 - `POST /test/setup` with `{target_url}` prepares a session on the target and returns 201 `{session_id}` (see "Setup and run"). A `target_url` that isn't an http or https system base URL, or that has a `/test` suffix, a query, a fragment or credentials, gets 400. A target error is passed on with its status, message and source, with `source: "system"` when its body isn't a `TestControlError`. No answer within 20 s gets 500 with `source: "communication"`.
 - `POST /test/run` with `{session_id}` runs every planned case once and returns 200 with the stored `SuiteReport`, failed tests included. A missing or blank `session_id` gets 400, an unknown session 404, and a session that has already started 409. An aborted run stores its partial report and gets 500 with `source: "tester"`.
 - `GET /test/report?session_id=` returns the stored `SuiteReport` of a finished or aborted run and never starts or repeats one. A missing or blank `session_id` gets 400, an unknown session 404, and a session whose run hasn't ended 409.
@@ -19,7 +19,7 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 | Module | Provides |
 | --- | --- |
 | `config.py` | `TesterSettings` (`tester_database_url`) through the cached `get_tester_settings()` |
-| `db.py` | `Base`, the cached `get_engine()` and `transaction()`, mirroring `app/db.py` |
+| `db.py` | `Base`, the cached `get_engine()` and `transaction()`, mirroring `app/db.py`, including `parse_url()`, which makes a malformed `TESTER_DATABASE_URL` an `ArgumentError` the storage handlers catch |
 | `models.py` | `StoredSession`, the `tester_sessions` table, and `RunStatus` |
 | `sessions.py` | `create_session`, `start_run`, `finish_run`, `get_report`, and `ControlError(status, message, source="tester")` |
 

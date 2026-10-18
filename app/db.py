@@ -8,6 +8,8 @@ from functools import lru_cache
 from typing import Any
 
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
@@ -33,11 +35,24 @@ def _json_dumps(value: Any) -> str:
 CONNECT_TIMEOUT_SECONDS = 5
 
 
+def parse_url(value: str, setting: str) -> URL:
+    """A database URL, raising ArgumentError, a SQLAlchemyError, for any malformed one.
+
+    SQLAlchemy raises a plain ValueError for some, such as a port that isn't a number, which
+    handlers that catch SQLAlchemyError for an unreachable database would miss. The message
+    names the setting, never the URL, which holds a password.
+    """
+    try:
+        return make_url(value)
+    except ValueError:
+        raise ArgumentError(f"{setting} is not a valid database URL") from None
+
+
 @lru_cache
 def get_engine() -> Engine:
     # pool_pre_ping replaces connections the server dropped while idle, e.g. when Neon pauses.
     return create_engine(
-        get_settings().database_url,
+        parse_url(get_settings().database_url, "DATABASE_URL"),
         json_serializer=_json_dumps,
         pool_pre_ping=True,
         connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},

@@ -31,7 +31,8 @@ async def _respond(work: Callable[..., Any], *args: Any, status: int = 200) -> J
         return JSONResponse({"message": error.message, "source": "system"}, status_code=error.status)
     except (ValidationError, ImportError, SQLAlchemyError):
         # The causes /health reports: a missing or invalid setting, such as no DATABASE_URL on a
-        # preview, a driver we don't install, or no database. The spec keeps setup reachable then.
+        # preview, a driver we don't install, a malformed URL, or no database. The spec keeps
+        # setup reachable then.
         logger.warning("system storage unavailable", exc_info=True)
         return JSONResponse(
             {"message": "System storage is unavailable", "source": "system"}, status_code=500

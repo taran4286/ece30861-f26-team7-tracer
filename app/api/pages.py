@@ -1,7 +1,6 @@
-"""The system's status page at its base URL: health, the shared spec, and how each operation
-in it is answered. Not part of the spec; no tester calls it."""
+"""The system's status page at its base URL: health, the shared spec, and the spec operations
+this system answers, built or refused by design. Not part of the spec; no tester calls it."""
 
-import base64
 from functools import cache
 from html import escape
 from pathlib import Path
@@ -9,7 +8,6 @@ from typing import Any
 
 import yaml
 
-PHOTO = Path(__file__).with_name("system.png")
 TITLE = "Team 7 — Tracer system"
 SPEC = Path(__file__).resolve().parents[2] / "system-openapi.yaml"
 SPEC_LINK = "https://github.com/taran4286/ece30861-f26-team7-tracer/blob/main/system-openapi.yaml"
@@ -51,8 +49,6 @@ STYLE = """
 --bg:#0d1117;--ok:#3fb950;--warn:#d29922;--bad:#f85149}}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
 main{max-width:960px;margin:0 auto;padding:24px 16px}
-header{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-header img{max-height:120px;max-width:100%;border-radius:8px}
 h1{font-size:1.5rem;margin:0}h2{font-size:1.15rem;margin:28px 0 8px}
 .wrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:14px}
@@ -66,7 +62,7 @@ PAGE = """<!doctype html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title><style>{style}</style></head>
 <body><main>
-<header><img src="data:image/png;base64,{photo}" alt="{title}"><h1>{title}</h1></header>
+<h1>{title}</h1>
 <h2>Status</h2>
 <p>Database: <strong class="{health_class}">{health}</strong></p>
 <p>Implements <a href="{spec_link}">{spec_title} {spec_version}</a>. Every project request needs
@@ -97,19 +93,23 @@ def operations() -> list[tuple[str, str, str]]:
     ]
 
 
+def shown_operations() -> list[tuple[str, str, str]]:
+    """The operations the page lists: built or refused by design, leaving out the 501s."""
+    return [op for op in operations() if STATUS[(op[0], op[1])] != NOT_BUILT]
+
+
 def render(database_ok: bool) -> str:
-    """The page. Reads the photo and the spec per request, not at import, so a missing file
-    breaks only this page."""
+    """The page. Reads the spec when first needed, not at import, so a missing file breaks only
+    this page."""
     info = _spec()["info"]
     rows = "\n".join(
         f'<tr><td><code>{method}</code></td><td><code>{escape(path)}</code></td>'
         f'<td class="{STATUS_CLASS[STATUS[(method, path)]]}">{STATUS[(method, path)]}</td>'
         f"<td>{escape(summary)}</td></tr>"
-        for method, path, summary in operations()
+        for method, path, summary in shown_operations()
     )
     return PAGE.format(
         style=STYLE,
-        photo=base64.b64encode(PHOTO.read_bytes()).decode(),
         title=TITLE,
         health="reachable" if database_ok else "unavailable",
         health_class="ok" if database_ok else "bad",

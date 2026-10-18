@@ -4,15 +4,12 @@ Not part of the spec. It only reads reports; it never starts or repeats a run. R
 messages can quote another team's system, so everything shown is HTML-escaped.
 """
 
-import base64
 from html import escape
-from pathlib import Path
 from typing import Any
 
 from tester.client import CALL_TIMEOUT
 from tester.runner import CALL_CUTOFF_SECONDS, SETUP_TIMEOUT_SECONDS
 
-PHOTO = Path(__file__).with_name("tester.png")
 TITLE = "Team 7 — Tracer tester"
 OUTCOMES = ("pass", "fail", "error", "skip")
 OUTCOME_CLASS = {"pass": "ok", "fail": "bad", "error": "bad", "skip": "muted"}
@@ -24,8 +21,6 @@ STYLE = """
 --bg:#0d1117;--ok:#3fb950;--warn:#d29922;--bad:#f85149}}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
 main{max-width:960px;margin:0 auto;padding:24px 16px}
-header{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-header img{max-height:120px;max-width:100%;border-radius:8px}
 h1{font-size:1.5rem;margin:0}h2{font-size:1.15rem;margin:28px 0 8px}
 .wrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:14px}
@@ -41,7 +36,7 @@ PAGE = """<!doctype html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title><style>{style}</style></head>
 <body><main>
-<header><img src="data:image/png;base64,{photo}" alt="{title}"><h1>{title}</h1></header>
+<h1>{title}</h1>
 <h2>Running it</h2>
 <pre>POST /tester/test/setup   {{"target_url": "https://&lt;host&gt;/system"}}   → {{"session_id": "…"}}
 POST /tester/test/run     {{"session_id": "…"}}   → the report; one run per session
@@ -67,7 +62,6 @@ def render(session_id: str | None, report: dict[str, Any] | None, problem: str |
         body = '<p class="muted">Enter a session ID to see its stored report.</p>'
     return PAGE.format(
         style=STYLE,
-        photo=base64.b64encode(PHOTO.read_bytes()).decode(),
         title=TITLE,
         setup=SETUP_TIMEOUT_SECONDS,
         cutoff=CALL_CUTOFF_SECONDS,
@@ -100,7 +94,8 @@ def _report(report: dict[str, Any]) -> str:
         for name, counts in criteria.items()
     )
     coverage_rows = "\n".join(
-        f"<tr><td>{kind}</td><td>{_measure(measure)}</td><td>{escape(str(measure['basis']))}</td></tr>"
+        f"<tr><td>{escape(kind)}</td><td>{_measure(measure)}</td>"
+        f"<td>{escape(str(measure['basis']))}</td></tr>"
         for kind, measure in report["coverage"].items()
     )
     result_rows = "\n".join(

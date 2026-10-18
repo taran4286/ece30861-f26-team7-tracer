@@ -12,7 +12,7 @@ Each guided folder has its own `AGENTS.md` with the rules for that folder. This 
 | Guide | Covers |
 | --- | --- |
 | `app/AGENTS.md` | Foundation modules: config, db, models, errors, roles, clock and audit |
-| `app/api/AGENTS.md` | The system's FastAPI app: the photo page, health check, `stubs.py` placeholders and the 501 catch-all |
+| `app/api/AGENTS.md` | The system's FastAPI app: the status page, health check, test control, project routes, the 405 and 501 routes, and the 501 catch-all |
 | `app/services/AGENTS.md` | Business logic and the steps every operation follows |
 | `tester/AGENTS.md` | Our tester's FastAPI app, its session storage and cross-team test cases, and the rule that it never imports `app` |
 | `fixtures/AGENTS.md` | The incident, ticketing and SIEM fixtures our tester sends |
@@ -459,7 +459,7 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 - Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
 - Leave Deployment Protection at Standard: the production domain stays public for testers, while preview and deployment-specific URLs need a Vercel login.
 - No `vercel.json` is needed: the Hobby plan's default function limit of 300 s already covers the tester's longest request.
-- After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached, `DATABASE_URL` is missing, or the URL names a driver we don't install (a bare `postgresql://`); the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
+- After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached, `DATABASE_URL` is missing or malformed, or the URL names a driver we don't install (a bare `postgresql://`); the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
 - The server clock (UTC, NTP-synced, for AC-02's ±5 s) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 
 ## Settled decisions

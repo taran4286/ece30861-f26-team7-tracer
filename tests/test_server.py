@@ -2,7 +2,6 @@
 check, test control, project operations, 405s and 501s, with statuses, error shapes and error
 order."""
 
-import base64
 import re
 import socket
 import time
@@ -12,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 from fastapi.testclient import TestClient
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import ArgumentError, OperationalError
 
 import app.api as system_api
 import app.db as db
@@ -98,13 +97,18 @@ def test_base_url_shows_the_status_page(path):
     assert response.headers["content-type"].startswith("text/html")
     assert "<h1>Team 7 — Tracer system</h1>" in response.text
     assert "Team 7 service" not in response.text
-    assert base64.b64encode(pages.PHOTO.read_bytes()).decode() in response.text
+    assert "<img" not in response.text
     assert 'Database: <strong class="ok">reachable</strong>' in response.text
     assert "Tracer Shared System API 1.1.0-proposed" in response.text
+    # Built and 405 operations are listed; the 501s aren't.
     for method, path, _ in pages.operations():
         status = pages.STATUS[(method, path)]
-        assert (f"<td><code>{method}</code></td><td><code>{path}</code></td>"
-                f'<td class="{pages.STATUS_CLASS[status]}">{status}</td>') in response.text
+        row = f"<td><code>{method}</code></td><td><code>{path}</code></td>"
+        if status == pages.NOT_BUILT:
+            assert row not in response.text
+        else:
+            assert f'{row}<td class="{pages.STATUS_CLASS[status]}">{status}</td>' in response.text
+    assert pages.NOT_BUILT not in response.text
 
 
 def test_status_page_matches_how_each_operation_is_answered():
@@ -120,6 +124,21 @@ def test_status_page_matches_how_each_operation_is_answered():
         expected = (pages.REFUSED if operation in refused
                     else pages.NOT_BUILT if operation in not_built else pages.BUILT)
         assert status == expected, operation
+
+
+def test_a_malformed_database_url_reads_as_unavailable(monkeypatch, fresh_settings):
+    # A port that isn't a number: SQLAlchemy raises a plain ValueError, which db.parse_url turns
+    # into ArgumentError, a SQLAlchemyError, so every storage handler catches it.
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://tracer_app:secret@127.0.0.1:abc/tracer")
+    assert 'Database: <strong class="bad">unavailable</strong>' in client.get("/system/").text
+    assert client.get("/system/health").status_code == 503
+    response = client.post("/system/test/setup",
+                           json={"session_id": "pytest-never-stored", "setup": {}})
+    control_error(response, 500)
+    assert response.json()["message"] == "System storage is unavailable"
+    with pytest.raises(ArgumentError) as error:
+        db.parse_url("postgresql+psycopg://tracer_app:secret@127.0.0.1:abc/tracer", "DATABASE_URL")
+    assert "secret" not in str(error.value)
 
 
 def test_status_page_loads_without_the_database(monkeypatch):

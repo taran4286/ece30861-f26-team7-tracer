@@ -35,6 +35,7 @@ def database_ok() -> bool:
     except (ValidationError, ImportError, SQLAlchemyError):
         # ValidationError: a setting is missing or invalid, e.g. no DATABASE_URL on a preview.
         # ImportError: the URL names a driver we don't install, e.g. a bare postgresql:// scheme.
+        # SQLAlchemyError includes a malformed URL; get_engine() raises ArgumentError for it.
         logger.warning("database unavailable", exc_info=True)
         return False
     return True

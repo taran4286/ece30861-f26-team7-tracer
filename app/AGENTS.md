@@ -7,7 +7,7 @@ The building blocks every service uses. Business logic lives in `services/` (see
 | Module | Provides |
 | --- | --- |
 | `config.py` | `Settings` (`database_url`) through the cached `get_settings()` |
-| `db.py` | `Base`, the cached `get_engine()`, and `transaction()`: one session per operation, committed on success and rolled back on any error |
+| `db.py` | `Base`, the cached `get_engine()`, and `transaction()`: one session per operation, committed on success and rolled back on any error. `get_engine()` reads `DATABASE_URL` through `parse_url()`, which raises `ArgumentError`, a `SQLAlchemyError`, for a malformed URL, where SQLAlchemy alone would raise a plain `ValueError` that storage handlers miss |
 | `models.py` | The five tables (`TestSession` first), their enums, `SiemSeverity` (checked on import, not stored) and `new_id(prefix)` |
 | `errors.py` | `ErrorCode`, `HTTP_STATUS` (each code's status) and `TracerError(code, message, field=None)`, whose `status` comes from that map; `to_dict()` returns `error`, `message` and `field`, with `field` as `None` when unset, while the Error schema wants it left out (see `api/AGENTS.md`) |
 | `roles.py` | `Role`, `Operation`, the `PERMISSIONS` map and `require_role(role, operation)`. `Operation.REPLACE_OR_DELETE` covers the 405 routes: only DisclosureApprover passes it, and then gets 405 |
