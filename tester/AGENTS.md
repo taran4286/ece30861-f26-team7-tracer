@@ -50,7 +50,7 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 
 | Module | Does |
 | --- | --- |
-| `client.py` | `Target`: sends a call to the target's base URL with `X-Test-Run`, `X-User-Id` and `X-User-Role` and a 10 s timeout, no retry, and checks the reply against the spec. It records each (method, template) it sends in `called`, refuses calls after its deadline with `Stopped`, and asks for the session's coverage report with `coverage()`. `Actor` holds the identity headers |
+| `client.py` | `Target`: sends a call to the target's base URL with `X-Test-Run`, `X-User-Id` and `X-User-Role` and a 10 s timeout, no retry, and checks the reply against the spec. It records each (method, template) it sends in `called`, refuses calls after its deadline with `Stopped`, and asks for the session's coverage report with `coverage()`. Each `Reply` carries `sent_at` and `received_at`, the tester's UTC clock just before and after the call. `Actor` holds the identity headers |
 | `spec.py` | Loads `system-openapi.yaml` and `tester-openapi.yaml` from the repo root and checks JSON against their schemas, `date` and `date-time` formats included; also gives the system spec's tags and each operation's tags |
 | `suite.py` | `run_cases()`, the outcome rules (a `Stopped` case is an error from the tester and the rest are skipped), `expect()`, and `Run`: shared setups (`once`, `forget`) and the snapshot baseline for "stored data unchanged" checks |
 | `cases.py` | The cases, by criterion: AC-02, 03, 07, 08, 20, 06, 09 (a), 23 (a)–(c), then 01, each with normal cases and edge cases |
@@ -58,6 +58,7 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 - Outcomes: `pass` when the reply meets the pass rule, an expected 403, 404 or 409 included. `fail` when it doesn't, including a body that breaks its spec schema and a 501 on a route the case needs. `error` with `source: system` for any other 5xx, `communication` when no response arrives, and `tester` for a fault in our code. `skip` for a case not run.
 - A shared setup that fails, such as the incident several cases use, gives each of those cases the same outcome, its message starting `Setup failed:`.
 - "Stored data unchanged" compares the target's snapshot (`GET /test/report/{run_id}`) before and after the call, with arrays sorted by ID.
+- "Real server time" (AC-02's `imported_at`, AC-23's audit `timestamp`) is checked by `clock_problems` against the tester's own clock: the value must fall between `sent_at` minus 5 s and `received_at` plus 5 s. Never use the response's `Date` header; a host can send a stale one, as a Vercel function does on its first reply after sitting idle.
 - AC-06 plans all 49 state pairs. It runs the 33 whose source state is reachable without a filing and reports the 16 that need a filing as `skip`. A source state's allowed move runs after its refused ones, and a case that sees the incident leave its state calls `run.forget`, so later cases get a new one.
 - AC-01 runs last, so its 100 incidents don't enlarge every earlier snapshot.
 

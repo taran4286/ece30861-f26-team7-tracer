@@ -8,7 +8,6 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from email.utils import formatdate
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -142,12 +141,6 @@ class FakeSystem:
         everyone = set(ROLES)
         writers = {"Responder", "DisclosureApprover"}
         approver = {"DisclosureApprover"}
-
-        @app.middleware("http")
-        async def server_date(request: Request, call_next):
-            response = await call_next(request)
-            response.headers["Date"] = formatdate(usegmt=True)
-            return response
 
         @app.exception_handler(Reject)
         async def rejected(request: Request, exc: Reject) -> JSONResponse:

@@ -14,7 +14,7 @@ The root "Tests to write" section lists what each area must cover; this file cov
 | `test_server.py` | `server.py`'s landing page and mounts, captioned photo, health check and catch-all; and the system's API over HTTP: a route for every spec operation, test control's responses and errors, project responses checked against the spec, error order on every route, 405s with `Allow`, and 501s |
 | `test_tester.py` | The tester's captioned photo page and 501 stub; its session storage (one run per session, reports stored once); setup against `FakeSystem` (bad URLs, target errors passed on, no answer, each storing no session), a full run's stored report and coverage, the deadline abort, a missing coverage report, and runs whose planning or report check fails; `GET /test/report`; the tester and app roles' table access; and that `tester/` never imports `app` |
 | `fake_system.py` | `FakeSystem`: an in-memory system following `system-openapi.yaml` as far as the cases and the runner need, coverage report included, with switchable `BUGS` |
-| `test_tester_cases.py` | The tester's cases against `FakeSystem` under `/system`: all pass on a conforming system, each bug fails its case, and errors get the right source |
+| `test_tester_cases.py` | The tester's cases against `FakeSystem` under `/system`: all pass on a conforming system, each bug fails its case, errors get the right source, the clock check's window, and a stale `Date` header failing no case |
 
 ## Running
 
