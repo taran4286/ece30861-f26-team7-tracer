@@ -27,6 +27,23 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 3. `finish_run` stores the report and moves `running` to `finished` or `aborted`, committing before it returns. It changes only a running session, so a stored report is never replaced; any other call is a tester bug and raises 500.
 4. `get_report` returns the stored report: 404 for an unknown session, 409 while it's `ready` or `running`.
 
+## Cross-team test cases
+
+`cases.run_suite(target)` runs every planned case, in order, against one prepared session of a target system and returns one `TestResult` per case. No route calls it; `tests/test_tester_cases.py` runs it against `tests/fake_system.py`.
+
+| Module | Does |
+| --- | --- |
+| `client.py` | `Target`: sends a call to the target's base URL with `X-Test-Run`, `X-User-Id` and `X-User-Role` and a 10 s timeout, no retry, and checks the reply against the spec; `Actor` holds the identity headers |
+| `spec.py` | Loads `system-openapi.yaml` from the repo root and checks JSON against its schemas, `date` and `date-time` formats included |
+| `suite.py` | `run_cases()`, the outcome rules, `expect()`, and `Run`: shared setups (`once`, `forget`) and the snapshot baseline for "stored data unchanged" checks |
+| `cases.py` | The cases, by criterion: AC-02, 03, 07, 08, 20, 06, 09 (a), 23 (a)–(c), then 01, each with normal cases and edge cases |
+
+- Outcomes: `pass` when the reply meets the pass rule, an expected 403, 404 or 409 included. `fail` when it doesn't, including a body that breaks its spec schema and a 501 on a route the case needs. `error` with `source: system` for any other 5xx, `communication` when no response arrives, and `tester` for a fault in our code. `skip` for a case not run.
+- A shared setup that fails, such as the incident several cases use, gives each of those cases the same outcome, its message starting `Setup failed:`.
+- "Stored data unchanged" compares the target's snapshot (`GET /test/report/{run_id}`) before and after the call, with arrays sorted by ID.
+- AC-06 plans all 49 state pairs. It runs the 33 whose source state is reachable without a filing and reports the 16 that need a filing as `skip`. A source state's allowed move runs after its refused ones, and a case that sees the incident leave its state calls `run.forget`, so later cases get a new one.
+- AC-01 runs last, so its 100 incidents don't enlarge every earlier snapshot.
+
 ## Rules
 
 - Never import `app`. The tester checks systems, ours included, only through their HTTP API; `tests/test_tester.py` fails on any `app` import here.
@@ -36,3 +53,9 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 - Settings are read on first use, not at import, so the tester still loads without `TESTER_DATABASE_URL`. Preview deployments don't have it, so the report route answers 500 there.
 - `get_tester_settings()`, `get_engine()` and `_session_factory()` are cached. A test that changes `TESTER_DATABASE_URL` clears all three before and after.
 - Nothing here creates tables; the tester role can't. `scripts/setup_db.py` creates `tester_sessions` from `models.py`, and a new tester table also needs a `TESTER_GRANTS` entry there. Changing a column needs a wiped local database or a migration, as for the app's tables (root "Local setup steps").
+- Expected statuses, error codes and fields come from `system-openapi.yaml`, and each case's pass rule from its course acceptance criterion. For example, Responder and Board get 403 on the audit and delete routes, and only a DisclosureApprover gets 405.
+- Check only what the spec states. It sets no order between errors, so each rejection case's request has one thing wrong with it. No case checks due dates or flags.
+- Dates in the cases assume the session's `test_now` is the spec's default, 2026-10-05T15:00:00Z (`TODAY` in `cases.py`), so the runner's setup must send `setup: {}`.
+- Make every project call through `Run.call`, never `Target.call`: it ends the saved snapshot baseline, so a rejection is never compared with stale data.
+- Test IDs are stable and unique, and start with their criterion (`AC-06-DM-to-Closed`); reports from both teams are compared by them.
+- `spec.py` and the cases read `system-openapi.yaml` and `fixtures/` when first needed, so a missing file fails only the run, not the app.
