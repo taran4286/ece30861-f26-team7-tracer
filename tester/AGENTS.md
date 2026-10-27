@@ -1,16 +1,17 @@
 # tester/: our tester
 
-Our tester service, implementing `tester-openapi.yaml`. `server.py` mounts `tester_app` at `/tester`, its own base URL. Root "Directory guides" says which file wins when this one disagrees with the root `AGENTS.md` or `tester-openapi.yaml`.
+Our tester service, serving the routes in `tester-openapi.yaml`. `server.py` mounts `tester_app` at `/tester`, its own base URL.
 
 ## What it serves
 
-- `GET /` returns an HTML page (`pages.py`): the title "Team 7 — Tracer tester", how to run setup, run and report with the time limits, and a form whose `?session_id=` shows that session's stored report as tables: totals, per-criterion counts, coverage, and every test with its message. Without a session ID it never touches storage, so it also loads on previews; an unknown or unfinished session, or unreachable storage, shows why there's no report. It only reads reports, never starts a run. `/tester` without the slash redirects there with a 307. It's outside the spec.
-- `POST /test/setup` with `{target_url}` prepares a session on the target and returns 201 `{session_id}` (see "Setup and run"). A `target_url` that isn't an http or https system base URL, or that has a `/test` suffix, a query, a fragment or credentials, gets 400. A target error is passed on with its status, message and source, with `source: "system"` when its body isn't a `TestControlError`. No answer within 20 s gets 500 with `source: "communication"`.
+- `GET /` returns an HTML page (`pages.py`): the title "Team 7 — Tracer tester", how to run setup, run and report with the time limits, and a form whose `?session_id=` shows that session's stored report as tables: totals, per-criterion counts, coverage, and every test with its message. Without a session ID it never touches storage, so it also loads on previews; an unknown or unfinished session, or unreachable storage, shows why there's no report. It only reads reports, never starts a run. `/tester` without the slash redirects there with a 307.
+- `POST /test/setup` with `{target_url}` prepares a session on the target and returns 201 `{session_id}` (see "Setup and run"). A `target_url` that isn't an http or https system base URL, or that has a `/test` suffix, a query, a fragment or credentials, gets 400. A target error (400 or above) is passed on with its status, message and source, with `source: "system"` when its body isn't a `TestControlError`. No answer within 20 s, or a connection or transport error, gets 500 with `source: "communication"`. A status below 400 other than 201, or a 201 that doesn't name our session ID, gets 500 with `source: "system"`.
+- On setup and run, a body that isn't a JSON object gets 400 "Expected a JSON object body".
 - `POST /test/run` with `{session_id}` runs every planned case once and returns 200 with the stored `SuiteReport`, failed tests included. A missing or blank `session_id` gets 400, an unknown session 404, and a session that has already started 409. An aborted run stores its partial report and gets 500 with `source: "tester"`.
 - `GET /test/report?session_id=` returns the stored `SuiteReport` of a finished or aborted run and never starts or repeats one. A missing or blank `session_id` gets 400, an unknown session 404, and a session whose run hasn't ended 409.
 - On all three, unreachable storage gets 500 "Tester storage is unavailable" and any other fault in our code 500 "Tester fault: …", both with `source: "tester"`.
-- Any other GET, POST, PUT, PATCH or DELETE request returns 501 `{"message": "/<path> is not implemented", "source": "tester"}`, the spec's `TestControlError` shape.
-- GET and HEAD on FastAPI's generated `/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json` also answer, and other methods such as `HEAD` and `OPTIONS` elsewhere get FastAPI's 405; both are outside the spec.
+- Any other GET, POST, PUT, PATCH or DELETE request returns 501 `{"message": "/<path> is not implemented", "source": "tester"}`.
+- GET and HEAD on FastAPI's generated `/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json` also answer, and other methods such as `HEAD` and `OPTIONS` elsewhere get FastAPI's 405.
 
 ## Session storage
 
@@ -36,7 +37,7 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 
 - `prepare(target_url)` generates a session ID (`t7-` and a UUID), sends `{session_id, setup: {}}` to the target's `/test/setup` with a 20 s timeout (`SETUP_TIMEOUT_SECONDS`), and stores the session as `ready` only after a 201 that names that ID.
 - `run_session(session_id)` builds the case list with `planned()`, starts the run with `start_run`, runs the cases through `run_cases`, builds the report and checks it with `report_problems`, then stores it with `finish_run`. Planning reads the fixture files, so it comes before `start_run`: if it fails, the session stays `ready`.
-- The run's `Target` gets a deadline 105 s after the run starts (`CALL_CUTOFF_SECONDS`), inside the 130 s run limit. After it, `Target.call` sends nothing and raises `Stopped`; `run_cases` records that case as an `error` from the tester and every later case as `skip`, and the run is aborted. The coverage request isn't held to the deadline.
+- The run's `Target` gets a deadline 105 s after the run starts (`CALL_CUTOFF_SECONDS`), leaving room inside the 130 s run limit the page states. After it, `Target.call` sends nothing and raises `Stopped`; `run_cases` records that case as an `error` from the tester and every later case as `skip`, and the run is aborted. The coverage request isn't held to the deadline.
 - Coverage counts what the run exercised, not what passed:
   - `code` is the target's own measure from `GET /test/report?session_id=`. It becomes null counts with the reason in `basis` when that request gets no answer, a status other than 200, a body that breaks the spec, or more covered than total.
   - `component` counts the system spec's 7 tags with at least one request in `Target.called`.
@@ -56,10 +57,11 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 | `cases.py` | The cases, by criterion: AC-02, 03, 07, 08, 20, 06, 09 (a), 23 (a)–(c), then 01, each with normal cases and edge cases |
 
 - Outcomes: `pass` when the reply meets the pass rule, an expected 403, 404 or 409 included. `fail` when it doesn't, including a body that breaks its spec schema and a 501 on a route the case needs. `error` with `source: system` for any other 5xx, `communication` when no response arrives, and `tester` for a fault in our code. `skip` for a case not run.
-- A shared setup that fails, such as the incident several cases use, gives each of those cases the same outcome, its message starting `Setup failed:`.
+- `expect()` accepts an error `field` equal to the expected one or nested under it (`expected[…` or `expected.…`, via `field_matches`), so `items[0].ticket_id` passes where `items[0]` is expected.
+- A shared setup that fails, such as the incident several cases use, gives each of those cases the same outcome. A failure or a target error is reported with its message starting `Setup failed:`; anything else (a tester fault, `Skip`, `Stopped`) is re-raised as it was, so a tester fault in a setup reads "Tester fault: …".
 - "Stored data unchanged" compares the target's snapshot (`GET /test/report/{run_id}`) before and after the call, with arrays sorted by ID.
 - "Real server time" (AC-02's `imported_at`, AC-23's audit `timestamp`) is checked by `clock_problems` against the tester's own clock: the value must fall between `sent_at` minus 5 s and `received_at` plus 5 s. Never use the response's `Date` header; a host can send a stale one, as a Vercel function does on its first reply after sitting idle.
-- AC-06 plans all 49 state pairs. It runs the 33 whose source state is reachable without a filing and reports the 16 that need a filing as `skip`. A source state's allowed move runs after its refused ones, and a case that sees the incident leave its state calls `run.forget`, so later cases get a new one.
+- AC-06 plans all 49 state pairs. It runs the 33 whose source state is reachable without a filing and reports the 16 that need a filing as `skip`. A source state's allowed move runs after its refused ones, and a case that sees the incident leave its state calls `run.forget`, so later cases get a new one. AC-06 also has 9 cases outside the 49 pairs: UnderAssessment to either Determined state through `/transitions`, DeterminedMaterial and DisclosureDelayed to DisclosureRecorded through `/transitions` (run, though the plain pairs are skipped), DeterminedNotMaterial to DeterminedMaterial through `/determination`, Responder and Board forbidden, an unknown target state, and an unknown incident.
 - AC-01 runs last, so its 100 incidents don't enlarge every earlier snapshot.
 
 ## Rules
@@ -69,13 +71,13 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 - HTML-escape everything `pages.py` shows from a report or the query: messages quote other teams' systems.
 - The 501 catch-all matches every path, so declare every other route before it.
 - Each storage function is one short transaction. A run never holds a transaction open while it calls the target.
-- Settings are read on first use, not at import, so the tester still loads without `TESTER_DATABASE_URL`. Preview deployments don't have it, so the report route answers 500 there.
+- Settings are read on first use, not at import, so the tester still loads without `TESTER_DATABASE_URL`. Preview deployments don't have it, so setup, run and report answer 500 there; setup does so after the target has already prepared its session, since it stores ours only afterwards.
 - `get_tester_settings()`, `get_engine()` and `_session_factory()` are cached. A test that changes `TESTER_DATABASE_URL` clears all three before and after.
 - Nothing here creates tables; the tester role can't. `scripts/setup_db.py` creates `tester_sessions` from `models.py`, and a new tester table also needs a `TESTER_GRANTS` entry there. Changing a column needs a wiped local database or a migration, as for the app's tables (root "Local setup steps").
 - Expected statuses, error codes and fields come from `system-openapi.yaml`, and each case's pass rule from its course acceptance criterion. For example, Responder and Board get 403 on the audit and delete routes, and only a DisclosureApprover gets 405.
-- Check only what the spec states. It sets no order between errors, so each rejection case's request has one thing wrong with it. No case checks due dates or flags.
-- Dates in the cases assume the session's `test_now` is the spec's default, 2026-10-05T15:00:00Z (`TODAY` in `cases.py`), so the runner's setup must send `setup: {}`.
+- Each rejection case's request has exactly one thing wrong with it, so its expected error doesn't depend on the order a system checks errors in. No case checks flags or due-date values, except that AC-01's create case fails unless a new incident's `due_date` is null.
+- Dates in the cases assume the session's `test_now` is the setup default, 2026-10-05T15:00:00Z (`TODAY` in `cases.py`), so the runner's setup must send `setup: {}`.
 - Make every project call through `Run.call`, never `Target.call`: it ends the saved snapshot baseline, so a rejection is never compared with stale data.
 - Build HTTP clients for a target only through `runner.client_for`, so tests can serve `FakeSystem` there instead of the network.
 - Test IDs are stable and unique, and start with their criterion (`AC-06-DM-to-Closed`); reports from both teams are compared by them.
-- `spec.py` and the cases read `system-openapi.yaml` and `fixtures/` when first needed, so a missing file fails only the run, not the app.
+- `spec.py` reads `system-openapi.yaml` and `tester-openapi.yaml`, and `planned()` reads `fixtures/`, on first use, not at import, so a missing file fails only the run, not the app.

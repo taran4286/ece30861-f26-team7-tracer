@@ -2,39 +2,39 @@
 
 ## Directory guides
 
-Each guided folder has its own `AGENTS.md` with the rules for that folder. This root file is the project-wide spec and wins wherever a folder guide disagrees; `system-openapi.yaml` and `tester-openapi.yaml`, the shared API contracts for the service and the tester, win over both. They are the source of truth for paths, schemas, error codes and behavior; where a guide disagrees with them, fix the guide.
+The `AGENTS.md` files describe the code as it is, so an agent can rely on them instead of re-reading it. The code is the truth: where a guide disagrees with it, fix the guide. This root file holds the repo-wide rules; what each folder's code does is in that folder's own guide.
 
 - Before changing or explaining a file, read the `AGENTS.md` in its folder and in each parent folder up to the root. Not every tool loads nested guides on its own, so read them explicitly.
-- Rules that must never be missed stay in this file; folder guides hold local details.
-- Guides describe the code, not progress; whoever implements a piece tracks its status.
 - Guides only match what you have checked out, so start from the latest `main` (see Branches, commits and pull requests).
 
 | Guide | Covers |
 | --- | --- |
-| `app/AGENTS.md` | Foundation modules: config, db, models, errors, roles, clock and audit |
-| `app/api/AGENTS.md` | The system's FastAPI app: the status page, health check, test control, project routes, the 405 and 501 routes, and the 501 catch-all |
-| `app/services/AGENTS.md` | Business logic and the steps every operation follows |
+| `app/AGENTS.md` | Foundation modules (config, db, models, errors, roles, clock, sessions, audit) and the data model: the system's tables and enums |
+| `app/api/AGENTS.md` | The system's FastAPI app: identity headers, the status page, health check, test-control routes, project routes, the 405 and 501 routes, and the 501 catch-all |
+| `app/services/AGENTS.md` | Business logic: the steps and error order every operation follows, sessions, roles, dates and versions, and what each operation does, test control and the 405 and 501 operations included |
 | `tester/AGENTS.md` | Our tester's FastAPI app, its session storage and cross-team test cases, and the rule that it never imports `app` |
 | `fixtures/AGENTS.md` | The incident, ticketing and SIEM fixtures our tester sends |
-| `tests/AGENTS.md` | The pytest suite: its files, shared helpers and fixtures, and how to run it |
-| `scripts/AGENTS.md` | How `setup_db.py` is built and what to update when changing it |
+| `tests/AGENTS.md` | The pytest suite: what each file covers, shared helpers and fixtures, and how to run it |
+| `scripts/AGENTS.md` | `setup_db.py`: the roles, grants and checks it applies, and what to update when changing it |
 | `.github/AGENTS.md` | CI workflows, their scripts and `CODEOWNERS` |
 
 **Keeping the guides current (mandatory)**
 
-- Every PR updates the relevant `AGENTS.md` for each file it changes: the nearest one in the file's folder or a parent folder. Files outside a guided folder, such as `README.md` or `pyproject.toml`, map to this root file.
-- Make the update in the same PR as the change, so each guide describes the code as merged: new modules, rules, decisions and anything the next person needs to know.
+- Describe each behavior once, in the guide nearest the code that implements it. The CI check below then makes every change to that code update the guide that describes it. This file covers only files outside a guided folder and rules that span the repo.
+- Every PR updates the relevant `AGENTS.md` for each file it changes: the nearest one in the file's folder or a parent folder. Files outside a guided folder, such as `README.md`, `server.py` or `pyproject.toml`, map to this root file.
+- Make the update in the same PR as the change, so each guide describes the code as merged: new modules, behavior, rules and anything the next person needs to know.
 - If a change truly alters nothing a guide says, don't add a filler edit. Put one line per guide in the PR description instead, naming the guide and the reason, e.g. `AGENTS.md: no change needed because the README edit only fixes a typo`. Reviewers judge whether the reason holds.
 - Write guides as the current state, and fix or delete what the change made wrong. Never add history or "changed X" notes; `git log` holds history, and a guide that grows into a changelog buries the rules.
-- Don't restate this file's rules in a folder guide; point to the section instead, so the two can't drift apart.
+- Guides describe code, not intent: no plans, pending or unbuilt work, scope lists, phase labels, owners, or reasons quoted from the API specs. Requirement and acceptance-criterion IDs (`REQ-22`, `AC-09`) may appear as labels on the code that carries them.
+- Don't restate one guide's content in another; point to the section instead, so the two can't drift apart.
 - Every top-level folder except `.claude/` and `.agents/` (covered here), and every Python package under `app/`, needs its own `AGENTS.md`. Add it, and a row in the table above, in the PR that creates the folder.
 - The `AGENTS.md updated` CI check (`.github/workflows/agents-md.yml`) enforces the update rule (accepting a skip line in its place) and the own-guide rule above, failing the PR otherwise; whitespace-only edits don't count, and a skip line can't stand in for a missing guide. Run it locally before pushing (see Branches, commits and pull requests).
-- The check proves a guide changed, not that it's right; reviewers check the content.
+- The check proves a guide changed, not that it's right; reviewers check the content against the code.
 - A guide doesn't guarantee a rule is followed. Where a test or script can check a rule (like the AC-09 test or `setup_db.py`'s privilege check), add one.
 
 ## Stack, repo layout and config
 
-The business logic stays independent of the web framework; the FastAPI layer (routes, request and response models, error handlers) lives in `app/api/`.
+The business logic is independent of the web framework; the FastAPI layer (routes, request handling, error handlers) lives in `app/api/`.
 
 **Stack**
 
@@ -46,24 +46,15 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 
 **Repo layout**
 
-- `system-openapi.yaml`: the Tracer Shared System API that our service implements, copied verbatim from the version shared with Team 10 (its `info.version` names it). Don't edit it here; when the pod agrees on a new version, replace the whole file and update the guides to match.
-- `tester-openapi.yaml`: the Tracer Shared Tester API that our tester implements, with its own base URL. Copied and replaced the same way as `system-openapi.yaml`.
-- `app/config.py`: settings read from environment variables.
-- `app/db.py`: engine, `Base`, and one transaction per operation.
-- `app/models.py`: the tables in Data model and storage.
-- `app/errors.py`: `ErrorCode`, each code's HTTP status in `HTTP_STATUS`, and a `TracerError` exception carrying the error code, message and field.
-- `app/roles.py`: the `Role` enum, the permission map and `require_role()`.
-- `app/clock.py`: `today(session)` for every date rule and `utcnow()` for stored timestamps.
-- `app/sessions.py`: `load_session()`, the test session a request names in `X-Test-Run`.
-- `app/audit.py`: the `audit()` helper.
-- `app/api/`: the system's FastAPI app, `system_app`.
-- `app/services/`: business logic in `incidents.py`, `evidence.py`, `workflow.py` (determination, transitions and the audit list), `control.py` (test control) and `placeholders.py` (the 405s and 501s), with shared body checks in `validation.py`, callable without any web framework. Each operation takes the acting user's ID and role and the request's session ID as arguments.
+- `system-openapi.yaml`: the Tracer Shared System API, copied verbatim from the version shared with Team 10 (its `info.version` names it). Don't edit it here; when the pod agrees on a new version, replace the whole file. The status page, the tester and the tests read it.
+- `tester-openapi.yaml`: the Tracer Shared Tester API, copied and replaced the same way. The tester reads it.
+- `app/`: the system's foundation modules (`app/AGENTS.md`), its FastAPI app `system_app` in `app/api/`, and its business logic in `app/services/`.
 - `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester`, and serves a landing page at `/` (see Deployment).
 - `tester/`: our tester's FastAPI app, `tester_app`, its session storage, and the cross-team test cases it runs against a target system; it never imports `app`.
 - `fixtures/`: the incident, ticketing and SIEM fixtures our tester sends.
 - `scripts/setup_db.py`: creates the app and tester roles, the tables and the grants (see Database roles).
 - `docker-compose.yml`: the local Postgres (see Local database).
-- `tests/`: one test file per service module (`validation.py` is covered through them), plus `test_server.py` and `test_tester.py` for the deployed apps and `test_tester_cases.py` for the tester's cases.
+- `tests/`: the pytest suite.
 - `.github/`: CI workflows and their scripts, including the `AGENTS.md` check.
 
 **Config** (environment variables, loaded from a git-ignored `.env`)
@@ -71,13 +62,13 @@ The business logic stays independent of the web framework; the FastAPI layer (ro
 - `DATABASE_URL`: the app role's connection, used by the service and tests, e.g. `postgresql+psycopg://tracer_app:pass@127.0.0.1:5432/tracer`.
 - `TESTER_DATABASE_URL`: the tester role's connection, used by the tester's session storage and tests and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_tester:pass@127.0.0.1:5432/tracer`.
 - `ADMIN_DATABASE_URL`: the owner role's connection, used only by `scripts/setup_db.py` and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_owner:pass@127.0.0.1:5432/tracer`.
-- Commit a `.env.example` with placeholder values; never commit real credentials.
+- `.env.example` holds placeholder values; never commit real credentials.
 
 **Local database (Docker)**
 
-- Run Postgres locally with `docker compose up -d` from a committed `docker-compose.yml`; everyone uses it, so tests run against the same Postgres version.
-- Use the `postgres:18` image, publish port 5432 on loopback only (`127.0.0.1:5432:5432`; Docker otherwise listens on every host address), and keep data in a named volume so it survives restarts; `docker compose down -v` wipes it.
-- Read `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` from `.env`, with placeholders in `.env.example`.
+- `docker-compose.yml` runs Postgres locally with `docker compose up -d`; everyone uses it, so tests run against the same Postgres version.
+- It uses the `postgres:18` image, publishes port 5432 on loopback only (`127.0.0.1:5432:5432`; Docker otherwise listens on every host address), and keeps data in the named volume `pgdata`, so it survives restarts; `docker compose down -v` wipes it.
+- It reads `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` from `.env`, with placeholders in `.env.example`.
 - The container's `POSTGRES_USER` is the owner role: point `ADMIN_DATABASE_URL` at it, then run `python scripts/setup_db.py` to create `tracer_app`, `tracer_tester`, the tables and the grants.
 - Point `DATABASE_URL` and `TESTER_DATABASE_URL` at the container as `tracer_app` and `tracer_tester`, never as `POSTGRES_USER`; it's a superuser and skips every permission check.
 
@@ -89,158 +80,16 @@ Run these in order when someone asks to set up the project or the local database
 2. Install the project into a virtual environment: `python -m venv .venv`, activate it, then `pip install -e ".[dev]"`.
 3. If `.env` doesn't exist, copy `.env.example` to `.env` and replace each `change-me-*` placeholder with a random value, e.g. `python -c "import secrets; print(secrets.token_urlsafe(24))"`. The owner password appears twice (`POSTGRES_PASSWORD` and `ADMIN_DATABASE_URL`) and must match; URL-safe values need no escaping. Never print, commit or overwrite an existing `.env`.
 4. Start the database with `docker compose up -d` and wait until `docker compose ps` shows `healthy`.
-5. Run `python scripts/setup_db.py`. It prints the app and tester roles' privileges; judge the result by the exit code. 0 is success, and the last line starts with `setup_db: done;`. 1 is failure, and the error message says what went wrong; once the script has reached the database, it also says whether anything was changed.
+5. Run `python scripts/setup_db.py`. It prints the app and tester roles' privileges; judge the result by the exit code. 0 is success, and the last line starts with `setup_db: done;`. 1 is failure: a message starting `setup_db:` says what went wrong and whether anything was changed, except for a missing variable, a malformed URL or a bare `postgresql://` scheme, which end in a Python traceback instead (see `scripts/AGENTS.md`).
 
 - Re-run `scripts/setup_db.py` after adding a table or changing the grants; it is safe to re-run.
 - A re-run only creates missing tables and types; it doesn't alter existing ones. After changing a column or an enum's values in `app/models.py` or `tester/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Deployment).
 - `docker compose stop` keeps the data; `docker compose down -v` wipes it, after which steps 4 and 5 rebuild it.
 - The image reads `POSTGRES_PASSWORD` only when it initializes an empty volume, so changing it later has no effect: wipe with `docker compose down -v` and redo steps 4 and 5.
 
-## Cross-cutting rules
+## Database roles
 
-Every operation follows these rules. The services apply the test session, roles, validation, no partial writes, dates, registrant type and version in error order (see `app/services/AGENTS.md`); the API layer checks identity headers before calling them.
-
-**Identity headers**
-
-- Require `X-User-Id` (non-empty), `X-User-Role` (Responder, DisclosureApprover, Board) and `X-Test-Run` (the test session ID), in that order, on every project route. Test-control routes take no identity headers.
-- Missing or invalid header → 400 `VALIDATION_ERROR` with `field` set to the header name.
-
-**Test sessions**
-
-- `X-Test-Run` names a session stored by `POST /test/setup`, and every project lookup is scoped to it. An unknown session → 404 `NOT_FOUND`, with nothing written.
-- An incident belongs to the session that created it; in any other session it's unknown (404). Evidence and determinations belong to their incident, and each audit entry records its request's session.
-- The session fixes `test_now` and `registrant_type` for every operation in it (see Dates and Registrant type).
-
-**Roles**
-
-- Build one permission map: Responder = GETs, create incident, import evidence, tag evidence, create group; DisclosureApprover = everything; Board = GETs only.
-- Anything else → 403 `FORBIDDEN_ROLE`, with nothing written.
-
-**Error order** (return the first that applies)
-
-1. Missing or invalid headers → 400
-2. Unknown session → 404
-3. Wrong role → 403
-4. Unknown incident (or evidence) → 404
-5. Invalid body → 400
-6. Wrong state → 409
-
-- Implement as an ordered pipeline so no handler can return these out of order.
-
-**Validation errors**
-
-- Return the `Error` schema: `error`, `message`, and `field`.
-- Use path-style field names, e.g. `items[3].detected_at`, `evidence_refs`, `determination_date`.
-- Validate `format: date` as real `YYYY-MM-DD` dates and `format: date-time` as RFC 3339 (ISO-8601 with seconds and a `Z` or `±HH:MM` offset).
-
-**No partial writes (REQ-19)**
-
-- Validate the whole request before writing anything.
-- Wrap every mutating request, including its audit entry, in one DB transaction.
-- Roll back on any error so stored data matches the pre-request state.
-
-**Dates**
-
-- Use `clock.today(session)`, the UTC date of the session's `test_now`, for every date rule; the spec defines today that way. Never use the real date for one.
-- Use real server time (UTC, NTP-synced) for `imported_at`, `recorded_at` and audit `timestamp`.
-
-**Registrant type**
-
-- Read `registrant_type` (Domestic or FPI) from the session; it's fixed for the session's life.
-
-**Version**
-
-- New incidents start at `version: 1`.
-- Increment by 1 on each determination and successful transition; evidence import leaves it unchanged.
-- Accept `version` in request bodies and validate it as an integer ≥ 1, but accept stale values.
-
-## Data model and storage
-
-Five tables hold the system's data; the tester keeps its sessions and reports in a sixth, `tester_sessions` (see `tester/AGENTS.md`). IDs are opaque, globally unique strings (e.g. prefixed UUIDs), and all timestamps are UTC.
-
-**test_sessions**
-
-| Field | Type | Rules |
-| --- | --- | --- |
-| session_id | text, primary key | supplied by the tester or staff, not generated |
-| test_now | timestamp, not null | its UTC date is today in the session |
-| registrant_type | RegistrantType enum, not null | fixed for the session |
-| at_risk_threshold_days | integer, not null | |
-| llm_base_url | text, not null | |
-| created_at | timestamp, not null | real server time |
-
-**incidents**
-
-| Field | Type | Rules |
-| --- | --- | --- |
-| incident_id | text, primary key | generated by the server |
-| session_id | text, not null, references test_sessions | the session that created it; indexed |
-| title | text, not null | non-empty |
-| discovery_date | date, not null | not after today |
-| state | State enum, not null | starts as UnderAssessment |
-| required_form | FormType enum, nullable | null until a Material determination |
-| due_date | date, nullable | always null |
-| group_id | text, nullable | always null |
-| version | integer, not null | starts at 1; +1 on each determination and transition |
-
-**determinations**
-
-| Field | Type | Rules |
-| --- | --- | --- |
-| incident_id | text, primary key, references incidents | one per incident |
-| decision | `Material` or `NotMaterial`, not null | |
-| determination_date | date, not null | on or after discovery_date, not after today |
-| rationale | text, not null | non-empty |
-| evidence_refs | JSON array of evidence IDs, not null | at least one, unique, all from this incident |
-| voluntary_disclosure | boolean, not null | defaults to false |
-| recorded_by | text, not null | the user who recorded it |
-| recorded_at | timestamp, not null | real server time |
-
-**evidence**
-
-| Field | Type | Rules |
-| --- | --- | --- |
-| evidence_id | text, primary key | generated by the server |
-| incident_id | text, not null, references incidents | |
-| source | `ticketing` or `siem`, not null | |
-| source_ref | text, not null | from ticket_id or alert_id |
-| summary | text, not null | from summary or rule_name |
-| observed_at | timestamp, not null | from created_at or detected_at |
-| imported_by | text, not null | the importing user |
-| imported_at | timestamp, not null | real server time |
-| impact_categories | JSON array of ImpactCategory, not null | defaults to empty |
-| raw_item | JSON, not null | the original source item, kept for traceability |
-
-**audit_entries**
-
-| Field | Type | Rules |
-| --- | --- | --- |
-| seq | bigint identity, primary key | sets "oldest first" order |
-| entry_id | text, unique, not null | generated by the server |
-| session_id | text, not null, references test_sessions | the request's session; indexed |
-| user_id | text, not null | the acting user |
-| timestamp | timestamp, not null | real server time |
-| action | AuditAction enum, not null | |
-| target_id | text, not null | the incident ID |
-| before | JSON, nullable | null on create and import |
-| after | JSON, not null | changed fields, including version for incident changes |
-
-**Enums**
-
-- State: UnderAssessment, DeterminedMaterial, DeterminedNotMaterial, DisclosureDelayed, DisclosureRecorded, AmendmentPending, Closed.
-- FormType: `8-K Item 1.05`, `8-K Item 8.01`, `6-K`, `8-K/A`.
-- ImpactCategory: operational, financial, legal_regulatory, reputational, data_compromised.
-- AuditAction: create_incident, import_evidence, record_determination, transition. The spec also lists tag_evidence, record_filing, accept_draft and create_group; each is added with its operation.
-- RegistrantType: Domestic, FPI.
-
-**Storage rules**
-
-- Grant the app's DB user only INSERT and SELECT on audit_entries, and no DELETE on incidents or evidence (REQ-22). This is what the AC-23 permission demo shows.
-- Use a persistent, managed database so data survives redeploys.
-
-**Database roles**
-
-Three roles keep the grants enforceable: a table's owner can always grant itself more, and a superuser skips permission checks, so neither the service nor the tester may connect as either.
+Three roles keep the grants enforceable: a table's owner can always grant itself more, and a superuser skips permission checks, so neither the service nor the tester connects as either.
 
 | Role | Connects via | Owns the tables | Used by |
 | --- | --- | --- | --- |
@@ -248,183 +97,9 @@ Three roles keep the grants enforceable: a table's owner can always grant itself
 | App (`tracer_app`) | `DATABASE_URL` | No | The service and tests |
 | Tester (`tracer_tester`) | `TESTER_DATABASE_URL` | No | The tester's session storage and tests |
 
-- `scripts/setup_db.py` runs as the owner, in one transaction, and is safe to re-run. It creates the app and tester roles from the users and passwords in `DATABASE_URL` and `TESTER_DATABASE_URL` if missing, creates the system's and the tester's tables, then applies the grants.
-- Each run resets both login roles, so leftover privileges don't survive: set each one's password from its URL, revoke every role membership it holds, make the owner role the owner of all six tables and their enum types, and revoke all privileges on them from both roles and from `PUBLIC` before granting.
-- Check each login role's attributes in `pg_roles` and fail if `rolsuper`, `rolcreatedb`, `rolcreaterole`, `rolreplication` or `rolbypassrls` is set. Clear them with `ALTER ROLE` only when the owner is a superuser; a managed host's admin user usually can't change these attributes, so there the check fails the run instead.
-- Fail if either login role owns the database or schema `public`: a schema's owner always has CREATE on it and can drop any table in it, which no revoke or table grant check catches. Revoke CREATE on `public` from `PUBLIC` (already the default since Postgres 15).
-- End the run by checking each login role's effective privileges on all six tables with `has_table_privilege` and `has_schema_privilege`, both granted and forbidden ones (including no CREATE on `public`), and fail if any differ; this doubles as the AC-23 demo.
-- Grant the app role exactly:
-  - USAGE on the schema.
-  - `test_sessions`: SELECT, INSERT.
-  - `incidents`: SELECT, INSERT, UPDATE.
-  - `evidence`: SELECT, INSERT.
-  - `determinations`: SELECT, INSERT.
-  - `audit_entries`: SELECT, INSERT.
-- Grant the tester role exactly:
-  - USAGE on the schema.
-  - `tester_sessions`: SELECT, INSERT, UPDATE.
-- Nothing else: no DELETE or TRUNCATE anywhere, no UPDATE on test_sessions, evidence, determinations or audit_entries, and neither login role gets anything on the other's tables.
-- Declare `audit_entries.seq` with SQLAlchemy `Identity()`, not a plain autoincrement column; if it ends up as a serial, the app role also needs USAGE on its sequence.
+- `scripts/setup_db.py` creates both login roles, all six tables and the grants, and fails unless each role ends up with exactly its expected privileges; `scripts/AGENTS.md` lists the grants and checks. Neither login role can DELETE or TRUNCATE anything, and the app role has only INSERT and SELECT on `audit_entries` (REQ-22, AC-23).
 - Neither the service nor the tester creates tables at startup; their roles can't.
 - The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
-- Use `setup_db.py` to create the tables and apply the grants. It can't change an existing table, so a schema change on a deployed database needs a migration (see Deployment).
-
-## Test control (TEST-01, TEST-02, TEST-06)
-
-Testers prepare and inspect sessions through these routes. They take no identity headers, write no audit entries, and answer errors with the spec's `TestControlError`, `{message, source: "system"}`, never the project `Error` schema.
-
-**`POST /test/setup`**
-
-- Require `session_id` as a non-blank string and `setup` as an object → else 400 naming the field.
-- `setup` may hold only `test_now` (date-time), `registrant_type` (Domestic or FPI), `at_risk_threshold_days` (integer from 1 to 2,147,483,647, the most its column holds) and `llm_base_url` (absolute URI); any other key or a bad value → 400 naming it, e.g. `setup.test_now`.
-- A missing setting takes the pod default: `test_now` 2026-10-05T15:00:00Z, Domestic, 7, and `https://llm.invalid/v1`, a placeholder since no drafting is built.
-- Store the session and return 201 `{session_id}`. An ID already in use → 409, and the stored session is unchanged.
-- Unreachable storage → 500 "System storage is unavailable".
-
-**`GET /test/report?session_id=`**
-
-- Return 200 `{session_id, coverage: {code: {covered: null, total: null, basis}}}`: code coverage isn't measured, so `basis` says so, as the spec allows.
-- Missing or blank `session_id` → 400; unknown session → 404.
-
-**`GET /test/report/{run_id}`**
-
-- Return 200 `{run, incidents, groups: [], audit}`: the session's `TestRun` (`run_id` is the session ID, `implemented_optional: []`), its incidents as full Incidents, and its audit entries oldest first.
-- Unknown session → 404.
-
-**`PATCH /test/sessions/{session_id}/settings`**
-
-- An optional pod extension that isn't built → 501.
-
-## Incidents (REQ-01, REQ-22)
-
-Incidents are created in UnderAssessment at version 1 and are never replaced or deleted.
-
-**`POST /incidents`** (Responder, DisclosureApprover)
-
-- Require `title` (non-empty string) → else 400 `field: "title"`.
-- Require `discovery_date` as a valid date not after `today(session)` → else 400 `field: "discovery_date"`; equal to today is valid.
-- Insert in the request's session with `state: UnderAssessment`, `determination: null`, `required_form: null`, `due_date: null`, `flags: []`, `filings: []`, `evidence: []`, `group_id: null`, `version: 1`.
-- Write a `create_incident` audit entry: `before: null`, `after: {state, title, discovery_date, version}`.
-- Return 201 with the full Incident.
-- Board → 403.
-
-**`GET /incidents/{incident_id}`** (all roles)
-
-- Return the full Incident; unknown ID → 404.
-- Always return `flags: []` and `due_date: null`.
-
-**`PUT` and `DELETE /incidents/{incident_id}`**
-
-- Return 405 `METHOD_NOT_ALLOWED` and change nothing (see Stubs).
-
-## Evidence import (REQ-02, REQ-03)
-
-Each request is one `ImportRequest` body of simulated ticketing or SIEM items; one bad item rejects the whole batch, and import never changes the incident's version.
-
-**`POST /incidents/{incident_id}/evidence/import`** (Responder, DisclosureApprover)
-
-- Validate `source` ∈ {ticketing, siem} and `items` as a non-empty array.
-- For `ticketing`, require each item's `ticket_id`, `summary` and `created_at` (date-time).
-- For `siem`, require `alert_id`, `rule_name`, `severity` ∈ {low, medium, high, critical} and `detected_at` (date-time).
-- Reject an item shaped for the other source as invalid.
-- On the first bad item, return 400 with `field` like `items[3].detected_at` and write nothing.
-- Normalize each item to an `EvidenceItem`:
-  - `source_ref` ← `ticket_id` / `alert_id`
-  - `summary` ← `summary` / `rule_name`
-  - `observed_at` ← `created_at` / `detected_at`
-  - `imported_by` ← `X-User-Id`
-  - `imported_at` ← real server time (AC-02 allows ±5 s)
-  - `impact_categories` ← `[]`
-- Insert all items in one transaction; allow import in any state, including Closed.
-- Do not change `version`.
-- Write one `import_evidence` audit entry per request: `target_id` = incident ID, `before: null`, `after: {source, evidence_ids}`.
-- Return 201 `{"evidence": [...]}` in input order.
-- Board → 403; unknown incident → 404.
-
-**Other evidence routes**
-
-- `DELETE /incidents/{id}/evidence/{evidence_id}` → 405, nothing changed (see Stubs).
-- `PATCH /incidents/{id}/evidence/{evidence_id}` → 501 (see Stubs).
-
-## Materiality determination (REQ-07, REQ-08)
-
-Only a DisclosureApprover can record a determination, only from UnderAssessment, and this is the only code path that writes a materiality value.
-
-**`POST /incidents/{incident_id}/determination`**
-
-- Responder or Board → 403, nothing written (AC-08).
-- Require `decision` ∈ {Material, NotMaterial}, `determination_date`, non-empty `rationale`, `evidence_refs` and `version`; a missing field → 400 naming it.
-- Require `determination_date` ≥ `discovery_date` and ≤ `today(session)`; both boundaries are valid (AC-20).
-- Require `evidence_refs` to have at least one unique ID, each belonging to this incident; an unknown ref or one from another incident → 400 `field: "evidence_refs"`.
-- If `voluntary_disclosure` is present → 501 (see Stubs).
-- State not UnderAssessment → 409 `INVALID_TRANSITION` (checked after body validation, per error order).
-- Set `state` to DeterminedMaterial or DeterminedNotMaterial.
-- Set `required_form` from the session's registrant type: Material + Domestic → `8-K Item 1.05`; Material + FPI → `6-K`; NotMaterial → `null`.
-- Keep `due_date: null` and `flags: []`.
-- Store the determination with `voluntary_disclosure: false` by default, `recorded_by` from `X-User-Id`, and `recorded_at` as server time.
-- Increment `version`.
-- Write a `record_determination` audit entry: `before: {state, determination: null, version}`, `after: {state, determination: {decision, determination_date}, required_form, version}`.
-- Return 200 with the full Incident.
-
-**Guardrails for REQ-08 (AC-09)**
-
-- Keep materiality writes inside this one handler; import and transitions must never touch `determination`.
-- Add a unit test asserting no other handler writes the determination table or field.
-
-## State machine and transitions (REQ-06)
-
-Only five moves succeed; every other pair, including staying in the same state, returns 409 `INVALID_TRANSITION` with nothing changed.
-
-| From | To | Endpoint |
-| --- | --- | --- |
-| UnderAssessment | DeterminedMaterial or DeterminedNotMaterial | `/determination` |
-| DeterminedMaterial | DisclosureDelayed | `/transitions` |
-| DisclosureDelayed | DeterminedMaterial | `/transitions` |
-| DeterminedNotMaterial | Closed | `/transitions` |
-| Closed | nothing | — |
-
-**`POST /incidents/{incident_id}/transitions`** (DisclosureApprover only)
-
-- Responder or Board → 403.
-- Validate `to` against the full `State` enum (an unknown value → 400) and `version` as an integer ≥ 1.
-- Encode the allowed set as data: `{(DM, DisclosureDelayed), (DisclosureDelayed, DM), (DNM, Closed)}`; check `(current, to)` against it.
-- Return 409 for every pair not in the set, including UA → DM/DNM (those go through `/determination`), DNM → DM and any `to: DisclosureRecorded`.
-- On success, set `state`, increment `version`, keep `determination` and `required_form` untouched, and return 200 with the full Incident.
-- Write a `transition` audit entry: `before: {state, version}`, `after: {state, version}`.
-- For `to: AmendmentPending`, require `info_available_date` (a date not after today) and `elements` (a non-empty array of unique names from nature, scope, timing and impact), 400 naming the field if not, then return 409 for the disallowed pair.
-- For any other target, check those two fields the same way when they're sent, since the request schema types them for every target, but don't require them.
-
-## Audit trail (REQ-22)
-
-Every successful create, import request, determination and transition writes exactly one append-only entry; failed requests write none.
-
-- Write one helper `audit(tx, action, target_id, before, after, *, user_id, session_id)` and call it inside the same transaction as the change.
-- Fill `entry_id`, `session_id` from `X-Test-Run`, `user_id` from `X-User-Id`, `timestamp` as server time, `action`, `target_id`, `before` and `after`.
-- Include `version` in `before` and `after` for incident changes.
-- Use the shapes defined above: `create_incident`, `import_evidence` (one per request), `record_determination`, `transition`.
-- `GET /incidents/{incident_id}/audit` (all roles): return `{"entries": [...]}` oldest first by sequence; unknown incident → 404.
-- Include entries whose `target_id` is the incident, including import entries.
-- `PUT`, `PATCH`, `DELETE /incidents/{incident_id}/audit` → 405, nothing changed (see Stubs).
-- Enforce append-only in the DB as well (INSERT/SELECT grant only) and be ready to demo it for AC-23.
-- Don't audit GETs or rejected requests.
-
-## Stubs
-
-Edits and deletes of records return 405 `METHOD_NOT_ALLOWED`, and spec operations this team doesn't build return 501 `NOT_IMPLEMENTED`, both with the `Error` schema and nothing written. Each first runs the full error order: headers, session, role, then the IDs in its path (404 if unknown), so a 405 or 501 never hides another error.
-
-| Operation | Roles that pass | Path IDs looked up | Result |
-| --- | --- | --- | --- |
-| `PUT`, `DELETE /incidents/{id}` | DisclosureApprover | incident | 405, `Allow: GET` |
-| `DELETE /incidents/{id}/evidence/{evidence_id}` | DisclosureApprover | incident, evidence | 405, `Allow: PATCH` |
-| `PUT`, `PATCH`, `DELETE /incidents/{id}/audit` | DisclosureApprover | incident | 405, `Allow: GET` |
-| `PATCH /incidents/{id}/evidence/{evidence_id}` (REQ-05) | Responder, DisclosureApprover | incident, evidence | 501 |
-| `POST /groups` (REQ-04) | Responder, DisclosureApprover | none | 501 |
-| `POST /incidents/{id}/filings` | DisclosureApprover | incident | 501 |
-| `POST /incidents/{id}/drafts` | DisclosureApprover | incident | 501 |
-| `POST /drafts/{draft_id}/accept` | DisclosureApprover | none: no drafts exist | 501 |
-
-- `voluntary_disclosure` on a determination (REQ-18) → 501 (see Materiality determination).
-- The 501 operations don't validate their bodies.
 
 ## Deployment
 
@@ -432,9 +107,9 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 
 **Neon (database)**
 
-- Create the project on neon.com, not through Vercel's Neon integration. The integration sets its own `DATABASE_URL`, pooled and possibly logging in as the owner, and can give each preview deployment its own database branch.
-- Use Postgres 18, matching the local image, in AWS US East (N. Virginia), next to Vercel's default function region `iad1`.
-- The project's `neondb_owner` role is the owner: point `ADMIN_DATABASE_URL` at it. It can create roles but isn't a superuser, so `setup_db.py` can't clear forbidden attributes here and fails instead (see Database roles). It belongs to `neon_superuser`, so it can delete rows in every table; the grants restrict only `tracer_app` and `tracer_tester`.
+- The project was created on neon.com, not through Vercel's Neon integration. The integration sets its own `DATABASE_URL`, pooled and possibly logging in as the owner, and can give each preview deployment its own database branch.
+- It runs Postgres 18, matching the local image, in AWS US East (N. Virginia), next to Vercel's default function region `iad1`.
+- The project's `neondb_owner` role is the owner: point `ADMIN_DATABASE_URL` at it. It can create roles but isn't a superuser, so `setup_db.py` can't clear forbidden attributes here and fails instead (see `scripts/AGENTS.md`). It belongs to `neon_superuser`, so it can delete rows in every table; the grants restrict only `tracer_app` and `tracer_tester`.
 - Let `setup_db.py` create `tracer_app` and `tracer_tester`; never create them in the Neon console. Roles made there join `neon_superuser`, which brings BYPASSRLS and write access, including DELETE, to every table, and `neondb_owner` can't alter them, so the run fails. Don't create helper roles there either.
 - Use the direct connection string (the host without `-pooler`). Neon's Connect dialog shows the pooled one by default, so turn off "Connection pooling" there. Change its scheme from `postgresql://` to `postgresql+psycopg://` and keep its query parameters, including `sslmode=require` and `channel_binding=require` when present; with the bare scheme, SQLAlchemy looks for psycopg2, which isn't installed. Our traffic is far below the direct connection limit, and Neon recommends direct connections for schema changes such as `setup_db.py`'s.
 - Neon rejects passwords with less than 60 bits of entropy; one from `secrets.token_urlsafe(24)` passes.
@@ -450,93 +125,17 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 
 **Vercel (service)**
 
-- Import this GitHub repo as a Vercel project. Production deploys from `main`. The system's base URL is `https://<project>.vercel.app/system` and the tester's is `https://<project>.vercel.app/tester`. Vercel names the production domain after the project, first come first served, so read the actual domain from Settings → Domains.
-- The domain's root, `GET /`, is a landing page in neither spec: the title "Team 7 — Tracer" and buttons to `/system/health`, `/system/` and `/tester/`, in the same colors as the system and tester pages. It never touches the database, so it also works on previews.
-- Set `DATABASE_URL` (as `tracer_app`) and `TESTER_DATABASE_URL` (as `tracer_tester`) in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and neither login role can delete them.
-- Make `DATABASE_URL` and `TESTER_DATABASE_URL` Secret variables (write-only after saving), and redeploy after setting or changing any variable; changes only reach new deployments.
+- This GitHub repo is imported as a Vercel project. Production deploys from `main`. The system's base URL is `https://<project>.vercel.app/system` and the tester's is `https://<project>.vercel.app/tester`. Vercel names the production domain after the project, first come first served, so read the actual domain from Settings → Domains.
+- `server.py` serves the domain's root, `GET /`: a landing page titled "Team 7 — Tracer" with buttons to `/system/health`, `/system/` and `/tester/`, in the same colors as the system and tester pages. It never touches the database, so it also works on previews. The outer app has no generated docs, so `/docs` and `/openapi.json` at the root are 404s; the mounted apps serve their own.
+- `DATABASE_URL` (as `tracer_app`) and `TESTER_DATABASE_URL` (as `tracer_tester`) are set in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and neither login role can delete them.
+- Both are Secret variables (write-only after saving). Redeploy after setting or changing any variable; changes only reach new deployments.
 - Never set `ADMIN_DATABASE_URL` on Vercel: every variable there reaches the running function.
 - On the Hobby plan, only the project's owner sees its variables and logs, and runtime logs are kept for 1 hour.
 - Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
-- Leave Deployment Protection at Standard: the production domain stays public for testers, while preview and deployment-specific URLs need a Vercel login.
-- No `vercel.json` is needed: the Hobby plan's default function limit of 300 s already covers the tester's longest request.
+- Deployment Protection stays at Standard: the production domain is public for testers, while preview and deployment-specific URLs need a Vercel login.
+- There's no `vercel.json`: the Hobby plan's default function limit of 300 s already covers the tester's longest request.
 - After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached, `DATABASE_URL` is missing or malformed, or the URL names a driver we don't install (a bare `postgresql://`); the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
-- The server clock (UTC, NTP-synced, for AC-02's ±5 s) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
-
-## Settled decisions
-
-- `voluntary_disclosure`: either boolean value, `true` or `false`, returns 501; non-boolean values return 400 `VALIDATION_ERROR` on `voluntary_disclosure`.
-- 405 routes: after the headers and session, Responder and Board get 403, per the spec's roles rule; a DisclosureApprover gets the incident lookup (404) and then 405.
-- `to: AmendmentPending`: the error order puts invalid body (400) before wrong state (409). Missing or malformed `info_available_date` or `elements` → 400; with valid fields, the disallowed pair → 409.
-- An unknown session is a 404 checked before the role, the order Team 10's system uses.
-
-## Tests to write
-
-Write pytest tests against the service modules using a real local Postgres database. Every rejection test also checks that stored data is unchanged; HTTP-level tests (status codes, headers, error order) go in `tests/test_server.py`.
-
-**Sessions**
-
-- Every operation gets `NOT_FOUND` for an unknown session before the role is checked, and for another session's incident, with nothing written.
-- Today is the UTC date of the session's `test_now`, and a session's registrant type sets `required_form`.
-- Each new incident and audit entry records its request's session.
-
-**Incidents**
-
-- A new incident is UnderAssessment with version 1 and all other fields at their defaults.
-- 100 incidents get 100 distinct IDs.
-- A missing or empty title is rejected with `VALIDATION_ERROR` on `title`.
-- A discovery_date after today is rejected; one equal to today is accepted.
-- Board cannot create an incident (`FORBIDDEN_ROLE`).
-- Each create writes one `create_incident` audit entry.
-
-**Evidence**
-
-- Ticketing and SIEM items normalize to the right `source_ref`, `summary`, `observed_at`, `imported_by` and `source`.
-- `imported_at` is within 5 seconds of server time.
-- 20 ticketing and 20 SIEM items produce 40 evidence items.
-- One bad item (missing field, bad severity, malformed timestamp, wrong shape for the source) rejects the whole batch, names the field, and stores nothing.
-- Import works in every state, including Closed, and never changes version.
-- Each import writes exactly one `import_evidence` audit entry listing the source and new evidence IDs.
-
-**Determination**
-
-- A complete Material determination sets DeterminedMaterial and the right `required_form` for Domestic and for FPI; NotMaterial sets DeterminedNotMaterial with `required_form` null.
-- Only DisclosureApprover can record one; Responder and Board get `FORBIDDEN_ROLE`.
-- Each missing field, zero evidence refs, an unknown ref and a ref from another incident are rejected.
-- A date before discovery or after today is rejected; dates equal to discovery and to today are accepted.
-- A second determination, or one from any state other than UnderAssessment, gets `INVALID_TRANSITION`.
-- Sending `voluntary_disclosure` gets `NOT_IMPLEMENTED`.
-- Success increments version by 1 and writes one `record_determination` audit entry.
-
-**Transitions**
-
-- DM → DisclosureDelayed, DisclosureDelayed → DM and DNM → Closed succeed, increment version and write one `transition` audit entry.
-- Every other target from UnderAssessment, DM, DNM, DisclosureDelayed and Closed gets `INVALID_TRANSITION` with state and version unchanged, including staying in the same state and DNM → DM.
-- After imports and transition attempts on an UnderAssessment incident, `determination` is still empty and state is still UnderAssessment.
-
-**Audit**
-
-- A 10-action sequence produces 10 matching entries, oldest first.
-- Under the app's DB user, UPDATE and DELETE on audit_entries fail, and DELETE on incidents and evidence fails.
-
-**Test control**
-
-- Empty setup stores the pod defaults, and sent settings are stored as sent.
-- Each invalid setup field, and an ID already in use, is rejected with nothing stored.
-- Coverage has null counts with a reason; unknown and missing sessions are rejected.
-- The snapshot holds exactly its session's incidents and audit entries.
-
-**Stubs**
-
-- Only a DisclosureApprover reaches a 405, after the session, incident and evidence lookups; Responder and Board get `FORBIDDEN_ROLE`.
-- Each unbuilt operation returns `NOT_IMPLEMENTED` to its allowed roles and `FORBIDDEN_ROLE` to the rest, after the same checks.
-- Neither writes anything.
-
-**API (`tests/test_server.py`)**
-
-- Every project operation in `system-openapi.yaml` has an explicit route.
-- Success and error bodies match the spec's schemas, and errors leave out an unset `field`.
-- Headers, session, role, incident and body errors come in the root error order on every route.
-- 405 responses carry `Allow`, and test-control errors use `{message, source}`.
+- The server clock (UTC, NTP-synced) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 
 ## Branches, commits and pull requests
 
@@ -548,8 +147,8 @@ Write pytest tests against the service modules using a real local Postgres datab
 - `type: description` without a scope is valid under the spec but not in this repo.
 - Use a short lowercase noun for the area changed, e.g. `agents`, `skills`, `config`, `db`, `models`, `roles`, `audit`, `incidents`, `evidence`, `workflow`, `api`.
 - Write PR descriptions per the `pull-requests` skill.
-- Every PR updates the relevant `AGENTS.md` files or gives a skip line for each (see Directory guides); the `AGENTS.md updated` check fails it otherwise.
+- Every PR updates the relevant `AGENTS.md` files or gives a skip line for each (see Directory guides); the `AGENTS.md updated` check fails it otherwise. `.github/AGENTS.md` gives the skip line's exact format.
 - Skills live in two folders with identical contents: `.claude/skills/` for Claude Code and `.agents/skills/` for Codex. Change both together; the `Skills in sync` CI check (`.github/workflows/skills.yml`) fails a PR when they differ.
-- Before pushing, commit and run both checks:
+- Before pushing, commit, fetch `origin/main`, and run both checks:
   - `python .github/scripts/check_agents_md.py --body "<PR description>"` (the body is only needed for skip lines)
   - `git diff --no-index --exit-code .claude/skills .agents/skills`
