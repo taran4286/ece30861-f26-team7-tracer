@@ -1,6 +1,6 @@
 # tests/: the pytest suite
 
-What each file covers, the shared helpers, and how the suite runs. Service tests call `app/services` directly against the real local database; HTTP-level checks (status codes, headers, error order over HTTP) are in `test_server.py`.
+What each file covers, the shared helpers, and how the suite runs. Service tests call `app/services` directly against the real local database; HTTP-level checks (status codes, headers, error order over HTTP) are in `test_server.py` for the system and `test_tester.py` for the tester.
 
 | File | Covers |
 | --- | --- |
