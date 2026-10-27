@@ -141,7 +141,7 @@ Each runs steps 1 to 3 (session, role, path IDs) in one transaction, then raises
 ## Rules
 
 - Services take the raw request body and do all body validation themselves. A 400 must come after the 404 checks, so the API layer must not reject a body before the service runs.
-- Materiality is written only in `workflow.record_determination` (AC-09). `test_no_other_service_writes_materiality` scans every module here except `workflow.py`, which it skips as a whole, so keep materiality writes out of the rest of `workflow.py` by review.
+- Materiality is written only in `workflow.record_determination` (AC-09).
 - Keep the allowed pairs in `ALLOWED_TRANSITIONS`; `transition_incident` checks only that set.
 - An operation that ends in 405 or 501 goes in `placeholders.py`.
 - Don't name a service function with a leading `test`: pytest would collect it from any test file that imports it. The snapshot's TestRun builder is `control.run_to_dict` for that reason.
