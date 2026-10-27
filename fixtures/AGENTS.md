@@ -1,6 +1,6 @@
 # fixtures/: test fixtures
 
-The static JSON items our tester sends to target systems. Root "Directory guides" says which file wins when this one disagrees with the root `AGENTS.md` or `system-openapi.yaml`.
+The static JSON items our tester sends to target systems.
 
 | File | Contents |
 | --- | --- |
@@ -11,6 +11,6 @@ The static JSON items our tester sends to target systems. Root "Directory guides
 ## Rules
 
 - Each file is a JSON array of items that match the `system-openapi.yaml` schema exactly, so the tester sends them as they are.
-- Every date is on or before 2026-10-05, the date of the spec's default `test_now`, and every timestamp is ISO-8601 UTC ending in `Z`.
+- Every date is on or before 2026-10-05, the `TODAY` the tester's cases assume, and every timestamp is ISO-8601 UTC ending in `Z`.
 - `tester/cases.py` picks items by index, wrapping around, so changing a file's order or length changes what each case sends.
-- The tester reads these files when a case first needs them, so they deploy with the service.
+- The tester reads these files when `planned()` builds the case list, before a run starts, and caches them; they deploy with the service.
