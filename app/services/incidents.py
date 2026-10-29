@@ -115,8 +115,7 @@ def _incident_dict(
         "state": incident.state.value,
         "determination": determination_to_dict(determination) if determination else None,
         "required_form": incident.required_form.value if incident.required_form else None,
-        # Due dates, flags and filings are Phase 4.
-        "due_date": None,
+        "due_date": incident.due_date.isoformat() if incident.due_date else None,
         "flags": [],
         "filings": [],
         "evidence": [evidence_to_dict(item) for item in evidence],

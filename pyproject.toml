@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Team 7 Tracer service"
 requires-python = ">=3.12"
 dependencies = [
+    "holidays>=0.80,<1",
     "sqlalchemy>=2.0,<2.1",
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.4",
