@@ -106,6 +106,7 @@ These take no identity headers or role and write no audit entries. They raise `T
 
 - Business days are Monday through Friday excluding U.S. federal holidays from the `holidays` library's `UnitedStates` calendar with `observed=True` and no state subdivision. Each cached year includes the following year's holidays before filtering, so New Year's Day observed in December is retained. Holiday dates and historical rules come from the library.
 - `add_business_days(start, days=4)` excludes the start date, including a weekend or holiday start. Zero days returns the start unchanged. Calendar calculations do not depend on real time or session settings.
+- Calendar years must be within the library's `start_year` and `end_year` (currently 1777–2100). Unsupported starts, direct calendar queries and deadlines crossing the range raise `OverflowError`, mapped to a 400 on `determination_date` by the workflow. The final supported year's calendar retains next New Year's observed holiday without requesting an unsupported year.
 - `disclosure_due_date(required_form, start)` returns four business days after start for `8-K Item 1.05` and `8-K/A`, and null for other forms. For amendments the caller supplies the information-available date; the transition operation still rejects AmendmentPending.
 
 ## State transitions (`workflow.py`; REQ-06)

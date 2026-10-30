@@ -201,7 +201,7 @@ def record_determination(
         try:
             due_date = disclosure_due_date(required_form, determination_date)
         except OverflowError:
-            raise invalid("determination_date", "Deadline is outside the supported date range") from None
+            raise invalid("determination_date", "Deadline is outside the supported holiday calendar range") from None
         before = {"state": incident.state.value, "determination": None, "version": incident.version}
         determination = Determination(
             incident_id=incident_id, decision=decision, determination_date=determination_date,

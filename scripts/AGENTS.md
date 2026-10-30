@@ -2,6 +2,12 @@
 
 `setup_db.py` creates the app and tester roles, all six tables and the grants, running as the owner role. Root "Database roles" says which role is which, and "Local setup steps" says how to run it and read the result.
 
+## Deadline data upgrade
+
+Run `python scripts/backfill_deadlines.py` against an existing database before deploying deadline support, with `DATABASE_URL` set to that database's app role connection (environment or `.env`). It uses existing tables and app privileges; it never creates tables or wipes data. It locks incidents with null deadlines, Domestic sessions, Material determinations and required form `8-K Item 1.05`, then fills their four-business-day deadlines using the shared calculator. Other rows and already populated deadlines are untouched. Versions and audit entries are unchanged because this repairs derived data rather than recording a new user operation.
+
+All calculations and updates share one transaction; unsupported historical dates or any other failure roll back the entire repair. Re-running is safe. Exit 0 prints `backfill_deadlines: done; updated <count> incidents`; exit 1 names the exception type without credentials and says nothing was changed. Verify on a Neon branch before running against production. `tests/test_deadline_backfill.py` checks preservation and repeatability using PostgreSQL.
+
 ## What it applies
 
 Each run resets both login roles, so leftover privileges don't survive, then grants exactly:

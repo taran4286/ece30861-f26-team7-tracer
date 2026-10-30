@@ -66,6 +66,7 @@ def rejected(case, code=ErrorCode.VALIDATION_ERROR, field=None, who=APPROVER):
     ('FPI', 'NotMaterial', 'DeterminedNotMaterial', None),
 ])
 def test_success(registrant, decision, state, form):
+    """Persist the decision, form, registrant-specific deadline and audit entry together."""
     # The registrant type is fixed per session, so each case gets its own.
     session_id = new_session(registrant_type=RegistrantType(registrant))
     responder, approver, board = (in_session(who, session_id) for who in (RESPONDER, APPROVER, BOARD))
@@ -108,6 +109,7 @@ def test_role_before_incident_and_body(who):
     ('2021-12-29', '2022-01-05'),
 ])
 def test_deadline_uses_determination_date_and_survives_delay(start, expected):
+    """Keep determination-based deadlines stable through delay and resume operations."""
     # The session is later than the determination: deadlines must not start at "today".
     session_id = new_session(test_now=datetime(2027, 1, 20, tzinfo=UTC))
     responder, approver, board = (in_session(who, session_id) for who in (RESPONDER, APPROVER, BOARD))
@@ -123,6 +125,22 @@ def test_deadline_uses_determination_date_and_survives_delay(start, expected):
 
 def test_unknown_incident_before_body():
     rejected(('missing', {}), ErrorCode.NOT_FOUND)
+
+
+@pytest.mark.parametrize('start', ['2101-10-07', '2100-12-30'])
+def test_unsupported_deadline_rejects_without_writes(start):
+    """Reject unsupported determination years and deadlines crossing the calendar limit."""
+    session_id = new_session(test_now=datetime(2102, 1, 1, tzinfo=UTC))
+    responder, approver, board = (in_session(who, session_id) for who in (RESPONDER, APPROVER, BOARD))
+    incident = create_incident({'title': 'Calendar limit', 'discovery_date': start}, **responder)
+    ident, body = new_case(incident, responder)
+    previous = get_incident(ident, **board)
+    counts = table_counts()
+    with pytest.raises(TracerError) as error:
+        workflow.record_determination(ident, body, **approver)
+    assert (error.value.code, error.value.field) == (ErrorCode.VALIDATION_ERROR, 'determination_date')
+    assert get_incident(ident, **board) == previous
+    assert table_counts() == counts
 
 
 @pytest.mark.parametrize('field', ['decision', 'determination_date', 'rationale', 'evidence_refs', 'version'])

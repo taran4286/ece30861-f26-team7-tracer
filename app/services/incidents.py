@@ -108,6 +108,7 @@ def incidents_to_dicts(tx: Session, incidents: Sequence[Incident]) -> list[dict[
 def _incident_dict(
     incident: Incident, determination: Determination | None, evidence: list[Evidence]
 ) -> dict[str, Any]:
+    """Build the public incident response, including its stored deadline when present."""
     return {
         "incident_id": incident.incident_id,
         "title": incident.title,

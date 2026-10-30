@@ -5,6 +5,7 @@ What each file covers, the shared helpers, and how the suite runs. Service tests
 | File | Covers |
 | --- | --- |
 | `conftest.py` | The `default_session` fixture, which stores `SESSION_ID` once per test run, and the `incident` fixture: a fresh UnderAssessment incident created by a Responder in that session |
+| `test_deadline_backfill.py` | PostgreSQL upgrade test: fills legacy Domestic Material deadlines, preserves populated deadlines/FPI/NotMaterial, incident versions and audit rows, and is repeatable |
 | `test_deadlines.py` | Calendar-only checks: four business days excluding the start, weekends, all observed federal holidays, cross-year New Year's observance, leap day, form-specific deadlines, zero/invalid counts and date overflow; AC-11 compares all 730 start dates in 2026–2027 against an independent ordered business-day calendar using `holidays.UnitedStates`, with start/expected/actual in failures, plus the explicit 2027-06-17 → 2027-06-24 observed-Juneteenth example; no database fixture |
 | `helpers.py` | Acting users (`RESPONDER`, `APPROVER`, `BOARD`), all working in `SESSION_ID`, whose `test_now` is `TEST_NOW` and whose today is `TODAY` (2026-10-05); `new_session()` and `in_session()` for other sessions; `ticket()` and `alert()` item builders, `table_counts()`, `audit_entries()` and `set_state()` |
 | `test_incidents.py` | `incidents.py`: a new incident's defaults and session; get for every role; 100 creates give 100 distinct IDs; missing, empty or malformed `title` and `discovery_date`, a date after today (rejected) and equal to today (accepted); today taken from the session's `test_now`; Board and unknown roles forbidden, the role checked before the body; unknown sessions 404 before the role, other sessions' incidents 404; one `create_incident` audit entry per create |
@@ -33,6 +34,7 @@ What each file covers, the shared helpers, and how the suite runs. Service tests
 - To put an incident straight into a state without the workflow, use `set_state()`; it changes only `state` and writes no audit entry.
 - Every service operation needs a stored session, so operation test files start with `pytestmark = pytest.mark.usefixtures("default_session")`; pure calendar tests need no session.
 - `test_workflow.py` also verifies determination deadlines in responses, stored incident rows and audit entries for Domestic/FPI and Material/NotMaterial.
+- Calendar tests also reject unsupported years and deadlines crossing the library's upper boundary, and check the final supported year's New Year observance.
 - Date checks compare against `TODAY`, or against the date of a session made with `new_session(test_now=...)`, never the real date.
 - A test that needs other session settings, such as FPI, makes its own session with `new_session()` and acts in it through `in_session()`; never change a stored session. Make it before taking `table_counts()`, since it writes a row.
 - A test that changes a setting or the environment clears the three cached objects before and after (see `app/AGENTS.md`), as the `fresh_settings` fixture in `test_server.py` does; `fresh_tester_settings` in `test_tester.py` does the same for `TESTER_DATABASE_URL`.
