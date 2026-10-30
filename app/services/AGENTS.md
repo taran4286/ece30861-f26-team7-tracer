@@ -10,6 +10,7 @@ One module per area, callable without any web framework. Each project operation 
 | `control.py` | `setup_session(body)`, `coverage_report(session_id)`, `snapshot(run_id)`, `run_to_dict`, `DEFAULTS`, `INTEGER_MAX` and `CODE_COVERAGE_BASIS` | `tests/test_control.py` |
 | `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, evidence_id=None, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
+| `filings.py` | `validate_filing_request`: filing body and contextual checks, without database access | `tests/test_filings.py` |
 
 Add a row for each new module.
 
@@ -64,6 +65,13 @@ def record_determination(
 - `incidents.incident_to_dict(tx, incident)` builds the full Incident (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values), and every operation that returns an Incident uses it. `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations and evidence. `evidence_to_dict` and `determination_to_dict` build the parts; `raw_item` is never returned.
 - An Incident always has `due_date: null`, `flags: []` and `filings: []`. Its `evidence` is ordered by `imported_at`, then `evidence_id`; items from one import share an `imported_at` and their IDs are random, so they don't come back in the order they were sent.
 - `workflow.audit_entry_to_dict(entry)` builds an audit entry (without `seq` or `session_id`) for the audit list and the snapshot.
+
+## Filing request validation (`filings.py`; REQ-12, REQ-13, REQ-19)
+
+- `validate_filing_request(body, *, today, determination_date, required_form)` checks an object and returns parsed fields without database access or changes to the input. The caller supplies the session date and the incident's determination date and required form; either incident value may be null. It performs no session, role, state or stale-version check.
+- Checks run in this order: allowed filing form (`8-K Item 1.05`, `6-K`, `8-K/A`), filing date (real date, not after today or before a supplied determination date), accession number (10 ASCII digits, hyphen, 2 digits, hyphen, 6 digits), integer version at least 1, unavailable elements, home-disclosure date, then matching a supplied required form.
+- `unavailable_elements` defaults to an empty list; sent values must be arrays of unique `nature`, `scope`, `timing` or `impact` names. Invalid items name their index. The result contains a separate list.
+- `home_disclosure_date` is required for `6-K` and checked whenever sent: a real date no later than today. Otherwise its result is null. Returned dates are Python dates, `form_type` is a `FormType`, and `version` is an integer. Unknown request fields are ignored.
 
 ## Test control (`control.py`; TEST-01, TEST-02, TEST-06)
 
