@@ -4,6 +4,9 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
+from psycopg.errors import InsufficientPrivilege
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
@@ -165,3 +168,37 @@ def test_snapshot_of_an_unknown_session_is_not_found(run_id):
     with pytest.raises(TracerError) as error:
         control.snapshot(run_id)
     assert error.value.code == ErrorCode.NOT_FOUND
+
+
+# --- Database roles ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("column,value", [
+    ("test_now", "2026-10-08T15:00:00Z"), ("at_risk_threshold_days", "3"),
+    ("llm_base_url", "https://llm.invalid/v2"),
+])
+def test_the_app_role_can_update_the_mutable_settings(column, value):
+    session_id = new_session()
+    with transaction() as tx:
+        tx.execute(
+            text(f"UPDATE test_sessions SET {column} = :v WHERE session_id = :s"),
+            {"v": value if column != "at_risk_threshold_days" else int(value), "s": session_id},
+        )
+
+
+@pytest.mark.parametrize("column", ["registrant_type", "session_id", "created_at"])
+def test_the_app_role_cannot_update_other_session_columns(column):
+    # Matches no row, so a wrongly granted UPDATE still changes nothing.
+    with pytest.raises(DBAPIError) as error, transaction() as tx:
+        tx.execute(text(f"UPDATE test_sessions SET {column} = {column} WHERE session_id = 'none'"))
+    assert isinstance(error.value.orig, InsufficientPrivilege)
+
+
+@pytest.mark.parametrize("statement", [
+    "UPDATE filings SET accession_number = accession_number WHERE incident_id = 'none'",
+    "DELETE FROM filings WHERE incident_id = 'none'",
+])
+def test_the_app_role_cannot_change_or_delete_filings(statement):
+    with pytest.raises(DBAPIError) as error, transaction() as tx:
+        tx.execute(text(statement))
+    assert isinstance(error.value.orig, InsufficientPrivilege)
