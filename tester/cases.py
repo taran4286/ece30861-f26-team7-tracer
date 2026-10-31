@@ -1,24 +1,30 @@
-"""The cross-team test cases, in run order: AC-02, 03, 07, 08, 20, 06, 09, 23, then 01.
+"""The cross-team test cases, in run order: AC-02, 03, 07, 08, 20, 14, 12, 13, 15, 06, 09, 23,
+then 01.
 
 Each criterion has normal cases and edge cases (boundaries, bad input, wrong roles, unknown
 IDs). Pass rules are the course's acceptance criteria; expected statuses, error codes and
-fields come from system-openapi.yaml.
+fields come from system-openapi.yaml, and expected due dates from the tester's own calendar.
 """
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import cache
+from itertools import count
 from pathlib import Path
 from typing import Any
 
+from tester.business_days import add_business_days
 from tester.client import NO_BODY, Actor, Reply, TargetError
-from tester.suite import Case, Fail, Run, Skip, expect
+from tester.suite import Case, Fail, Run, expect
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 # "Today" is the date of the session's test_now. The tester's setup sends {}, so test_now is
-# the spec's default, 2026-10-05T15:00:00Z.
+# the spec's default. A case that moves the clock sets it back to this before it ends.
+SETUP_TEST_NOW = "2026-10-05T15:00:00Z"
 TODAY = date(2026, 10, 5)
 TOMORROW = TODAY + timedelta(days=1)
 # AC-02's tolerance against server time, used for every server timestamp.
@@ -39,8 +45,14 @@ SHORT = {UA: "UA", DM: "DM", DNM: "DNM"}
 
 # The spec's state table (3.2.1), by the route that performs each move.
 DETERMINATION_MOVES = {(UA, DM), (UA, DNM)}
-TRANSITION_MOVES = {(DM, DELAYED), (DELAYED, DM), (DNM, CLOSED)}
-FILING_MOVES = {(DM, RECORDED), (DELAYED, RECORDED)}
+TRANSITION_MOVES = {(DM, DELAYED), (DELAYED, DM), (DNM, CLOSED), (RECORDED, AMENDMENT),
+                    (RECORDED, CLOSED)}
+FILING_MOVES = {(DM, RECORDED), (DELAYED, RECORDED), (AMENDMENT, RECORDED)}
+
+FORM_8K, FORM_8KA, FORM_6K = "8-K Item 1.05", "8-K/A", "6-K"
+# The form a filing move files in a Domestic session: the incident's required_form (3.2.2).
+FILING_FORMS = {DM: FORM_8K, DELAYED: FORM_8K, AMENDMENT: FORM_8KA}
+DUE_FLAGS = ("warning", "overdue")
 
 INCIDENTS = "/incidents"
 INCIDENT = "/incidents/{incident_id}"
@@ -93,8 +105,10 @@ class Tracked:
 # Calls every case builds on. Each raises Fail or TargetError when the target doesn't do it.
 
 
-def create(run: Run, n: int, actor: Actor = RESPONDER) -> Tracked:
+def create(run: Run, n: int, actor: Actor = RESPONDER, discovery: date | None = None) -> Tracked:
     body = incident_body(n)
+    if discovery is not None:
+        body["discovery_date"] = discovery.isoformat()
     incident = expect(run.call("POST", INCIDENTS, actor, json=body), 201)
     return Tracked(
         incident["incident_id"], date.fromisoformat(body["discovery_date"]),
@@ -141,33 +155,108 @@ def determine(run: Run, inc: Tracked, decision: str = "Material", **kwargs: Any)
     return incident
 
 
-def transition_body(inc: Tracked, to: str) -> dict[str, Any]:
+def transition_body(inc: Tracked, to: str, available: date = TODAY) -> dict[str, Any]:
     body: dict[str, Any] = {"to": to, "version": inc.version}
     if to == AMENDMENT:
-        # Well-formed fields, so the only thing wrong is the pair itself.
-        body |= {"info_available_date": TODAY.isoformat(), "elements": ["impact"]}
+        # Valid fields, impact being what incident_in's filing lists as unavailable, so the
+        # only thing wrong in a refused move is the pair itself.
+        body |= {"info_available_date": available.isoformat(), "elements": ["impact"]}
     return body
 
 
-def move(run: Run, inc: Tracked, to: str) -> dict[str, Any]:
-    reply = run.call("POST", TRANSITIONS, APPROVER, json=transition_body(inc, to),
+def move(run: Run, inc: Tracked, to: str, available: date = TODAY) -> dict[str, Any]:
+    reply = run.call("POST", TRANSITIONS, APPROVER, json=transition_body(inc, to, available),
                      incident_id=inc.id)
     incident = expect(reply, 200)
     inc.update(incident)
     return incident
 
 
+def accession(run: Run) -> str:
+    """A well-formed accession number, distinct within the session."""
+    numbers = run.once("accession-numbers", lambda: count(1))
+    return f"0000000007-26-{next(numbers):06d}"
+
+
+def filing_body(
+    run: Run, inc: Tracked, form: str, day: date = TODAY, **optional: Any
+) -> dict[str, Any]:
+    """A valid FilingRequest body for `form`, filed on `day`; `optional` adds the optional
+    fields, such as unavailable_elements or home_disclosure_date."""
+    return {"form_type": form, "filing_date": day.isoformat(), "accession_number": accession(run),
+            "version": inc.version, **optional}
+
+
+def file(run: Run, inc: Tracked, form: str, **kwargs: Any) -> dict[str, Any]:
+    reply = run.call("POST", FILINGS, APPROVER, json=filing_body(run, inc, form, **kwargs),
+                     incident_id=inc.id)
+    incident = expect(reply, 201)
+    inc.update(incident)
+    return incident
+
+
 def incident_in(run: Run, state: str, n: int) -> Tracked:
-    """A new incident with one evidence item, moved to `state` along the allowed path."""
+    """A new incident with one evidence item, moved to `state` along the allowed path.
+
+    Its 8-K filing lists impact as unavailable, so a DisclosureRecorded incident can move on to
+    AmendmentPending; the move there sends info_available_date today.
+    """
     inc = create(run, n)
     import_items(run, inc, "ticketing", [ticket(n)])
     if state != UA:
-        determine(run, inc, "Material" if state in (DM, DELAYED) else "NotMaterial")
+        determine(run, inc, "NotMaterial" if state in (DNM, CLOSED) else "Material")
     if state in (DELAYED, CLOSED):
         move(run, inc, state)
+    if state in (RECORDED, AMENDMENT):
+        file(run, inc, FORM_8K, unavailable_elements=["impact"])
+    if state == AMENDMENT:
+        move(run, inc, AMENDMENT)
     if inc.state != state:
         raise Fail(f"Couldn't reach {state}: the target reports {inc.state}")
     return inc
+
+
+@contextmanager
+def clock_at(run: Run, day: date) -> Iterator[None]:
+    """Run the block with the session's test_now at 15:00 UTC on `day`.
+
+    The clock goes back to the setup default however the block ends, since later cases assume
+    TODAY. A reset that fails fails the case, unless the block already failed it.
+    """
+    try:
+        run.set_clock(f"{day.isoformat()}T15:00:00Z")
+        yield
+    except Exception:
+        with suppress(Exception):
+            run.set_clock(SETUP_TEST_NOW)
+        raise
+    try:
+        run.set_clock(SETUP_TEST_NOW)
+    except Fail as exc:
+        raise Fail(f"Couldn't set test_now back to {SETUP_TEST_NOW}: {exc}")
+
+
+def expected_due(start: date, stated: date) -> date:
+    """`start` + 4 business days by the tester's own calendar, which must give the date the
+    criterion states; a calendar that disagrees is a tester fault."""
+    due = add_business_days(start)
+    if due != stated:
+        raise RuntimeError(f"the tester's calendar gives {due} for {start} + 4 business days, "
+                           f"not {stated}")
+    return due
+
+
+def flag_problems(where: str, incident: dict[str, Any], expected: set[str]) -> list[str]:
+    """A problem unless the incident's due-date flags are exactly `expected`; the spec checks
+    them in order, so at most one applies."""
+    flags = {flag for flag in incident["flags"] if flag in DUE_FLAGS}
+    if flags == expected:
+        return []
+    return [f"{where} has {describe(flags)}, not {describe(expected)}"]
+
+
+def describe(flags: set[str]) -> str:
+    return " and ".join(sorted(flags)) or "neither warning nor overdue"
 
 
 def rejected(
@@ -651,15 +740,255 @@ def ac20() -> list[Case]:
     ]
 
 
-# AC-06 (REQ-06): all 49 state pairs; Phase 3 runs the 33 it can reach.
+# AC-14 (REQ-13): a filing is stored with its form, date and accession number and records the
+# disclosure; each of the three is required.
+
+
+def ac14() -> list[Case]:
+    def subject(run: Run) -> Tracked:
+        return run.once("ac14", lambda: incident_in(run, DM, 1))
+
+    def missing(field: str):
+        def case(run: Run) -> str:
+            inc = subject(run)
+            body = filing_body(run, inc, FORM_8K)
+            del body[field]
+            return rejected(run, "POST", FILINGS, APPROVER, body, 400, "VALIDATION_ERROR", field,
+                            incident_id=inc.id)
+        return case
+
+    def filed(run: Run) -> tuple[dict, dict]:
+        def build() -> tuple[dict, dict]:
+            inc = subject(run)
+            body = filing_body(run, inc, FORM_8K)
+            incident = expect(run.call("POST", FILINGS, APPROVER, json=body, incident_id=inc.id),
+                              201)
+            inc.update(incident)
+            return body, incident
+        return run.once("ac14-filing", build)
+
+    def recorded(run: Run) -> str:
+        body, incident = filed(run)
+        problems = []
+        if incident["state"] != RECORDED:
+            problems.append(f"state is {incident['state']}, not {RECORDED}")
+        if incident["version"] != body["version"] + 1:
+            problems.append(f"version is {incident['version']}, not {body['version'] + 1}")
+        return problems_or(problems, "8-K Item 1.05 filing",
+                           f"201; state {RECORDED}, version {body['version']} → "
+                           f"{body['version'] + 1}")
+
+    def retrievable(run: Run) -> str:
+        body, _ = filed(run)
+        stored = get(run, subject(run).id, BOARD)
+        found = [f for f in stored["filings"] if f["accession_number"] == body["accession_number"]]
+        if len(found) != 1:
+            raise Fail(f"GET as Board lists {len(found)} filings with accession_number "
+                       f"{body['accession_number']}, not 1")
+        problems = [f"{key} reads back as {found[0][key]!r}, not {body[key]!r}"
+                    for key in ("form_type", "filing_date") if found[0][key] != body[key]]
+        return problems_or(problems, "GET as Board",
+                           f"The filing reads back with form_type {body['form_type']}, "
+                           f"filing_date {body['filing_date']} and accession_number "
+                           f"{body['accession_number']}")
+
+    return [
+        *((f"AC-14-missing-{field}", missing(field))
+          for field in ("form_type", "filing_date", "accession_number")),
+        ("AC-14-filing-recorded", recorded),
+        ("AC-14-filing-retrievable", retrievable),
+    ]
+
+
+# AC-12 (REQ-11): warning with 1 business day or less left, overdue after the due date, and
+# neither once the filing is recorded. The clock moves through test_now.
+
+AC12_DAY = date(2026, 10, 5)  # discovery and determination, a Monday
+AC12_DUE = date(2026, 10, 9)
+
+
+def ac12() -> list[Case]:
+    def subject(run: Run) -> tuple[Tracked, dict[str, Any]]:
+        def build() -> tuple[Tracked, dict[str, Any]]:
+            inc = create(run, 0, discovery=AC12_DAY)
+            import_items(run, inc, "ticketing", [ticket(16)])
+            return inc, determine(run, inc, day=AC12_DAY)
+        return run.once("ac12", build)
+
+    def due_date(run: Run) -> str:
+        due = expected_due(AC12_DAY, AC12_DUE)
+        incident = subject(run)[1]
+        if incident.get("due_date") != due.isoformat():
+            raise Fail(f"due_date is {incident.get('due_date')!r}, not {due} (determination "
+                       f"{AC12_DAY} + 4 business days)")
+        return (f"due_date {due}: determination {AC12_DAY} + 4 business days, as the tester's "
+                "calendar gives")
+
+    def flags_on(day: date, expected: set[str], left: str):
+        def case(run: Run) -> str:
+            inc = subject(run)[0]
+            with clock_at(run, day):
+                incident = get(run, inc.id)
+            return problems_or(flag_problems(f"GET with test_now {day}", incident, expected),
+                               f"Due {AC12_DUE}, {left}",
+                               f"{describe(expected).capitalize()} on {day} ({left})")
+        return case
+
+    def filing_clears(run: Run) -> str:
+        inc = subject(run)[0]
+        with clock_at(run, AC12_DUE + timedelta(days=1)):
+            incident = file(run, inc, FORM_8K, day=AC12_DUE)
+            stored = get(run, inc.id)
+        problems = (flag_problems("The filing's response", incident, set())
+                    + flag_problems("GET after it", stored, set()))
+        return problems_or(problems, "Overdue incident's filing",
+                           f"201; after an 8-K Item 1.05 filing dated {AC12_DUE}, neither "
+                           f"warning nor overdue on {AC12_DUE + timedelta(days=1)}")
+
+    return [
+        ("AC-12-due-date-4-business-days", due_date),
+        ("AC-12-no-flag-2-business-days-left",
+         flags_on(date(2026, 10, 7), set(), "2 business days left")),
+        ("AC-12-warning-1-business-day-left",
+         flags_on(date(2026, 10, 8), {"warning"}, "1 business day left")),
+        ("AC-12-warning-on-due-date", flags_on(AC12_DUE, {"warning"}, "the due date")),
+        ("AC-12-overdue-after-due-date",
+         flags_on(AC12_DUE + timedelta(days=1), {"overdue"}, "the day after")),
+        ("AC-12-filing-clears-flags", filing_clears),
+    ]
+
+
+# AC-13 (REQ-12): a foreign private issuer files a 6-K, with no 4-business-day clock, and
+# records its home-country disclosure date. Registrant type is fixed per session, so the cases
+# act in a second session they prepare as FPI.
+
+FPI_DETERMINED = date(2026, 10, 4)
+FPI_LATE = date(2026, 11, 30)
+
+
+def ac13() -> list[Case]:
+    def subject(run: Run) -> tuple[Run, Tracked, dict[str, Any]]:
+        def build() -> tuple[Run, Tracked, dict[str, Any]]:
+            fpi = run.prepare(f"{run.session_id}-fpi", {"registrant_type": "FPI"})
+            inc = create(fpi, 8)
+            import_items(fpi, inc, "ticketing", [ticket(17)])
+            return fpi, inc, determine(fpi, inc, day=FPI_DETERMINED)
+        return run.once("ac13", build)
+
+    def six_k(run: Run) -> str:
+        incident = subject(run)[2]
+        problems = []
+        if incident.get("required_form") != FORM_6K:
+            problems.append(f"required_form is {incident.get('required_form')!r}, not '6-K'")
+        if incident.get("due_date") is not None:
+            problems.append(f"due_date is {incident['due_date']}, not null")
+        return problems_or(problems, "FPI Material determination",
+                           "required_form 6-K, due_date null")
+
+    def no_flags(run: Run) -> str:
+        fpi, inc, _ = subject(run)
+        with clock_at(fpi, FPI_LATE):
+            incident = get(fpi, inc.id)
+        problems = flag_problems(f"GET with test_now {FPI_LATE}", incident, set())
+        if incident.get("due_date") is not None:
+            problems.append(f"due_date is {incident['due_date']}, not null")
+        return problems_or(problems, "FPI incident",
+                           f"Neither warning nor overdue on {FPI_LATE}, well past "
+                           f"{add_business_days(FPI_DETERMINED)} (determination + 4 business days)")
+
+    def home_date_required(run: Run) -> str:
+        fpi, inc, _ = subject(run)
+        return rejected(fpi, "POST", FILINGS, APPROVER, filing_body(fpi, inc, FORM_6K), 400,
+                        "VALIDATION_ERROR", "home_disclosure_date", incident_id=inc.id)
+
+    def home_date_stored(run: Run) -> str:
+        fpi, inc, _ = subject(run)
+        home = FPI_DETERMINED.isoformat()
+        body = filing_body(fpi, inc, FORM_6K, home_disclosure_date=home)
+        incident = expect(fpi.call("POST", FILINGS, APPROVER, json=body, incident_id=inc.id), 201)
+        inc.update(incident)
+        stored = get(fpi, inc.id, BOARD)
+        found = [f for f in stored["filings"] if f["accession_number"] == body["accession_number"]]
+        problems = []
+        if incident["state"] != RECORDED:
+            problems.append(f"state is {incident['state']}, not {RECORDED}")
+        if len(found) != 1:
+            problems.append(f"GET as Board lists {len(found)} filings with accession_number "
+                            f"{body['accession_number']}, not 1")
+        elif found[0].get("home_disclosure_date") != home:
+            problems.append(f"home_disclosure_date reads back as "
+                            f"{found[0].get('home_disclosure_date')!r}, not {home!r}")
+        return problems_or(problems, "6-K filing",
+                           f"201; state {RECORDED}, home_disclosure_date {home} read back as "
+                           "Board")
+
+    return [
+        ("AC-13-material-requires-6-K", six_k),
+        ("AC-13-no-warning-or-overdue", no_flags),
+        ("AC-13-6-K-missing-home_disclosure_date", home_date_required),
+        ("AC-13-6-K-stores-home_disclosure_date", home_date_stored),
+    ]
+
+
+# AC-15 (REQ-14): information marked available moves a recorded disclosure to AmendmentPending,
+# with an 8-K/A due 4 business days later.
+
+AC15_DAY = date(2026, 11, 9)  # a Monday; Veterans Day is Wednesday 2026-11-11
+AC15_DUE = date(2026, 11, 16)
+
+
+def ac15() -> list[Case]:
+    def amended(run: Run) -> tuple[int, dict[str, Any]]:
+        def build() -> tuple[int, dict[str, Any]]:
+            inc = incident_in(run, RECORDED, 9)
+            version = inc.version
+            # info_available_date can't be after today, so today moves to it.
+            with clock_at(run, AC15_DAY):
+                incident = move(run, inc, AMENDMENT, available=AC15_DAY)
+            return version, incident
+        return run.once("ac15", build)
+
+    def pending(run: Run) -> str:
+        version, incident = amended(run)
+        problems = []
+        if incident["state"] != AMENDMENT:
+            problems.append(f"state is {incident['state']}, not {AMENDMENT}")
+        if incident["version"] != version + 1:
+            problems.append(f"version is {incident['version']}, not {version + 1}")
+        return problems_or(problems, f"Transition with info_available_date {AC15_DAY}",
+                           f"200; state {AMENDMENT} at version {version + 1}")
+
+    def form(run: Run) -> str:
+        incident = amended(run)[1]
+        if incident.get("required_form") != FORM_8KA:
+            raise Fail(f"required_form is {incident.get('required_form')!r}, not '8-K/A'")
+        return "required_form 8-K/A"
+
+    def due_date(run: Run) -> str:
+        due = expected_due(AC15_DAY, AC15_DUE)
+        incident = amended(run)[1]
+        if incident.get("due_date") != due.isoformat():
+            raise Fail(f"due_date is {incident.get('due_date')!r}, not {due} "
+                       f"(info_available_date {AC15_DAY} + 4 business days, skipping Veterans Day)")
+        return (f"due_date {due}: info_available_date {AC15_DAY} + 4 business days, skipping "
+                "Veterans Day, as the tester's calendar gives")
+
+    return [
+        ("AC-15-amendment-pending", pending),
+        ("AC-15-amendment-requires-8-K-A", form),
+        ("AC-15-due-date-skips-Veterans-Day", due_date),
+    ]
+
+
+# AC-06 (REQ-06): all 49 state pairs.
 
 
 def ac06() -> list[Case]:
-    # Fixture incident per source state; a source's allowed move runs after its refused ones.
-    reachable = {UA: 0, DM: 2, DELAYED: 3, DNM: 4, CLOSED: 5}
+    # Fixture incident per source state; a source's allowed moves run after its refused ones.
+    sources = {UA: 0, DM: 2, DELAYED: 3, DNM: 4, CLOSED: 5, RECORDED: 6, AMENDMENT: 7}
 
     def subject(run: Run, source: str) -> Tracked:
-        return run.once(f"ac06-{source}", lambda: incident_in(run, source, reachable[source]))
+        return run.once(f"ac06-{source}", lambda: incident_in(run, source, sources[source]))
 
     def refused(source: str, to: str, route: str = TRANSITIONS):
         def case(run: Run) -> str:
@@ -690,21 +1019,24 @@ def ac06() -> list[Case]:
             before = get(run, inc.id)
             version = inc.version
             if (source, to) in DETERMINATION_MOVES:
-                route = "/determination"
+                route, status = "/determination", 200
                 incident = determine(run, inc, "Material" if to == DM else "NotMaterial")
+            elif (source, to) in FILING_MOVES:
+                route, status = f"/filings ({FILING_FORMS[source]})", 201
+                incident = file(run, inc, FILING_FORMS[source])
             else:
-                route = "/transitions"
+                route, status = "/transitions", 200
                 incident = move(run, inc, to)
             problems = []
             if incident["state"] != to:
                 problems.append(f"state is {incident['state']}")
             if incident["version"] != version + 1:
                 problems.append(f"version went from {version} to {incident['version']}")
-            if route == "/transitions" and incident.get("determination") != before.get(
+            if route != "/determination" and incident.get("determination") != before.get(
                     "determination"):
-                problems.append("the transition changed the determination")
+                problems.append(f"{route.split()[0]} changed the determination")
             return problems_or(problems, f"{name(source)} → {name(to)}",
-                               f"200 through {route}; {to} at version {version + 1}")
+                               f"{status} through {route}; {to} at version {version + 1}")
         return case
 
     def guarded(source: str, actor: Actor, body, status: int, error: str, field=None):
@@ -718,20 +1050,15 @@ def ac06() -> list[Case]:
                 raise
         return case
 
-    def skipped(reason: str):
-        def case(run: Run) -> str:
-            raise Skip(reason)
-        return case
-
     def unknown_incident(run: Run) -> str:
         expect(run.call("POST", TRANSITIONS, APPROVER, json={"to": CLOSED, "version": 1},
                         incident_id=UNKNOWN_ID), 404, "NOT_FOUND")
         return "404 NOT_FOUND"
 
-    allowed_pairs = DETERMINATION_MOVES | TRANSITION_MOVES
+    allowed_pairs = DETERMINATION_MOVES | TRANSITION_MOVES | FILING_MOVES
     cases: list[Case] = []
-    for source in reachable:
-        targets = [to for to in STATES if (source, to) not in allowed_pairs | FILING_MOVES]
+    for source in sources:
+        targets = [to for to in STATES if (source, to) not in allowed_pairs]
         cases += [(f"AC-06-{name(source)}-to-{name(to)}", refused(source, to)) for to in targets]
         if source == UA:
             cases += [(f"AC-06-UA-to-{name(to)}-via-transitions", refused(UA, to))
@@ -750,20 +1077,11 @@ def ac06() -> list[Case]:
                  guarded(DM, APPROVER, lambda inc: {"to": "Archived", "version": inc.version},
                          400, "VALIDATION_ERROR", "to")),
             ]
-        for to in STATES:
-            if (source, to) in FILING_MOVES:
-                cases.append((f"AC-06-{name(source)}-to-{name(to)}-via-transitions",
-                              refused(source, to)))
-                cases.append((f"AC-06-{name(source)}-to-{name(to)}",
-                              skipped(f"{source} → {to} happens only through /filings, which is "
-                                      "Phase 4; not run in Phase 3")))
+        # A move that only /filings performs is refused through /transitions.
+        cases += [(f"AC-06-{name(source)}-to-{name(to)}-via-transitions", refused(source, to))
+                  for to in STATES if (source, to) in FILING_MOVES]
         cases += [(f"AC-06-{name(source)}-to-{name(to)}", allowed(source, to))
                   for to in STATES if (source, to) in allowed_pairs]
-    for source in (RECORDED, AMENDMENT):
-        cases += [(f"AC-06-{name(source)}-to-{name(to)}",
-                   skipped(f"Reaching {source} needs a recorded filing, which is Phase 4; not "
-                           "run in Phase 3"))
-                  for to in STATES]
     cases.append(("AC-06-unknown-incident", unknown_incident))
     return cases
 
@@ -772,10 +1090,6 @@ def ac06() -> list[Case]:
 
 
 def ac09() -> list[Case]:
-    def filing_body(inc: Tracked) -> dict[str, Any]:
-        return {"form_type": "8-K Item 1.05", "filing_date": TODAY.isoformat(),
-                "accession_number": "0000000000-26-000001", "version": inc.version}
-
     def case_for(n: int):
         def case(run: Run) -> str:
             inc = create(run, n)
@@ -785,7 +1099,7 @@ def ac09() -> list[Case]:
                 ("POST", DRAFTS, APPROVER, {}),
                 *(("POST", TRANSITIONS, APPROVER, {"json": transition_body(inc, to)})
                   for to in STATES),
-                ("POST", FILINGS, APPROVER, {"json": filing_body(inc)}),
+                ("POST", FILINGS, APPROVER, {"json": filing_body(run, inc, FORM_8K)}),
                 ("PATCH", EVIDENCE, RESPONDER, {"json": {"impact_categories": ["operational"]},
                                                 "evidence_id": evidence_id}),
                 ("DELETE", EVIDENCE, APPROVER, {"evidence_id": evidence_id}),
@@ -1090,4 +1404,5 @@ def ac01() -> list[Case]:
 
 def planned() -> list[Case]:
     """Every case in run order; their test IDs are stable and unique."""
-    return [*ac02(), *ac03(), *ac07(), *ac08(), *ac20(), *ac06(), *ac09(), *ac23(), *ac01()]
+    return [*ac02(), *ac03(), *ac07(), *ac08(), *ac20(), *ac14(), *ac12(), *ac13(), *ac15(),
+            *ac06(), *ac09(), *ac23(), *ac01()]
