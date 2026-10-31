@@ -1,4 +1,4 @@
-"""Phase 3 determinations, state transitions and audit retrieval."""
+"""Determinations, disclosure deadlines, state transitions and audit retrieval."""
 
 from datetime import date
 from typing import Any
@@ -20,6 +20,7 @@ from app.models import (
     State,
 )
 from app.roles import Operation, Role, require_role
+from app.services.deadlines import disclosure_due_date
 from app.services.incidents import incident_to_dict, load_incident
 from app.services.validation import (
     invalid,
@@ -31,7 +32,7 @@ from app.services.validation import (
 from app.sessions import load_session
 
 
-# Allowed (current state, requested state) pairs from the Phase 3 guide.
+# Allowed (current state, requested state) pairs; every other pair is a 409.
 # Determination and filing operations handle their own state changes.
 ALLOWED_TRANSITIONS = frozenset(
     {
@@ -56,7 +57,7 @@ def _transition_target(body: Any, today: date) -> State:
         target = State(target)
     except ValueError:
         raise invalid("to", "Unknown state")
-    # Stale versions are not rejected in Phase 3.
+    # Stale versions are accepted.
     parse_integer(body.get("version"), "version")
     # Required for AmendmentPending, and checked whenever sent, since the request schema types
     # them for every target. Validated before this Phase 4 transition is refused.
@@ -169,6 +170,16 @@ def record_determination(
         determination_date = parse_date(body.get("determination_date"), "determination_date")
         if not incident.discovery_date <= determination_date <= clock.today(session):
             raise invalid("determination_date", "Date must be between discovery and today")
+        required_form = None
+        if decision == Decision.MATERIAL:
+            required_form = (
+                FormType.FORM_6K if session.registrant_type == RegistrantType.FPI
+                else FormType.FORM_8K_ITEM_105
+            )
+        try:
+            due_date = disclosure_due_date(required_form, determination_date)
+        except OverflowError:
+            raise invalid("determination_date", "Deadline is outside the supported holiday calendar range") from None
         rationale = require_string(body, "rationale", "rationale")
         refs = body.get("evidence_refs")
         if (
@@ -199,19 +210,17 @@ def record_determination(
         )
         if decision == Decision.MATERIAL:
             incident.state = State.DETERMINED_MATERIAL
-            incident.required_form = (
-                FormType.FORM_6K if session.registrant_type == RegistrantType.FPI
-                else FormType.FORM_8K_ITEM_105
-            )
         else:
             incident.state = State.DETERMINED_NOT_MATERIAL
-            incident.required_form = None
+        incident.required_form = required_form
+        incident.due_date = due_date
         incident.version += 1
         tx.add(determination)
         audit(tx, AuditAction.RECORD_DETERMINATION, incident_id, before, {
             "state": incident.state.value,
             "determination": {"decision": decision.value, "determination_date": determination_date.isoformat()},
             "required_form": incident.required_form.value if incident.required_form else None,
+            "due_date": due_date.isoformat() if due_date else None,
             "version": incident.version,
         }, user_id=user_id, session_id=session_id)
         return incident_to_dict(tx, incident)

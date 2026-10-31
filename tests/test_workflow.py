@@ -1,7 +1,7 @@
 """Determination behavior against real PostgreSQL, plus the AC-09 source guardrail."""
 
 import ast
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -10,6 +10,7 @@ from app import clock, db
 from app.errors import ErrorCode, TracerError
 from app.models import Determination, Incident, RegistrantType, State
 from app.services import workflow
+from app.services.deadlines import MAX_CALENDAR_YEAR
 from app.services.evidence import import_evidence
 from app.services.incidents import create_incident, get_incident
 from tests.helpers import (
@@ -66,6 +67,7 @@ def rejected(case, code=ErrorCode.VALIDATION_ERROR, field=None, who=APPROVER):
     ('FPI', 'NotMaterial', 'DeterminedNotMaterial', None),
 ])
 def test_success(registrant, decision, state, form):
+    """Persist the decision, form, registrant-specific deadline and audit entry together."""
     # The registrant type is fixed per session, so each case gets its own.
     session_id = new_session(registrant_type=RegistrantType(registrant))
     responder, approver, board = (in_session(who, session_id) for who in (RESPONDER, APPROVER, BOARD))
@@ -76,7 +78,10 @@ def test_success(registrant, decision, state, form):
     result = workflow.record_determination(incident_id, body, **approver)
     assert result == get_incident(incident_id, **board)
     assert (result['state'], result['required_form'], result['version']) == (state, form, 2)
-    assert result['due_date'] is None and result['flags'] == []
+    expected_due = '2026-10-07' if registrant == 'Domestic' and decision == 'Material' else None
+    assert result['due_date'] == expected_due and result['flags'] == []
+    with db.transaction() as tx:
+        assert tx.get(Incident, incident_id).due_date == (date(2026, 10, 7) if expected_due else None)
     with db.transaction() as tx:
         stored = tx.get(Determination, incident_id)
         assert stored.decision.value == decision
@@ -90,7 +95,7 @@ def test_success(registrant, decision, state, form):
     assert entry.action.value == 'record_determination' and entry.user_id == APPROVER['user_id']
     assert entry.session_id == session_id
     assert entry.before == {'state': 'UnderAssessment', 'determination': None, 'version': 1}
-    assert entry.after == {'state': state, 'required_form': form, 'version': 2,
+    assert entry.after == {'state': state, 'required_form': form, 'due_date': expected_due, 'version': 2,
                            'determination': {'decision': decision, 'determination_date': body['determination_date']}}
 
 
@@ -99,8 +104,53 @@ def test_role_before_incident_and_body(who):
     rejected(('missing', {}), ErrorCode.FORBIDDEN_ROLE, who=who)
 
 
+@pytest.mark.parametrize('start,expected', [
+    ('2026-10-05', '2026-10-09'),  # The AC-12 demo's due date.
+    ('2026-07-01', '2026-07-08'),
+    ('2026-11-24', '2026-12-01'),
+    ('2021-12-29', '2022-01-05'),
+])
+def test_deadline_uses_determination_date_and_survives_delay(start, expected):
+    """Keep determination-based deadlines stable through delay and resume operations."""
+    # The session is later than the determination: deadlines must not start at "today".
+    session_id = new_session(test_now=datetime(2027, 1, 20, tzinfo=UTC))
+    responder, approver, board = (in_session(who, session_id) for who in (RESPONDER, APPROVER, BOARD))
+    incident = create_incident({'title': 'Incident', 'discovery_date': start}, **responder)
+    ident, body = new_case(incident, responder)
+    result = workflow.record_determination(ident, body, **approver)
+    assert result['due_date'] == expected
+    for target in ['DisclosureDelayed', 'DeterminedMaterial']:
+        result = workflow.transition_incident(ident, {'to': target, 'version': result['version']}, **approver)
+        assert result['due_date'] == expected
+        assert get_incident(ident, **board)['due_date'] == expected
+
+
 def test_unknown_incident_before_body():
     rejected(('missing', {}), ErrorCode.NOT_FOUND)
+
+
+@pytest.mark.parametrize('start', [date(MAX_CALENDAR_YEAR + 1, 10, 7), date(MAX_CALENDAR_YEAR, 12, 30)])
+@pytest.mark.parametrize('also', [None, 'voluntary_disclosure', 'state'])
+def test_unsupported_deadline_rejects_without_writes(start, also):
+    """Reject unsupported determination years and deadlines crossing the calendar limit.
+
+    The deadline is part of the body check, so it comes before the 501 and the state 409.
+    """
+    session_id = new_session(test_now=datetime(MAX_CALENDAR_YEAR + 2, 1, 1, tzinfo=UTC))
+    responder, approver, board = (in_session(who, session_id) for who in (RESPONDER, APPROVER, BOARD))
+    incident = create_incident({'title': 'Calendar limit', 'discovery_date': start.isoformat()}, **responder)
+    ident, body = new_case(incident, responder)
+    if also == 'voluntary_disclosure':
+        body['voluntary_disclosure'] = True
+    elif also == 'state':
+        set_state(ident, State.DETERMINED_MATERIAL)
+    previous = get_incident(ident, **board)
+    counts = table_counts()
+    with pytest.raises(TracerError) as error:
+        workflow.record_determination(ident, body, **approver)
+    assert (error.value.code, error.value.field) == (ErrorCode.VALIDATION_ERROR, 'determination_date')
+    assert get_incident(ident, **board) == previous
+    assert table_counts() == counts
 
 
 @pytest.mark.parametrize('field', ['decision', 'determination_date', 'rationale', 'evidence_refs', 'version'])

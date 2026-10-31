@@ -15,7 +15,7 @@ The `AGENTS.md` files describe the code as it is, so an agent can rely on them i
 | `tester/AGENTS.md` | Our tester's FastAPI app, its session storage and cross-team test cases, and the rule that it never imports `app` |
 | `fixtures/AGENTS.md` | The incident, ticketing and SIEM fixtures our tester sends |
 | `tests/AGENTS.md` | The pytest suite: what each file covers, shared helpers and fixtures, and how to run it |
-| `scripts/AGENTS.md` | `setup_db.py`: the roles, grants and checks it applies, and what to update when changing it |
+| `scripts/AGENTS.md` | `setup_db.py`: the roles, grants and checks it applies, and what to update when changing it; `backfill_deadlines.py`: which missing due dates it fills, and when to run it |
 | `.github/AGENTS.md` | CI workflows, their scripts and `CODEOWNERS` |
 
 **Keeping the guides current (mandatory)**
@@ -43,6 +43,7 @@ The business logic is independent of the web framework; the FastAPI layer (route
 - httpx2 for the tester's calls to target systems, and jsonschema with PyYAML to check their responses against `system-openapi.yaml`.
 - Vercel runs the deployed service and Neon hosts its Postgres (see Deployment).
 - Dependencies are declared in `pyproject.toml`.
+- The `holidays` library supplies the U.S. federal holiday calendar used by disclosure deadline calculations.
 
 **Repo layout**
 
@@ -53,6 +54,7 @@ The business logic is independent of the web framework; the FastAPI layer (route
 - `tester/`: our tester's FastAPI app, `tester_app`, its session storage, and the cross-team test cases it runs against a target system; it never imports `app`.
 - `fixtures/`: the incident, ticketing and SIEM fixtures our tester sends.
 - `scripts/setup_db.py`: creates the app and tester roles, the tables and the grants (see Database roles).
+- `scripts/backfill_deadlines.py`: fills missing 8-K due dates on existing Domestic Material incidents, as the app role.
 - `docker-compose.yml`: the local Postgres (see Local database).
 - `tests/`: the pytest suite.
 - `.github/`: CI workflows and their scripts, including the `AGENTS.md` check.
@@ -83,7 +85,7 @@ Run these in order when someone asks to set up the project or the local database
 5. Run `python scripts/setup_db.py`. It prints the app and tester roles' privileges; judge the result by the exit code. 0 is success, and the last line starts with `setup_db: done;`. 1 is failure: a message starting `setup_db:` says what went wrong and whether anything was changed, except for a missing variable, a malformed URL or a bare `postgresql://` scheme, which end in a Python traceback instead (see `scripts/AGENTS.md`).
 
 - Re-run `scripts/setup_db.py` after adding a table or changing the grants; it is safe to re-run.
-- A re-run only creates missing tables and types; it doesn't alter existing ones. After changing a column or an enum's values in `app/models.py` or `tester/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Deployment).
+- A re-run creates missing tables and types and adds new enum values; it doesn't change existing columns or remove enum values. After changing a column, or removing or renaming an enum value, in `app/models.py` or `tester/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Deployment).
 - `docker compose stop` keeps the data; `docker compose down -v` wipes it, after which steps 4 and 5 rebuild it.
 - The image reads `POSTGRES_PASSWORD` only when it initializes an empty volume, so changing it later has no effect: wipe with `docker compose down -v` and redo steps 4 and 5.
 
@@ -94,10 +96,10 @@ Three roles keep the grants enforceable: a table's owner can always grant itself
 | Role | Connects via | Owns the tables | Used by |
 | --- | --- | --- | --- |
 | Owner (e.g. `tracer_owner`) | `ADMIN_DATABASE_URL` | Yes | `scripts/setup_db.py` only |
-| App (`tracer_app`) | `DATABASE_URL` | No | The service and tests |
+| App (`tracer_app`) | `DATABASE_URL` | No | The service, tests and `scripts/backfill_deadlines.py` |
 | Tester (`tracer_tester`) | `TESTER_DATABASE_URL` | No | The tester's session storage and tests |
 
-- `scripts/setup_db.py` creates both login roles, all six tables and the grants, and fails unless each role ends up with exactly its expected privileges; `scripts/AGENTS.md` lists the grants and checks. Neither login role can DELETE or TRUNCATE anything, and the app role has only INSERT and SELECT on `audit_entries` (REQ-22, AC-23).
+- `scripts/setup_db.py` creates both login roles, all seven tables and the grants, and fails unless each role ends up with exactly its expected privileges; `scripts/AGENTS.md` lists the grants and checks. Neither login role can DELETE or TRUNCATE anything, and the app role has only INSERT and SELECT on `audit_entries` (REQ-22, AC-23).
 - Neither the service nor the tester creates tables at startup; their roles can't.
 - The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
 
@@ -114,7 +116,7 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 - Use the direct connection string (the host without `-pooler`). Neon's Connect dialog shows the pooled one by default, so turn off "Connection pooling" there. Change its scheme from `postgresql://` to `postgresql+psycopg://` and keep its query parameters, including `sslmode=require` and `channel_binding=require` when present; with the bare scheme, SQLAlchemy looks for psycopg2, which isn't installed. Our traffic is far below the direct connection limit, and Neon recommends direct connections for schema changes such as `setup_db.py`'s.
 - Neon rejects passwords with less than 60 bits of entropy; one from `secrets.token_urlsafe(24)` passes.
 - The free plan pauses the database after 5 idle minutes and drops its connections. The first request after a pause waits a few hundred milliseconds for it to wake, and `app/db.py` replaces the dropped connections.
-- A schema change here needs a migration, not a wipe; try it on a Neon branch first.
+- A new table, grant or enum value needs only a `setup_db.py` re-run (below). Any other schema change needs a migration, not a wipe. Try either on a Neon branch first.
 
 **Running `setup_db.py` against Neon**
 

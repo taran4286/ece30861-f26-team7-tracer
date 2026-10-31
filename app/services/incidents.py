@@ -108,6 +108,7 @@ def incidents_to_dicts(tx: Session, incidents: Sequence[Incident]) -> list[dict[
 def _incident_dict(
     incident: Incident, determination: Determination | None, evidence: list[Evidence]
 ) -> dict[str, Any]:
+    """Build the public incident response, including its stored deadline when present."""
     return {
         "incident_id": incident.incident_id,
         "title": incident.title,
@@ -115,8 +116,7 @@ def _incident_dict(
         "state": incident.state.value,
         "determination": determination_to_dict(determination) if determination else None,
         "required_form": incident.required_form.value if incident.required_form else None,
-        # Due dates, flags and filings are Phase 4.
-        "due_date": None,
+        "due_date": incident.due_date.isoformat() if incident.due_date else None,
         "flags": [],
         "filings": [],
         "evidence": [evidence_to_dict(item) for item in evidence],

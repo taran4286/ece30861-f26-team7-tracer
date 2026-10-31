@@ -8,7 +8,7 @@ The building blocks every service uses, and the system's tables. Business logic 
 | --- | --- |
 | `config.py` | `Settings` (`database_url`, from `DATABASE_URL`) through the cached `get_settings()` |
 | `db.py` | `Base`, the cached `get_engine()`, and `transaction()`: one session per operation, committed on success and rolled back on any error. `get_engine()` reads `DATABASE_URL` through `parse_url(value, setting)`, which raises `ArgumentError`, a `SQLAlchemyError`, for a malformed URL, where SQLAlchemy alone would raise a plain `ValueError` that storage handlers miss. Its message names the setting, never the URL, which holds a password |
-| `models.py` | The five tables (`TestSession` first), their enums, `SiemSeverity` (checked on import, not stored) and `new_id(prefix)` |
+| `models.py` | The six tables (`TestSession` first), their enums, `SiemSeverity` (checked on import, not stored) and `new_id(prefix)` |
 | `errors.py` | `ErrorCode`, `HTTP_STATUS` (each code's status) and `TracerError(code, message, field=None)`, whose `status` comes from that map; `to_dict()` returns `error`, `message` and `field`, with `field` as `None` when unset, which the API layer leaves out (see `api/AGENTS.md`). Two codes map to 409: `INVALID_TRANSITION` for a project state error and `CONFLICT`, raised only for a test session ID already in use |
 | `roles.py` | `Role`, `Operation`, the `PERMISSIONS` map and `require_role(role, operation)`, which raises `FORBIDDEN_ROLE`; a role string that isn't a `Role` gets no permissions, so it also gets `FORBIDDEN_ROLE`. `Operation.REPLACE_OR_DELETE` covers the 405 routes: only DisclosureApprover passes it, and then gets 405 |
 | `clock.py` | `today(session)`, the UTC date of the session's `test_now`, for every date rule, and `utcnow()` for stored timestamps |
@@ -17,7 +17,7 @@ The building blocks every service uses, and the system's tables. Business logic 
 
 ## Data model
 
-Five tables hold the system's data; the tester keeps its own in `tester_sessions` (see `tester/AGENTS.md`). IDs are opaque strings from `new_id()` except session IDs, which the caller supplies. Every timestamp column is `timestamp with time zone`, stored in UTC. JSON columns are `JSONB`.
+Six tables hold the system's data; the tester keeps its own in `tester_sessions` (see `tester/AGENTS.md`). IDs are opaque strings from `new_id()` except session IDs, which the caller supplies. Every timestamp column is `timestamp with time zone`, stored in UTC. JSON columns are `JSONB`.
 
 **test_sessions** (`TestSession`)
 
@@ -40,7 +40,7 @@ Five tables hold the system's data; the tester keeps its own in `tester_sessions
 | discovery_date | date, not null | |
 | state | `state` enum, not null | |
 | required_form | `form_type` enum, nullable | |
-| due_date | date, nullable | always null |
+| due_date | date, nullable | four business days after a Domestic Material determination; null for FPI or NotMaterial |
 | group_id | text, nullable | always null |
 | version | integer, not null | |
 
@@ -54,6 +54,22 @@ Five tables hold the system's data; the tester keeps its own in `tester_sessions
 | rationale | text, not null | |
 | evidence_refs | JSONB array of evidence IDs, not null | |
 | voluntary_disclosure | boolean, not null | always false |
+| recorded_by | text, not null | the acting user |
+| recorded_at | timestamp, not null | real server time |
+
+**filings** (`Filing`)
+
+No service reads or writes this table; `scripts/setup_db.py` creates it and its grants.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| seq | bigint `Identity()`, primary key | sets "oldest first" order, so the latest filing has the highest `seq`; never returned by the API, whose `Filing` has no ID |
+| incident_id | text, not null, references incidents, indexed | |
+| form_type | `form_type` enum, not null | the same type as `incidents.required_form` |
+| filing_date | date, not null | |
+| accession_number | text, not null | |
+| unavailable_elements | JSONB array of element names, not null | |
+| home_disclosure_date | date, nullable | |
 | recorded_by | text, not null | the acting user |
 | recorded_at | timestamp, not null | real server time |
 
@@ -92,7 +108,7 @@ Five tables hold the system's data; the tester keeps its own in `tester_sessions
 - `FormType`: `8-K Item 1.05`, `8-K Item 8.01`, `6-K`, `8-K/A`.
 - `Decision`: Material, NotMaterial.
 - `EvidenceSource`: ticketing, siem.
-- `AuditAction`: create_incident, import_evidence, record_determination, transition.
+- `AuditAction`: create_incident, import_evidence, record_determination, transition, record_filing. No service writes `record_filing`.
 - `RegistrantType`: Domestic, FPI.
 - Not stored as a type: `ImpactCategory` (operational, financial, legal_regulatory, reputational, data_compromised) and `SiemSeverity` (low, medium, high, critical, checked on import).
 
@@ -115,5 +131,5 @@ Five tables hold the system's data; the tester keeps its own in `tester_sessions
 
 - Update the Data model section above to match.
 - Adding a table: add it to `GRANTS` in `scripts/setup_db.py` (the script refuses to run otherwise), update `scripts/AGENTS.md`, and re-run the script.
-- Changing a column or an enum's values: follow the notes under root "Local setup steps"; the setup script doesn't alter existing tables.
+- Adding an enum value: re-run the setup script, which adds it. Changing a column, or removing or renaming an enum value: follow the notes under root "Local setup steps"; the setup script doesn't alter existing columns.
 - Adding an `AuditAction`: list it above, and document its `before` and `after` shapes under its operation in `services/AGENTS.md`.
