@@ -1,12 +1,6 @@
-# scripts/: database setup
+# scripts/: database setup and the deadline backfill
 
-`setup_db.py` creates the app and tester roles, all six tables and the grants, running as the owner role. Root "Database roles" says which role is which, and "Local setup steps" says how to run it and read the result.
-
-## Deadline data upgrade
-
-Run `python scripts/backfill_deadlines.py` against an existing database before deploying deadline support, with `DATABASE_URL` set to that database's app role connection (environment or `.env`). It uses existing tables and app privileges; it never creates tables or wipes data. It locks incidents with null deadlines, Domestic sessions, Material determinations and required form `8-K Item 1.05`, then fills their four-business-day deadlines using the shared calculator. Other rows and already populated deadlines are untouched. Versions and audit entries are unchanged because this repairs derived data rather than recording a new user operation.
-
-All calculations and updates share one transaction; unsupported historical dates or any other failure roll back the entire repair. Re-running is safe. Exit 0 prints `backfill_deadlines: done; updated <count> incidents`; exit 1 names the exception type without credentials and says nothing was changed. Verify on a Neon branch before running against production. `tests/test_deadline_backfill.py` checks preservation and repeatability using PostgreSQL.
+`setup_db.py` creates the app and tester roles, all six tables and the grants, running as the owner role. Root "Database roles" says which role is which, and "Local setup steps" says how to run it and read the result. `backfill_deadlines.py` fills missing 8-K due dates (see its section at the end).
 
 ## What it applies
 
@@ -49,3 +43,11 @@ Nothing else: no DELETE or TRUNCATE anywhere, no UPDATE on `test_sessions`, `evi
 - New table or changed grant: update `GRANTS` or `TESTER_GRANTS` and the table above together, re-run the script locally and check the printed grids, then run it against Neon (root "Running `setup_db.py` against Neon").
 - New check: raise `SetupError` from inside `setup()`, so a failure rolls back and the message says nothing was changed.
 - New script: give it a module docstring with its usage and exit codes, like `setup_db.py`, and add it to this file.
+
+## `backfill_deadlines.py`
+
+`python scripts/backfill_deadlines.py` connects as the app role through `DATABASE_URL` (environment or `.env`) and fills `due_date` where it's null on every incident in a Domestic session with a Material determination and `required_form` `8-K Item 1.05`. Each date comes from `disclosure_due_date` on the determination date. It changes nothing else: other incidents, populated deadlines and versions stay as they are, and it writes no audit entries.
+
+- Run it only against a database whose deployed service already stores deadlines. Otherwise determinations recorded after the run keep a null `due_date`. Try it on a Neon branch before production.
+- One transaction locks the rows, calculates every deadline, then writes them, so a deadline outside the holiday calendar's years or any other error rolls back the whole run. Re-running is safe.
+- Exit 0 prints `backfill_deadlines: done; updated <count> incidents`. Exit 1 prints `backfill_deadlines: failed (<exception type>); nothing was changed` to stderr; it names only the type, since database errors can hold credentials.

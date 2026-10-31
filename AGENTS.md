@@ -15,7 +15,7 @@ The `AGENTS.md` files describe the code as it is, so an agent can rely on them i
 | `tester/AGENTS.md` | Our tester's FastAPI app, its session storage and cross-team test cases, and the rule that it never imports `app` |
 | `fixtures/AGENTS.md` | The incident, ticketing and SIEM fixtures our tester sends |
 | `tests/AGENTS.md` | The pytest suite: what each file covers, shared helpers and fixtures, and how to run it |
-| `scripts/AGENTS.md` | `setup_db.py`: the roles, grants and checks it applies, and what to update when changing it |
+| `scripts/AGENTS.md` | `setup_db.py`: the roles, grants and checks it applies, and what to update when changing it; `backfill_deadlines.py`: which missing due dates it fills, and when to run it |
 | `.github/AGENTS.md` | CI workflows, their scripts and `CODEOWNERS` |
 
 **Keeping the guides current (mandatory)**
@@ -54,6 +54,7 @@ The business logic is independent of the web framework; the FastAPI layer (route
 - `tester/`: our tester's FastAPI app, `tester_app`, its session storage, and the cross-team test cases it runs against a target system; it never imports `app`.
 - `fixtures/`: the incident, ticketing and SIEM fixtures our tester sends.
 - `scripts/setup_db.py`: creates the app and tester roles, the tables and the grants (see Database roles).
+- `scripts/backfill_deadlines.py`: fills missing 8-K due dates on existing Domestic Material incidents, as the app role.
 - `docker-compose.yml`: the local Postgres (see Local database).
 - `tests/`: the pytest suite.
 - `.github/`: CI workflows and their scripts, including the `AGENTS.md` check.
@@ -95,7 +96,7 @@ Three roles keep the grants enforceable: a table's owner can always grant itself
 | Role | Connects via | Owns the tables | Used by |
 | --- | --- | --- | --- |
 | Owner (e.g. `tracer_owner`) | `ADMIN_DATABASE_URL` | Yes | `scripts/setup_db.py` only |
-| App (`tracer_app`) | `DATABASE_URL` | No | The service and tests |
+| App (`tracer_app`) | `DATABASE_URL` | No | The service, tests and `scripts/backfill_deadlines.py` |
 | Tester (`tracer_tester`) | `TESTER_DATABASE_URL` | No | The tester's session storage and tests |
 
 - `scripts/setup_db.py` creates both login roles, all six tables and the grants, and fails unless each role ends up with exactly its expected privileges; `scripts/AGENTS.md` lists the grants and checks. Neither login role can DELETE or TRUNCATE anything, and the app role has only INSERT and SELECT on `audit_entries` (REQ-22, AC-23).

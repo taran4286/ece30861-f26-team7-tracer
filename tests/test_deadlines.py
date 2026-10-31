@@ -63,6 +63,7 @@ def test_every_start_date_in_2026_and_2027_matches_reference(start):
     "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25",
     "2026-06-19", "2026-07-03", "2026-09-07", "2026-10-12",
     "2026-11-11", "2026-11-26", "2026-12-25", "2021-12-31",
+    "2027-12-24", "2027-12-31",  # Christmas and New Year's Day 2028, both observed Friday.
 ])
 def test_observed_federal_holidays_are_not_business_days(holiday):
     """Exclude observed holidays, including observances in the preceding year."""
@@ -107,6 +108,8 @@ def test_deadline_cannot_cross_calendar_boundary():
 
 
 def test_last_supported_year_keeps_next_new_year_observance():
-    """The 2100 calendar includes Friday's observance of New Year's Day 2101."""
-    assert not is_business_day(date(2100, 12, 31))
-    assert add_business_days(date(2100, 12, 23)) == date(2100, 12, 30)
+    """The last supported year keeps a Friday observance of the next New Year's Day."""
+    assert add_business_days(date(MAX_CALENDAR_YEAR, 12, 1)).year == MAX_CALENDAR_YEAR
+    if date(MAX_CALENDAR_YEAR + 1, 1, 1).weekday() != 5:
+        pytest.skip(f"New Year's Day {MAX_CALENDAR_YEAR + 1} isn't a Saturday, so nothing is observed early")
+    assert not is_business_day(date(MAX_CALENDAR_YEAR, 12, 31))

@@ -10,6 +10,7 @@ from app import clock, db
 from app.errors import ErrorCode, TracerError
 from app.models import Determination, Incident, RegistrantType, State
 from app.services import workflow
+from app.services.deadlines import MAX_CALENDAR_YEAR
 from app.services.evidence import import_evidence
 from app.services.incidents import create_incident, get_incident
 from tests.helpers import (
@@ -104,6 +105,7 @@ def test_role_before_incident_and_body(who):
 
 
 @pytest.mark.parametrize('start,expected', [
+    ('2026-10-05', '2026-10-09'),  # The AC-12 demo's due date.
     ('2026-07-01', '2026-07-08'),
     ('2026-11-24', '2026-12-01'),
     ('2021-12-29', '2022-01-05'),
@@ -127,13 +129,21 @@ def test_unknown_incident_before_body():
     rejected(('missing', {}), ErrorCode.NOT_FOUND)
 
 
-@pytest.mark.parametrize('start', ['2101-10-07', '2100-12-30'])
-def test_unsupported_deadline_rejects_without_writes(start):
-    """Reject unsupported determination years and deadlines crossing the calendar limit."""
-    session_id = new_session(test_now=datetime(2102, 1, 1, tzinfo=UTC))
+@pytest.mark.parametrize('start', [date(MAX_CALENDAR_YEAR + 1, 10, 7), date(MAX_CALENDAR_YEAR, 12, 30)])
+@pytest.mark.parametrize('also', [None, 'voluntary_disclosure', 'state'])
+def test_unsupported_deadline_rejects_without_writes(start, also):
+    """Reject unsupported determination years and deadlines crossing the calendar limit.
+
+    The deadline is part of the body check, so it comes before the 501 and the state 409.
+    """
+    session_id = new_session(test_now=datetime(MAX_CALENDAR_YEAR + 2, 1, 1, tzinfo=UTC))
     responder, approver, board = (in_session(who, session_id) for who in (RESPONDER, APPROVER, BOARD))
-    incident = create_incident({'title': 'Calendar limit', 'discovery_date': start}, **responder)
+    incident = create_incident({'title': 'Calendar limit', 'discovery_date': start.isoformat()}, **responder)
     ident, body = new_case(incident, responder)
+    if also == 'voluntary_disclosure':
+        body['voluntary_disclosure'] = True
+    elif also == 'state':
+        set_state(ident, State.DETERMINED_MATERIAL)
     previous = get_incident(ident, **board)
     counts = table_counts()
     with pytest.raises(TracerError) as error:

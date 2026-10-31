@@ -2,11 +2,12 @@
 
 Usage: python scripts/backfill_deadlines.py
 
-Reads DATABASE_URL (app role) from the environment or .env. Run against an existing
-database before deploying deadline support. One transaction locks qualifying rows,
-calculates all deadlines, and fills only null due dates. Re-running is safe. This
-data repair leaves versions and audit history unchanged. It never creates tables.
-Exits 0 on success, 1 on failure with the whole transaction rolled back.
+Reads DATABASE_URL (app role) from the environment or .env. Run it after deploying
+deadline support, so determinations recorded before the deploy are filled too. One
+transaction locks qualifying rows, calculates all deadlines, and fills only null due
+dates. Re-running is safe. It writes no audit entries and leaves versions unchanged.
+It never creates tables. Exits 0 on success, 1 on failure with the whole transaction
+rolled back.
 """
 
 import sys

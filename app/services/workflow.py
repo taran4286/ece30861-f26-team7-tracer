@@ -32,7 +32,7 @@ from app.services.validation import (
 from app.sessions import load_session
 
 
-# Allowed (current state, requested state) pairs from the Phase 3 guide.
+# Allowed (current state, requested state) pairs; every other pair is a 409.
 # Determination and filing operations handle their own state changes.
 ALLOWED_TRANSITIONS = frozenset(
     {
@@ -57,7 +57,7 @@ def _transition_target(body: Any, today: date) -> State:
         target = State(target)
     except ValueError:
         raise invalid("to", "Unknown state")
-    # Stale versions are not rejected in Phase 3.
+    # Stale versions are accepted.
     parse_integer(body.get("version"), "version")
     # Required for AmendmentPending, and checked whenever sent, since the request schema types
     # them for every target. Validated before this Phase 4 transition is refused.
@@ -170,6 +170,16 @@ def record_determination(
         determination_date = parse_date(body.get("determination_date"), "determination_date")
         if not incident.discovery_date <= determination_date <= clock.today(session):
             raise invalid("determination_date", "Date must be between discovery and today")
+        required_form = None
+        if decision == Decision.MATERIAL:
+            required_form = (
+                FormType.FORM_6K if session.registrant_type == RegistrantType.FPI
+                else FormType.FORM_8K_ITEM_105
+            )
+        try:
+            due_date = disclosure_due_date(required_form, determination_date)
+        except OverflowError:
+            raise invalid("determination_date", "Deadline is outside the supported holiday calendar range") from None
         rationale = require_string(body, "rationale", "rationale")
         refs = body.get("evidence_refs")
         if (
@@ -192,16 +202,6 @@ def record_determination(
         if incident.state != State.UNDER_ASSESSMENT:
             raise TracerError(ErrorCode.INVALID_TRANSITION, "Determination requires UnderAssessment")
 
-        required_form = None
-        if decision == Decision.MATERIAL:
-            required_form = (
-                FormType.FORM_6K if session.registrant_type == RegistrantType.FPI
-                else FormType.FORM_8K_ITEM_105
-            )
-        try:
-            due_date = disclosure_due_date(required_form, determination_date)
-        except OverflowError:
-            raise invalid("determination_date", "Deadline is outside the supported holiday calendar range") from None
         before = {"state": incident.state.value, "determination": None, "version": incident.version}
         determination = Determination(
             incident_id=incident_id, decision=decision, determination_date=determination_date,
