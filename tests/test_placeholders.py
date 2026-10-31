@@ -61,7 +61,6 @@ def test_refusal_looks_up_the_incident_and_evidence(incident, evidence_id):
 ROLES_ALLOWED = {
     Operation.TAG_EVIDENCE: {Role.RESPONDER, Role.DISCLOSURE_APPROVER},
     Operation.CREATE_GROUP: {Role.RESPONDER, Role.DISCLOSURE_APPROVER},
-    Operation.RECORD_FILING: {Role.DISCLOSURE_APPROVER},
     Operation.REQUEST_DRAFT: {Role.DISCLOSURE_APPROVER},
     Operation.ACCEPT_DRAFT: {Role.DISCLOSURE_APPROVER},
 }
@@ -77,7 +76,7 @@ def test_unbuilt_operations_are_501_after_the_role(operation, who):
 
 def test_unbuilt_operations_check_the_session_and_path_first(incident):
     incident_id = incident["incident_id"]
-    rejected(lambda: not_built(Operation.RECORD_FILING, **in_session(BOARD, "pytest-missing")),
+    rejected(lambda: not_built(Operation.REQUEST_DRAFT, **in_session(BOARD, "pytest-missing")),
              ErrorCode.NOT_FOUND)
     rejected(lambda: not_built(Operation.REQUEST_DRAFT, "inc_missing", **APPROVER),
              ErrorCode.NOT_FOUND)

@@ -10,6 +10,7 @@ One module per area, callable without any web framework. Each project operation 
 | `control.py` | `setup_session(body)`, `coverage_report(session_id)`, `snapshot(run_id)`, `run_to_dict`, `DEFAULTS`, `INTEGER_MAX` and `CODE_COVERAGE_BASIS` | `tests/test_control.py` |
 | `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, evidence_id=None, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
+| `filings.py` | `validate_filing_request` (pure validation), `record_filing` (storage, state and audit) | `tests/test_filings.py`, `tests/test_filing_storage.py` |
 | `deadlines.py` | `federal_holidays`, `is_business_day`, `add_business_days`, `disclosure_due_date`, `MIN_CALENDAR_YEAR` and `MAX_CALENDAR_YEAR` | `tests/test_deadlines.py` |
 
 Add a row for each new module.
@@ -48,7 +49,7 @@ def record_determination(
 - Every lookup is scoped to the request's session: an incident belongs to the session that created it and is unknown (404) in any other. Evidence and determinations belong to their incident, and each audit entry records its request's session.
 - `roles.PERMISSIONS`: Responder may read, create incidents, import evidence, tag evidence and create groups; DisclosureApprover may do everything; Board may only read.
 - Today is `clock.today(session)`, the UTC date of the session's `test_now`. The registrant type is `session.registrant_type`. Neither comes from config or the real date.
-- New incidents start at `version: 1`. A determination and a successful transition each add 1; import leaves it unchanged. Bodies that carry `version` must send an integer ≥ 1, but a stale value is accepted.
+- New incidents start at `version: 1`. A determination, successful transition and recorded filing each add 1; import leaves it unchanged. Bodies that carry `version` must send an integer ≥ 1, but a stale value is accepted.
 
 **Validation**
 
@@ -60,11 +61,26 @@ def record_determination(
 
 ## Shared helpers
 
-- `incidents.load_incident(tx, incident_id, *, session_id, for_update=False)` loads the path incident or raises `NOT_FOUND`, treating another session's incident as unknown. `for_update=True` locks the row; the determination and transition operations use it, so two concurrent requests can't both pass the state check or bump `version` from the same value.
+- `incidents.load_incident(tx, incident_id, *, session_id, for_update=False)` loads the path incident or raises `NOT_FOUND`, treating another session's incident as unknown. `for_update=True` locks the row; determination, transition and filing operations use it, so two concurrent requests can't both pass the state check or bump `version` from the same value.
 - `evidence.load_evidence(tx, incident_id, evidence_id)` loads evidence named in the path, after its incident, or raises `NOT_FOUND`; evidence of another incident counts as unknown.
-- `incidents.incident_to_dict(tx, incident)` builds the full Incident (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values), and every operation that returns an Incident uses it. `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations and evidence. `evidence_to_dict` and `determination_to_dict` build the parts; `raw_item` is never returned.
-- An Incident returns its stored `due_date` as YYYY-MM-DD or null, with `flags: []` and `filings: []`. Its `evidence` is ordered by `imported_at`, then `evidence_id`; items from one import share an `imported_at` and their IDs are random, so they don't come back in the order they were sent.
+- `incidents.incident_to_dict(tx, incident)` builds the full Incident (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values), and every operation that returns an Incident uses it. `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations, evidence and filings. `evidence_to_dict`, `determination_to_dict` and `filing_to_dict` build the parts; `raw_item` is never returned.
+- An Incident returns its stored `due_date` as YYYY-MM-DD or null, with `flags: []` and saved `filings` ordered oldest first by their internal `seq`. Its `evidence` is ordered by `imported_at`, then `evidence_id`; items from one import share an `imported_at` and their IDs are random, so they don't come back in the order they were sent.
 - `workflow.audit_entry_to_dict(entry)` builds an audit entry (without `seq` or `session_id`) for the audit list and the snapshot.
+
+## Filing request validation (`filings.py`; REQ-12, REQ-13, REQ-19)
+
+- `validate_filing_request(body, *, today, determination_date, required_form)` checks an object and returns parsed fields without database access or changes to the input. The caller supplies the session date and the incident's determination date and required form; either incident value may be null. It performs no session, role, state or stale-version check.
+- Checks run in this order: allowed filing form (`8-K Item 1.05`, `6-K`, `8-K/A`), filing date (real date, not after today or before a supplied determination date), accession number (10 ASCII digits, hyphen, 2 digits, hyphen, 6 digits), integer version at least 1, unavailable elements, home-disclosure date, then matching a supplied required form.
+- `unavailable_elements` defaults to an empty list; sent values must be arrays of unique `nature`, `scope`, `timing` or `impact` names. Invalid items name their index. The result contains a separate list.
+- `home_disclosure_date` is required for `6-K` and checked whenever sent: a real date no later than today. Otherwise its result is null. Returned dates are Python dates, `form_type` is a `FormType`, and `version` is an integer. Unknown request fields are ignored.
+
+## Filing recording (`filings.py`; REQ-12, REQ-13, REQ-14, REQ-22)
+
+- `record_filing` (DisclosureApprover only) follows the common error order, locks the incident row, and calls the validation helper with the session date and stored determination and required form. Stale versions are accepted.
+- After body validation, only DeterminedMaterial, DisclosureDelayed and AmendmentPending allow filing; other states return 409 with no change.
+- It appends a `Filing` with the parsed fields and real recording timestamp, sets DisclosureRecorded and adds 1 to the incident version. Determination, required form and due date are preserved. No EDGAR submission is performed.
+- It writes one `record_filing` audit entry in the same transaction: `before: {state, version}`, `after: {state, version, filing}`. `filing` uses the public Filing schema, including nullable home-disclosure date, without internal `seq` or incident ID. Any failure rolls back the filing, incident change and audit together.
+- Returns the full Incident, including all saved filings. The API returns 201; single reads and snapshots use the same formatter.
 
 ## Test control (`control.py`; TEST-01, TEST-02, TEST-06)
 
@@ -106,7 +122,7 @@ These take no identity headers or role and write no audit entries. They raise `T
 
 - Business days are Monday through Friday excluding U.S. federal holidays from the `holidays` library's `UnitedStates` calendar with `observed=True` and no state subdivision. Each cached year includes the following year's holidays before filtering, so New Year's Day observed in December is retained. Holiday dates and historical rules come from the library.
 - `add_business_days(start, days=4)` excludes the start date, including a weekend or holiday start. Zero days returns the start unchanged. Calendar calculations do not depend on real time or session settings.
-- Calendar years must be within the library's `start_year` and `end_year` (`MIN_CALENDAR_YEAR` and `MAX_CALENDAR_YEAR`). Unsupported starts, direct calendar queries and deadlines crossing the range raise `OverflowError`, which `record_determination` turns into a 400 on `determination_date` as part of that field's checks, so it comes before the `voluntary_disclosure` 501 and the state 409. The final supported year's calendar retains next New Year's observed holiday without requesting an unsupported year.
+- Calendar years must be within the library's `start_year` and `end_year` (`MIN_CALENDAR_YEAR` and `MAX_CALENDAR_YEAR`). Unsupported starts, direct calendar queries and deadlines crossing the range raise `OverflowError`, which determination turns into a 400 on `determination_date` and amendment transition turns into a 400 on `info_available_date`. Both precede state checks; the determination error also precedes its `voluntary_disclosure` 501. The final supported year's calendar retains next New Year's observed holiday without requesting an unsupported year.
 - `disclosure_due_date(required_form, start)` returns four business days after start for `8-K Item 1.05` and `8-K/A`, and null for other forms.
 
 ## State transitions (`workflow.py`; REQ-06)
@@ -118,15 +134,19 @@ These take no identity headers or role and write no audit entries. They raise `T
 | DeterminedMaterial | DisclosureDelayed |
 | DisclosureDelayed | DeterminedMaterial |
 | DeterminedNotMaterial | Closed |
+| DisclosureRecorded | AmendmentPending |
+| DisclosureRecorded | Closed |
 
 - It checks `to` (a `State` name: a non-string or unknown name is a 400 on `to`), then `version`, then `info_available_date` (a date not after today) and `elements` (a non-empty array, else a 400 on `elements`; each entry one of `DRAFT_ELEMENTS` (nature, scope, timing, impact) and not repeated, else a 400 on `elements[i]`).
 - `info_available_date` and `elements` are required when `to` is AmendmentPending and checked whenever they're sent for any other target.
-- After the body, any pair not in the table is 409 `INVALID_TRANSITION` with nothing changed: staying in the same state, UnderAssessment → either Determined state (that goes through the determination), DeterminedNotMaterial → DeterminedMaterial, every move out of Closed, and every move to DisclosureRecorded or AmendmentPending (with valid fields).
-- On success it sets `state`, adds 1 to `version`, leaves `determination`, `required_form` and `due_date` as they are, writes a `transition` audit entry (`before: {state, version}`, `after: {state, version}`) and returns the full Incident.
+- For AmendmentPending, the latest filing is the one with the highest `seq`. When a filing exists, every requested element must be in its `unavailable_elements`; otherwise 400 on `elements[i]`, before the state check. A recorded filing is required to start an amendment; an incident with none returns 409 after body checks.
+- A Domestic amendment requires `8-K/A`, due four business days after `info_available_date`; an FPI amendment requires `6-K` with a null due date. The existing calendar helper computes the deadline. A deadline outside its range is a 400 on `info_available_date`, before state checks. The availability date has no lower-bound check against earlier filing dates.
+- After the body, any pair not in the table is 409 `INVALID_TRANSITION` with nothing changed. Determination and filing operations perform their own state changes; a direct transition never enters DisclosureRecorded. Closed has no outgoing transition.
+- On success it sets `state`, adds 1 to `version`, writes a `transition` audit entry and returns the full Incident. Ordinary transitions preserve the determination, form and deadline and use `before: {state, version}`, `after: {state, version}`. Amendment requests also change form/deadline: both audit snapshots include `required_form` and `due_date`, and `after` also records `info_available_date` and the requested `elements`. Existing filings and determinations are never modified.
 
 ## Audit trail (`workflow.py`; REQ-22)
 
-- Every successful create, import request, determination and transition writes exactly one audit entry through `app/audit.py`, in the same transaction; rejected requests and GETs write none.
+- Every successful create, import request, determination, transition and filing writes exactly one audit entry through `app/audit.py`, in the same transaction; rejected requests and GETs write none.
 - `list_audit_entries` (all roles) returns `{"entries": [...]}`: every entry whose `target_id` is the incident, import entries included, oldest first by `seq`.
 - Entries are never updated or deleted: no code path does, the audit routes' PUT, PATCH and DELETE return 405 (below), and the app role has only INSERT and SELECT on `audit_entries` (see `scripts/AGENTS.md`).
 
@@ -141,7 +161,6 @@ Each runs steps 1 to 3 (session, role, path IDs) in one transaction, then raises
 | `PUT`, `PATCH`, `DELETE /incidents/{id}/audit` | `refuse_change`, `REPLACE_OR_DELETE` | DisclosureApprover | incident | 405 |
 | `PATCH /incidents/{id}/evidence/{evidence_id}` (REQ-05) | `not_built`, `TAG_EVIDENCE` | Responder, DisclosureApprover | incident, evidence | 501 |
 | `POST /groups` (REQ-04) | `not_built`, `CREATE_GROUP` | Responder, DisclosureApprover | none | 501 |
-| `POST /incidents/{id}/filings` | `not_built`, `RECORD_FILING` | DisclosureApprover | incident | 501 |
 | `POST /incidents/{id}/drafts` | `not_built`, `REQUEST_DRAFT` | DisclosureApprover | incident | 501 |
 | `POST /drafts/{draft_id}/accept` | `not_built`, `ACCEPT_DRAFT` | DisclosureApprover | none | 501 |
 

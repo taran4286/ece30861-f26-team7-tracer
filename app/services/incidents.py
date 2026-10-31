@@ -10,7 +10,7 @@ from app.audit import audit
 from app.clock import today
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
-from app.models import AuditAction, Determination, Evidence, Incident, State, new_id
+from app.models import AuditAction, Determination, Evidence, Filing, Incident, State, new_id
 from app.roles import Operation, Role, require_role
 from app.services.validation import invalid, parse_date, require_object, require_string
 from app.sessions import load_session
@@ -85,8 +85,7 @@ def incident_to_dict(tx: Session, incident: Incident) -> dict[str, Any]:
 
 
 def incidents_to_dicts(tx: Session, incidents: Sequence[Incident]) -> list[dict[str, Any]]:
-    """incident_to_dict for many incidents, loading all their determinations and evidence in
-    one query each instead of two per incident."""
+    """Build many incidents with one query each for determinations, evidence and filings."""
     ids = [incident.incident_id for incident in incidents]
     determinations = {
         row.incident_id: row
@@ -99,14 +98,21 @@ def incidents_to_dicts(tx: Session, incidents: Sequence[Incident]) -> list[dict[
         .order_by(Evidence.imported_at, Evidence.evidence_id)
     ):
         evidence[item.incident_id].append(item)
+    filings: dict[str, list[Filing]] = {incident_id: [] for incident_id in ids}
+    for filing in tx.scalars(
+        select(Filing).where(Filing.incident_id.in_(ids)).order_by(Filing.seq)
+    ):
+        filings[filing.incident_id].append(filing)
     return [
-        _incident_dict(incident, determinations.get(incident.incident_id), evidence[incident.incident_id])
+        _incident_dict(incident, determinations.get(incident.incident_id),
+                       evidence[incident.incident_id], filings[incident.incident_id])
         for incident in incidents
     ]
 
 
 def _incident_dict(
-    incident: Incident, determination: Determination | None, evidence: list[Evidence]
+    incident: Incident, determination: Determination | None, evidence: list[Evidence],
+    filings: list[Filing],
 ) -> dict[str, Any]:
     """Build the public incident response, including its stored deadline when present."""
     return {
@@ -118,10 +124,25 @@ def _incident_dict(
         "required_form": incident.required_form.value if incident.required_form else None,
         "due_date": incident.due_date.isoformat() if incident.due_date else None,
         "flags": [],
-        "filings": [],
+        "filings": [filing_to_dict(filing) for filing in filings],
         "evidence": [evidence_to_dict(item) for item in evidence],
         "group_id": incident.group_id,
         "version": incident.version,
+    }
+
+
+def filing_to_dict(filing: Filing) -> dict[str, Any]:
+    """The public Filing schema; the internal sequence and incident ID stay out."""
+    return {
+        "form_type": filing.form_type.value,
+        "filing_date": filing.filing_date.isoformat(),
+        "accession_number": filing.accession_number,
+        "unavailable_elements": list(filing.unavailable_elements),
+        "home_disclosure_date": (
+            filing.home_disclosure_date.isoformat() if filing.home_disclosure_date else None
+        ),
+        "recorded_by": filing.recorded_by,
+        "recorded_at": filing.recorded_at.isoformat(),
     }
 
 

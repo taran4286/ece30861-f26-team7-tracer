@@ -15,6 +15,7 @@ from app.models import (
     Decision,
     Determination,
     Evidence,
+    Filing,
     FormType,
     RegistrantType,
     State,
@@ -39,6 +40,8 @@ ALLOWED_TRANSITIONS = frozenset(
         (State.DETERMINED_MATERIAL, State.DISCLOSURE_DELAYED),
         (State.DISCLOSURE_DELAYED, State.DETERMINED_MATERIAL),
         (State.DETERMINED_NOT_MATERIAL, State.CLOSED),
+        (State.DISCLOSURE_RECORDED, State.AMENDMENT_PENDING),
+        (State.DISCLOSURE_RECORDED, State.CLOSED),
     }
 )
 
@@ -60,7 +63,7 @@ def _transition_target(body: Any, today: date) -> State:
     # Stale versions are accepted.
     parse_integer(body.get("version"), "version")
     # Required for AmendmentPending, and checked whenever sent, since the request schema types
-    # them for every target. Validated before this Phase 4 transition is refused.
+    # them for every target. Body errors come before disallowed state changes.
     amendment = target == State.AMENDMENT_PENDING
     if amendment or "info_available_date" in body:
         if parse_date(body.get("info_available_date"), "info_available_date") > today:
@@ -98,16 +101,56 @@ def transition_incident(
         incident = load_incident(tx, incident_id, session_id=session_id, for_update=True)
         # Check existence before input, as required by the error order.
         target = _transition_target(body, clock.today(session))
+        amendment = target == State.AMENDMENT_PENDING
+        latest_filing = None
+        amendment_form = None
+        amendment_due = None
+        if amendment:
+            # Use the latest recorded filing, not an older filing's missing information.
+            latest_filing = tx.scalar(
+                select(Filing).where(Filing.incident_id == incident_id)
+                .order_by(Filing.seq.desc()).limit(1)
+            )
+            if latest_filing is not None:
+                for index, element in enumerate(body["elements"]):
+                    if element not in latest_filing.unavailable_elements:
+                        raise invalid(f"elements[{index}]", "Element was not unavailable in the latest filing")
+            amendment_form = (
+                FormType.FORM_6K if session.registrant_type == RegistrantType.FPI
+                else FormType.FORM_8KA
+            )
+            try:
+                amendment_due = disclosure_due_date(
+                    amendment_form, parse_date(body["info_available_date"], "info_available_date")
+                )
+            except OverflowError:
+                raise invalid("info_available_date", "Deadline is outside the supported holiday calendar range") from None
         if (incident.state, target) not in ALLOWED_TRANSITIONS:
             raise TracerError(
                 ErrorCode.INVALID_TRANSITION,
                 f"Cannot transition from {incident.state.value} to {target.value}",
             )
-        # Record the old values. Only state and version change.
+        if amendment and latest_filing is None:
+            raise TracerError(ErrorCode.INVALID_TRANSITION, "Amendment requires a recorded filing")
+        # Ordinary transitions change only state/version; amendments also change form/deadline.
         before = {"state": incident.state.value, "version": incident.version}
+        if amendment:
+            before.update(
+                required_form=incident.required_form.value if incident.required_form else None,
+                due_date=incident.due_date.isoformat() if incident.due_date else None,
+            )
+            incident.required_form = amendment_form
+            incident.due_date = amendment_due
         incident.state = target
         incident.version += 1
         after = {"state": incident.state.value, "version": incident.version}
+        if amendment:
+            # Keep the request's availability date and elements in the permanent audit history.
+            after.update(
+                required_form=incident.required_form.value,
+                due_date=incident.due_date.isoformat() if incident.due_date else None,
+                info_available_date=body["info_available_date"], elements=list(body["elements"]),
+            )
         # Save one audit entry in the same transaction as the change.
         audit(
             tx, AuditAction.TRANSITION, incident_id, before, after,

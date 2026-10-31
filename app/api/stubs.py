@@ -57,12 +57,6 @@ async def create_group(request: Request) -> JSONResponse:
     return await call(request, placeholders.not_built, Operation.CREATE_GROUP)
 
 
-@router.post("/incidents/{incident_id}/filings")
-async def record_filing(request: Request, incident_id: str) -> JSONResponse:
-    """Filings aren't built."""
-    return await call(request, placeholders.not_built, Operation.RECORD_FILING, incident_id)
-
-
 @router.post("/incidents/{incident_id}/drafts")
 async def request_draft(request: Request, incident_id: str) -> JSONResponse:
     """Drafts aren't built."""
