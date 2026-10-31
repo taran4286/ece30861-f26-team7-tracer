@@ -40,7 +40,7 @@ Six tables hold the system's data; the tester keeps its own in `tester_sessions`
 | discovery_date | date, not null | |
 | state | `state` enum, not null | |
 | required_form | `form_type` enum, nullable | |
-| due_date | date, nullable | four business days after a Domestic Material determination; null for FPI or NotMaterial |
+| due_date | date, nullable | four business days after a Domestic Material determination or amendment availability date; null for FPI or NotMaterial |
 | group_id | text, nullable | always null |
 | version | integer, not null | |
 
@@ -59,7 +59,7 @@ Six tables hold the system's data; the tester keeps its own in `tester_sessions`
 
 **filings** (`Filing`)
 
-No service reads or writes this table; `scripts/setup_db.py` creates it and its grants.
+`services/filings.py` appends filings; the shared incident formatter reads them oldest first. `scripts/setup_db.py` creates the table and its grants.
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -108,7 +108,7 @@ No service reads or writes this table; `scripts/setup_db.py` creates it and its 
 - `FormType`: `8-K Item 1.05`, `8-K Item 8.01`, `6-K`, `8-K/A`.
 - `Decision`: Material, NotMaterial.
 - `EvidenceSource`: ticketing, siem.
-- `AuditAction`: create_incident, import_evidence, record_determination, transition, record_filing. No service writes `record_filing`.
+- `AuditAction`: create_incident, import_evidence, record_determination, transition, record_filing.
 - `RegistrantType`: Domestic, FPI.
 - Not stored as a type: `ImpactCategory` (operational, financial, legal_regulatory, reputational, data_compromised) and `SiemSeverity` (low, medium, high, critical, checked on import).
 

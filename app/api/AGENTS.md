@@ -24,6 +24,7 @@ The system's web layer. `server.py` mounts `system_app` at `/system`, so every p
 | `GET /test/report/{run_id}` | 200 snapshot from `control.snapshot` |
 | `PATCH /test/sessions/{session_id}/settings` | 200 TestRun from `control.update_settings`, given the path ID and `read_body()`'s result |
 | `POST /incidents`, `GET /incidents/{incident_id}`, `POST …/evidence/import`, `POST …/determination`, `POST …/transitions`, `GET …/audit` | The service's result: 201 for create and import, 200 for the rest |
+| `POST /incidents/{incident_id}/filings` | 201 full Incident from `filings.record_filing`, through the same header and body handling as other project routes |
 | The 405 and 501 operations (`services/AGENTS.md`, "405 and 501 operations") | The service's error; each 405 carries `Allow`: `GET` for the incident and audit paths, `PATCH` for the evidence path |
 | Any other path and method pair, with GET, POST, PUT, PATCH or DELETE (such as `GET /incidents` or `POST /health`) | 501 `{"error": "NOT_IMPLEMENTED", "message": "/<path> is not implemented"}`, with no header or role checks |
 | GET or HEAD on `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json` | FastAPI's generated docs for `system_app` |

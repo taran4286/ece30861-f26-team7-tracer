@@ -138,7 +138,7 @@ class Incident(Base):
     )
     # Null until a Material determination.
     required_form: Mapped[FormType | None] = mapped_column(_db_enum(FormType, "form_type"))
-    # Set by a Domestic Material determination; null otherwise.
+    # Domestic determination or amendment deadline; null for FPI and NotMaterial.
     due_date: Mapped[date | None] = mapped_column(Date)
     group_id: Mapped[str | None] = mapped_column(Text)
     # Starts at 1; +1 on each determination and transition.
