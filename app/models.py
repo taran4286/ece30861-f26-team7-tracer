@@ -1,4 +1,4 @@
-"""Tables and enums for Phase 3 (see AGENTS.md, "Data model and storage")."""
+"""The system's tables and enums (see app/AGENTS.md, "Data model")."""
 
 import uuid
 from datetime import date, datetime
@@ -60,6 +60,7 @@ class AuditAction(StrEnum):
     IMPORT_EVIDENCE = "import_evidence"
     RECORD_DETERMINATION = "record_determination"
     TRANSITION = "transition"
+    RECORD_FILING = "record_filing"
 
 
 class Decision(StrEnum):
@@ -137,7 +138,7 @@ class Incident(Base):
     )
     # Null until a Material determination.
     required_form: Mapped[FormType | None] = mapped_column(_db_enum(FormType, "form_type"))
-    # Always null in Phase 3.
+    # Set by a Domestic Material determination; null otherwise.
     due_date: Mapped[date | None] = mapped_column(Date)
     group_id: Mapped[str | None] = mapped_column(Text)
     # Starts at 1; +1 on each determination and transition.
@@ -147,7 +148,7 @@ class Incident(Base):
 class Determination(Base):
     __tablename__ = "determinations"
 
-    # One per incident in Phase 3.
+    # At most one per incident.
     incident_id: Mapped[str] = mapped_column(
         Text, ForeignKey("incidents.incident_id"), primary_key=True
     )
@@ -156,6 +157,26 @@ class Determination(Base):
     rationale: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     voluntary_disclosure: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    recorded_by: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+
+
+class Filing(Base):
+    """A filing submitted on EDGAR outside Tracer and recorded against its incident."""
+
+    __tablename__ = "filings"
+
+    # Sets "oldest first" order, so the latest filing is the one with the highest seq.
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    incident_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("incidents.incident_id"), nullable=False, index=True
+    )
+    form_type: Mapped[FormType] = mapped_column(_db_enum(FormType, "form_type"), nullable=False)
+    filing_date: Mapped[date] = mapped_column(Date, nullable=False)
+    accession_number: Mapped[str] = mapped_column(Text, nullable=False)
+    unavailable_elements: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    # Required for a 6-K (REQ-12); null otherwise.
+    home_disclosure_date: Mapped[date | None] = mapped_column(Date)
     recorded_by: Mapped[str] = mapped_column(Text, nullable=False)
     recorded_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
 

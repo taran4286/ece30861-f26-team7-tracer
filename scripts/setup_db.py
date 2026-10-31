@@ -9,12 +9,13 @@ checks each one's effective privileges on every table and fails if any differ fr
 GRANTS or TESTER_GRANTS. The printed grids are the AC-23 demo. Finally it logs in
 through each role's URL to confirm it reaches the same server.
 
-Exits 0 on success and 1 on failure. It only creates missing tables and types, so
-changes to an existing table need a wiped local database or a migration.
+Exits 0 on success and 1 on failure. It creates missing tables and types and adds
+missing values to existing enum types; any other change to an existing table or type
+needs a wiped local database or a migration.
 """
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,7 @@ from sqlalchemy.exc import DBAPIError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db import Base  # noqa: E402
-from app.models import AuditEntry, Determination, Evidence, Incident, TestSession  # noqa: E402
+from app.models import AuditEntry, Determination, Evidence, Filing, Incident, TestSession  # noqa: E402
 from tester.db import Base as TesterBase  # noqa: E402
 from tester.models import StoredSession  # noqa: E402
 
@@ -39,7 +40,16 @@ GRANTS: dict[str, frozenset[str]] = {
     # Phase 4 adds UPDATE for tagging.
     Evidence.__tablename__: frozenset({"SELECT", "INSERT"}),
     Determination.__tablename__: frozenset({"SELECT", "INSERT"}),
+    Filing.__tablename__: frozenset({"SELECT", "INSERT"}),
     AuditEntry.__tablename__: frozenset({"SELECT", "INSERT"}),
+}
+
+# Column-level grants on top of GRANTS: the settings PATCH changes only these, so
+# registrant_type stays fixed even for the app role (TEST-07).
+COLUMN_GRANTS: dict[str, dict[str, frozenset[str]]] = {
+    TestSession.__tablename__: {
+        "UPDATE": frozenset({"test_now", "at_risk_threshold_days", "llm_base_url"}),
+    },
 }
 
 # Exactly what the tester role gets: its own table, with no DELETE or TRUNCATE either.
@@ -51,6 +61,7 @@ TESTER_GRANTS: dict[str, frozenset[str]] = {
 TABLES = (*GRANTS, *TESTER_GRANTS)
 
 METADATA = (Base.metadata, TesterBase.metadata)
+METADATA_TABLES = {name: table for metadata in METADATA for name, table in metadata.tables.items()}
 
 # Checked on every table; MAINTAIN is added on Postgres 17+.
 TABLE_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
@@ -80,6 +91,7 @@ class Login:
     env: str
     url: URL
     grants: dict[str, frozenset[str]]
+    column_grants: dict[str, dict[str, frozenset[str]]] = field(default_factory=dict)
 
     @property
     def role(self) -> str:
@@ -165,16 +177,46 @@ def _check_ownership(conn: Connection, role: str) -> None:
         raise SetupError(f"{role} owns schema {SCHEMA}; make the owner role own it instead")
 
 
+def _enum_values() -> dict[str, list[str]]:
+    """Each enum type the models use, with its values in declaration order."""
+    return {
+        column.type.name: list(column.type.enums)
+        for metadata in METADATA
+        for table in metadata.tables.values()
+        for column in table.columns
+        if isinstance(column.type, Enum)
+    }
+
+
 def _enum_types() -> list[str]:
-    return sorted(
-        {
-            column.type.name
-            for metadata in METADATA
-            for table in metadata.tables.values()
-            for column in table.columns
-            if isinstance(column.type, Enum)
-        }
-    )
+    return sorted(_enum_values())
+
+
+def _add_enum_values(conn: Connection) -> None:
+    """Add values the models have and an existing enum type lacks; create_all skips existing types.
+
+    A value the type has and the models don't means the database holds another schema, which
+    only a wipe or a migration can fix.
+    """
+    for type_name, values in sorted(_enum_values().items()):
+        stored = list(
+            conn.execute(
+                text(
+                    "SELECT e.enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+                    "JOIN pg_namespace n ON n.oid = t.typnamespace "
+                    "WHERE t.typname = :t AND n.nspname = :s ORDER BY e.enumsortorder"
+                ),
+                {"t": type_name, "s": SCHEMA},
+            ).scalars()
+        )
+        if not stored:
+            continue
+        if extra := [value for value in stored if value not in values]:
+            raise SetupError(f"type {type_name} has values the models don't: {extra}")
+        for value in values:
+            if value not in stored:
+                # Usable once this transaction commits; nothing below inserts it.
+                _exec_fmt(conn, "ALTER TYPE %I ADD VALUE %L", type_name, value)
 
 
 def _apply_grants(conn: Connection, owner: str, logins: list[Login]) -> None:
@@ -192,6 +234,16 @@ def _apply_grants(conn: Connection, owner: str, logins: list[Login]) -> None:
             _exec_fmt(
                 conn, f"GRANT {', '.join(sorted(privileges))} ON TABLE %I TO %I", table, login.role
             )
+        for table, by_privilege in login.column_grants.items():
+            for privilege, columns in sorted(by_privilege.items()):
+                names = ", ".join(["%I"] * len(columns))
+                _exec_fmt(
+                    conn,
+                    f"GRANT {privilege} ({names}) ON TABLE %I TO %I",
+                    *sorted(columns),
+                    table,
+                    login.role,
+                )
 
 
 def _verify(conn: Connection, login: Login) -> None:
@@ -211,6 +263,20 @@ def _verify(conn: Connection, login: Login) -> None:
                 {"r": login.role, "t": f"{SCHEMA}.{table}", "p": privilege},
             ).scalar_one()
             rows.append((table, privilege, privilege in granted, actual))
+    # Column grants don't show in has_table_privilege, so check each column of those tables.
+    for table, by_privilege in COLUMN_GRANTS.items():
+        for privilege in sorted(by_privilege):
+            granted = login.column_grants.get(table, {}).get(privilege, frozenset())
+            table_level = privilege in login.grants.get(table, frozenset())
+            for column in METADATA_TABLES[table].columns:
+                actual = conn.execute(
+                    text(
+                        "SELECT has_column_privilege("
+                        "CAST(:r AS name), CAST(:t AS text), CAST(:c AS text), CAST(:p AS text))"
+                    ),
+                    {"r": login.role, "t": f"{SCHEMA}.{table}", "c": column.name, "p": privilege},
+                ).scalar_one()
+                rows.append((f"{table}.{column.name}", privilege, table_level or column.name in granted, actual))
     for privilege, expected in (("USAGE", True), ("CREATE", False)):
         actual = conn.execute(
             text(
@@ -278,6 +344,12 @@ def setup(conn: Connection, logins: list[Login]) -> dict[str, tuple[Any, ...]]:
         raise SetupError(
             f"TESTER_GRANTS must list exactly the tables in tester.models: {sorted(TesterBase.metadata.tables)}"
         )
+    for table, by_privilege in COLUMN_GRANTS.items():
+        if table not in GRANTS:
+            raise SetupError(f"COLUMN_GRANTS names {table}, which isn't in GRANTS")
+        for columns in by_privilege.values():
+            if unknown := sorted(columns - set(METADATA_TABLES[table].columns.keys())):
+                raise SetupError(f"COLUMN_GRANTS names columns {table} doesn't have: {unknown}")
 
     conn.execute(text(f"SET LOCAL search_path TO {SCHEMA}"))
     owner, owner_is_superuser = conn.execute(
@@ -293,6 +365,7 @@ def setup(conn: Connection, logins: list[Login]) -> dict[str, tuple[Any, ...]]:
         _check_ownership(conn, login.role)
     _exec_fmt(conn, "REVOKE CREATE ON SCHEMA %I FROM PUBLIC", SCHEMA)
 
+    _add_enum_values(conn)
     for metadata in METADATA:
         metadata.create_all(conn)
     _apply_grants(conn, owner, logins)
@@ -305,7 +378,7 @@ def main() -> int:
     settings = SetupSettings()
     admin_url = make_url(settings.admin_database_url)
     logins = [
-        Login("DATABASE_URL", make_url(settings.database_url), GRANTS),
+        Login("DATABASE_URL", make_url(settings.database_url), GRANTS, COLUMN_GRANTS),
         Login("TESTER_DATABASE_URL", make_url(settings.tester_database_url), TESTER_GRANTS),
     ]
     for login in logins:
