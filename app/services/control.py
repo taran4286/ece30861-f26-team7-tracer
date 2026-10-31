@@ -1,11 +1,14 @@
-"""Test control (TEST-01, TEST-02, TEST-06): prepare a session, report its coverage, snapshot it.
+"""Test control (TEST-01, TEST-02, TEST-06, TEST-07): prepare a session, report its coverage,
+snapshot it, and change its clock or mutable settings.
 
 These take no identity headers and write no audit entries. The API layer turns their
 TracerErrors into the spec's TestControlError ({message, source}).
 """
 
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 from sqlalchemy import select
@@ -34,6 +37,10 @@ DEFAULTS: dict[str, Any] = {
     # The deployment's LLM URL. No drafting is built, so it names a host that never resolves.
     "llm_base_url": "https://llm.invalid/v1",
 }
+
+# The settings a session's settings update may change; registrant_type stays as setup stored it
+# (TEST-07). The app role's column grant on test_sessions covers exactly these.
+MUTABLE_SETTINGS = ("test_now", "at_risk_threshold_days", "llm_base_url")
 
 # The largest value a PostgreSQL INTEGER column holds, such as at_risk_threshold_days. A larger
 # one would fail on insert, which would answer 500 instead of 400.
@@ -70,24 +77,30 @@ def _settings(setup: dict[str, Any]) -> dict[str, Any]:
     for key in setup:
         if key not in DEFAULTS:
             raise invalid(f"setup.{key}", f"Unknown setting {key!r}")
-    settings: dict[str, Any] = {}
-    if "test_now" in setup:
-        settings["test_now"] = parse_date_time(setup["test_now"], "setup.test_now")
-    if "registrant_type" in setup:
-        value = setup["registrant_type"]
-        if not isinstance(value, str) or value not in {r.value for r in RegistrantType}:
-            raise invalid("setup.registrant_type", "Expected Domestic or FPI")
-        settings["registrant_type"] = RegistrantType(value)
-    if "at_risk_threshold_days" in setup:
-        settings["at_risk_threshold_days"] = parse_integer(
-            setup["at_risk_threshold_days"], "setup.at_risk_threshold_days", maximum=INTEGER_MAX
-        )
-    if "llm_base_url" in setup:
-        value = setup["llm_base_url"]
-        if not isinstance(value, str) or not _URI.fullmatch(value) or "\x00" in value:
-            raise invalid("setup.llm_base_url", "Expected an absolute URI")
-        settings["llm_base_url"] = value
-    return settings
+    return {key: _CHECKS[key](setup[key], f"setup.{key}") for key in DEFAULTS if key in setup}
+
+
+def _registrant_type(value: Any, field: str) -> RegistrantType:
+    if not isinstance(value, str) or value not in {r.value for r in RegistrantType}:
+        raise invalid(field, "Expected Domestic or FPI")
+    return RegistrantType(value)
+
+
+def _absolute_uri(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not _URI.fullmatch(value) or "\x00" in value:
+        raise invalid(field, "Expected an absolute URI")
+    return value
+
+
+# Each setting's check, called with the value sent and the field to name in a 400; it returns
+# the value to store. Setup and the settings update both use these, so they accept the same
+# values.
+_CHECKS: dict[str, Callable[[Any, str], Any]] = {
+    "test_now": parse_date_time,
+    "registrant_type": _registrant_type,
+    "at_risk_threshold_days": partial(parse_integer, maximum=INTEGER_MAX),
+    "llm_base_url": _absolute_uri,
+}
 
 
 def _duplicate(session_id: str) -> TracerError:
@@ -99,12 +112,41 @@ def coverage_report(session_id: Any) -> dict[str, Any]:
 
     Coverage isn't measured, so the counts are null and `basis` says why, as the spec allows.
     """
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise invalid("session_id", "session_id is required")
+    _require_session_id(session_id)
     with transaction() as tx:
         load_session(tx, session_id)
     unmeasured = {"covered": None, "total": None, "basis": CODE_COVERAGE_BASIS}
     return {"session_id": session_id, "coverage": {"code": unmeasured}}
+
+
+def _require_session_id(session_id: Any) -> None:
+    """A 400 for a missing or blank session ID, before any database access."""
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise invalid("session_id", "session_id is required")
+
+
+def update_settings(session_id: Any, body: Any) -> dict[str, Any]:
+    """PATCH /test/sessions/{session_id}/settings: change a session's clock or mutable settings
+    (TEST-07) and return its TestRun.
+
+    Checks the ID and the whole body before any database access. Omitted settings keep their
+    values, so an empty body changes nothing; registrant_type can't be sent.
+    """
+    _require_session_id(session_id)
+    body = require_object(body)
+    for key in body:
+        if key == "registrant_type":
+            raise invalid(key, "registrant_type is fixed for the session and can't be changed")
+        if key not in MUTABLE_SETTINGS:
+            raise invalid(key, f"Unknown setting {key!r}")
+    changes = {key: _CHECKS[key](body[key], key) for key in MUTABLE_SETTINGS if key in body}
+    with transaction() as tx:
+        # Locked, so concurrent updates apply one after the other. The ORM writes only the
+        # changed columns, the ones the app role's column grant allows.
+        session = load_session(tx, session_id, for_update=True)
+        for key, value in changes.items():
+            setattr(session, key, value)
+        return run_to_dict(session)
 
 
 def snapshot(run_id: str) -> dict[str, Any]:

@@ -21,7 +21,7 @@ STATUS: dict[tuple[str, str], str] = {
     ("POST", "/test/setup"): BUILT,
     ("GET", "/test/report/{run_id}"): BUILT,
     ("GET", "/test/report"): BUILT,
-    ("PATCH", "/test/sessions/{session_id}/settings"): NOT_BUILT,
+    ("PATCH", "/test/sessions/{session_id}/settings"): BUILT,
     ("POST", "/incidents"): BUILT,
     ("GET", "/incidents/{incident_id}"): BUILT,
     ("PUT", "/incidents/{incident_id}"): REFUSED,

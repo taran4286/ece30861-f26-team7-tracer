@@ -119,7 +119,6 @@ def test_status_page_matches_how_each_operation_is_answered():
     # REFUSED and NOT_BUILT are the route tests' lists below, so the page can't drift from them.
     refused = {(method, template) for method, template, _ in REFUSED}
     not_built = {(method, template) for method, template, _ in NOT_BUILT}
-    not_built.add(("PATCH", "/test/sessions/{session_id}/settings"))
     for operation, status in pages.STATUS.items():
         expected = (pages.REFUSED if operation in refused
                     else pages.NOT_BUILT if operation in not_built else pages.BUILT)
@@ -304,10 +303,64 @@ def test_setup_keeps_the_settings_sent():
     ("GET", "/system/test/report", {}, 400),
     ("GET", "/system/test/report", {"params": {"session_id": "pytest-missing"}}, 404),
     ("GET", "/system/test/report/pytest-missing", {}, 404),
-    ("PATCH", "/system/test/sessions/pytest-missing/settings", {"json": {}}, 501),
+    ("PATCH", "/system/test/sessions/pytest-missing/settings", {"json": {}}, 404),
 ])
 def test_test_control_errors_use_message_and_source(method, path, kwargs, status):
     control_error(client.request(method, path, **kwargs), status)
+
+
+SETTINGS = "/test/sessions/{session_id}/settings"
+
+
+def test_a_settings_update_answers_with_the_run(session_id):
+    # No identity headers: test control takes none.
+    response = client.patch(f"/system/test/sessions/{session_id}/settings",
+                            json={"test_now": "2026-10-08T15:00:00Z", "at_risk_threshold_days": 3})
+    assert response.status_code == 200
+    matches_spec("PATCH", SETTINGS, response)
+    assert response.json() == {
+        "run_id": session_id, "test_now": "2026-10-08T15:00:00+00:00",
+        "registrant_type": "Domestic", "at_risk_threshold_days": 3,
+        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": [],
+    }
+    assert snapshot(session_id)["run"] == response.json()
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"json": {"registrant_type": "FPI"}},
+    {"json": {"test_now": "2026-10-08T15:00:00Z", "registrant_type": "FPI"}},
+    {"json": {"clock": "2026-10-08T15:00:00Z"}},
+    {"json": {"test_now": "2026-10-08"}},
+    {"json": {"at_risk_threshold_days": 0}},
+    {"json": []},
+    {"content": b"{not json"},
+    {},
+])
+def test_a_rejected_settings_update_changes_nothing(session_id, kwargs):
+    before = snapshot(session_id)
+    response = client.patch(f"/system/test/sessions/{session_id}/settings", **kwargs)
+    control_error(response, 400)
+    matches_spec("PATCH", SETTINGS, response)
+    assert snapshot(session_id) == before
+
+
+@pytest.mark.parametrize("path_id,body", [
+    # A blank ID; the body is checked before the session is looked up.
+    ("%20", {}),
+    ("pytest-missing", {"registrant_type": "FPI"}),
+])
+@pytest.mark.usefixtures("no_database")
+def test_settings_update_400s_need_no_database(path_id, body):
+    response = client.patch(f"/system/test/sessions/{path_id}/settings", json=body)
+    control_error(response, 400)
+    matches_spec("PATCH", SETTINGS, response)
+
+
+def test_a_settings_update_of_an_unknown_session_is_not_found():
+    response = client.patch("/system/test/sessions/pytest-missing/settings",
+                            json={"test_now": "2026-10-08T15:00:00Z"})
+    control_error(response, 404)
+    matches_spec("PATCH", SETTINGS, response)
 
 
 def test_setup_with_an_id_in_use_is_a_conflict(session_id):
