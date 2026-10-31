@@ -11,6 +11,7 @@ One module per area, callable without any web framework. Each project operation 
 | `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, evidence_id=None, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
 | `filings.py` | `validate_filing_request` (pure validation), `record_filing` (storage, state and audit) | `tests/test_filings.py`, `tests/test_filing_storage.py` |
+| `flags.py` | `incident_flags(incident, filings, session)` | `tests/test_flags.py` |
 | `deadlines.py` | `federal_holidays`, `is_business_day`, `add_business_days`, `disclosure_due_date`, `MIN_CALENDAR_YEAR` and `MAX_CALENDAR_YEAR` | `tests/test_deadlines.py` |
 
 Add a row for each new module.
@@ -64,7 +65,7 @@ def record_determination(
 - `incidents.load_incident(tx, incident_id, *, session_id, for_update=False)` loads the path incident or raises `NOT_FOUND`, treating another session's incident as unknown. `for_update=True` locks the row; determination, transition and filing operations use it, so two concurrent requests can't both pass the state check or bump `version` from the same value.
 - `evidence.load_evidence(tx, incident_id, evidence_id)` loads evidence named in the path, after its incident, or raises `NOT_FOUND`; evidence of another incident counts as unknown.
 - `incidents.incident_to_dict(tx, incident)` builds the full Incident (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values), and every operation that returns an Incident uses it. `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations, evidence and filings. `evidence_to_dict`, `determination_to_dict` and `filing_to_dict` build the parts; `raw_item` is never returned.
-- An Incident returns its stored `due_date` as YYYY-MM-DD or null, with `flags: []` and saved `filings` ordered oldest first by their internal `seq`. Its `evidence` is ordered by `imported_at`, then `evidence_id`; items from one import share an `imported_at` and their IDs are random, so they don't come back in the order they were sent.
+- An Incident returns its stored `due_date` as YYYY-MM-DD or null, with `flags` computed on read (see Flags) and saved `filings` ordered oldest first by their internal `seq`. Its `evidence` is ordered by `imported_at`, then `evidence_id`; items from one import share an `imported_at` and their IDs are random, so they don't come back in the order they were sent.
 - `workflow.audit_entry_to_dict(entry)` builds an audit entry (without `seq` or `session_id`) for the audit list and the snapshot.
 
 ## Filing request validation (`filings.py`; REQ-12, REQ-13, REQ-19)
@@ -124,6 +125,18 @@ These take no identity headers or role and write no audit entries or project rec
 - Material sets `DeterminedMaterial` and `required_form` from the session: `8-K Item 1.05` for Domestic, `6-K` for FPI. NotMaterial sets `DeterminedNotMaterial` and `required_form: null`.
 - Domestic Material sets `due_date` to four business days after `determination_date`; FPI and NotMaterial set it to null.
 - It stores the determination with `voluntary_disclosure: false`, `recorded_by` = the user and `recorded_at` = server time, adds 1 to `version`, writes a `record_determination` audit entry (`before: {state, determination: null, version}`, `after: {state, determination: {decision, determination_date}, required_form, due_date, version}`) and returns the full Incident.
+
+## Flags (`flags.py`; REQ-09)
+
+`incident_flags` computes an Incident's `flags` on every read, from the session's `test_now`; nothing is stored, so moving the clock changes them with no write and no `version` change.
+
+- `at_risk`: the incident is UnderAssessment and more than `at_risk_threshold_days` have passed since 00:00 UTC on `discovery_date`. Exactly the threshold isn't at risk. A determination clears it by leaving UnderAssessment.
+- Due-date flags apply only with a `due_date`, in any state, DisclosureDelayed included:
+  1. A filing whose `form_type` is the current `required_form` means no flag. An AmendmentPending incident never counts as filed, so an earlier 8-K/A filing doesn't clear a later amendment.
+  2. Today after `due_date` is `overdue`.
+  3. At most one business day after today, through `due_date`, is `warning`, so the due date itself is a `warning`.
+- The count walks back from `due_date` and stops at its second business day, so a session clock outside the holiday calendar's range can't raise `OverflowError` on a read.
+- `at_risk` comes before a due-date flag in the array.
 
 ## Deadline calendar (`deadlines.py`)
 

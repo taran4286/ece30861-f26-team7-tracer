@@ -8,7 +8,7 @@ The building blocks every service uses, and the system's tables. Business logic 
 | --- | --- |
 | `config.py` | `Settings` (`database_url`, from `DATABASE_URL`) through the cached `get_settings()` |
 | `db.py` | `Base`, the cached `get_engine()`, and `transaction()`: one session per operation, committed on success and rolled back on any error. `get_engine()` reads `DATABASE_URL` through `parse_url(value, setting)`, which raises `ArgumentError`, a `SQLAlchemyError`, for a malformed URL, where SQLAlchemy alone would raise a plain `ValueError` that storage handlers miss. Its message names the setting, never the URL, which holds a password |
-| `models.py` | The six tables (`TestSession` first), their enums, `SiemSeverity` (checked on import, not stored) and `new_id(prefix)` |
+| `models.py` | The six tables (`TestSession` first), their enums, `SiemSeverity` (checked on import, not stored), `Flag` (computed on read, not stored) and `new_id(prefix)` |
 | `errors.py` | `ErrorCode`, `HTTP_STATUS` (each code's status) and `TracerError(code, message, field=None)`, whose `status` comes from that map; `to_dict()` returns `error`, `message` and `field`, with `field` as `None` when unset, which the API layer leaves out (see `api/AGENTS.md`). Two codes map to 409: `INVALID_TRANSITION` for a project state error and `CONFLICT`, raised only for a test session ID already in use |
 | `roles.py` | `Role`, `Operation`, the `PERMISSIONS` map and `require_role(role, operation)`, which raises `FORBIDDEN_ROLE`; a role string that isn't a `Role` gets no permissions, so it also gets `FORBIDDEN_ROLE`. `Operation.REPLACE_OR_DELETE` covers the 405 routes: only DisclosureApprover passes it, and then gets 405 |
 | `clock.py` | `today(session)`, the UTC date of the session's `test_now`, for every date rule, and `utcnow()` for stored timestamps |
@@ -110,7 +110,7 @@ Six tables hold the system's data; the tester keeps its own in `tester_sessions`
 - `EvidenceSource`: ticketing, siem.
 - `AuditAction`: create_incident, import_evidence, record_determination, transition, record_filing.
 - `RegistrantType`: Domestic, FPI.
-- Not stored as a type: `ImpactCategory` (operational, financial, legal_regulatory, reputational, data_compromised) and `SiemSeverity` (low, medium, high, critical, checked on import).
+- Not stored as a type: `ImpactCategory` (operational, financial, legal_regulatory, reputational, data_compromised) `SiemSeverity` (low, medium, high, critical, checked on import) and `Flag` (at_risk, warning, overdue, computed on read).
 
 ## Rules
 

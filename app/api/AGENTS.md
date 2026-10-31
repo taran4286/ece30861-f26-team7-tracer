@@ -6,8 +6,9 @@ The system's web layer. `server.py` mounts `system_app` at `/system`, so every p
 
 | Module | Provides |
 | --- | --- |
-| `__init__.py` | `system_app`: the status page, `/health` and the `database_ok()` check both use, the `TracerError` handler, the three routers below, then the 501 catch-all |
+| `__init__.py` | `system_app`: the status page, `/health` and the `database_ok()` check both use, the `TracerError` handler, the four routers below, then the 501 catch-all |
 | `pages.py` | The status page: `render()`, `operations()` read from `system-openapi.yaml`, `STATUS` (how each operation in that file is answered, the 501s included) and `shown_operations()`, the ones the page lists. `SPEC_LINK` points at the file on GitHub's `main`, not the deployed copy |
+| `dashboard.py` | The dashboard: its route, `NOTICES` (each flag's text and color, most urgent first) and the HTML, built from `control.snapshot` |
 | `calls.py` | `identity()` (the header checks), `read_body()`, `call()` (headers, then the service in the thread pool) and `error_response()` (the Error body) |
 | `control.py` | The test-control routes, answering errors as `{message, source}` |
 | `routes.py` | The project operations, one route per service operation |
@@ -17,7 +18,8 @@ The system's web layer. `server.py` mounts `system_app` at `/system`, so every p
 
 | Route | Response |
 | --- | --- |
-| `GET /` | 200 HTML status page: the title "Team 7 — Tracer system", whether the database is reachable, the system API's title and version linked to `SPEC_LINK`, and the operations this system answers, marked built or 405 by design (the 501s aren't listed); `/system` without the slash redirects here with a 307 |
+| `GET /` | 200 HTML status page: the title "Team 7 — Tracer system", whether the database is reachable, the system API's title and version linked to `SPEC_LINK`, and a link to the dashboard, and the operations this system answers, marked built or 405 by design (the 501s aren't listed); `/system` without the slash redirects here with a 307 |
+| `GET /dashboard?session_id=` | 200 HTML dashboard: the session's test date with a form to change it, its registrant type and at-risk threshold, and its incidents, most urgent first, with state, required form, due date, notices, filings and version. No `session_id` gives only the session form; an unknown session is a 404 page and an unreachable database a 503 page |
 | `GET /health` | 200 `{"status": "ok", "database": "ok"}` after a `SELECT 1` through `get_engine()`; 503 `{"status": "unavailable", "database": "unavailable"}` when a setting is missing or invalid (such as no `DATABASE_URL` on a preview), the URL names a driver we don't install (a bare `postgresql://` scheme), or the database can't be reached |
 | `POST /test/setup` | 201 `{session_id}` from `control.setup_session` |
 | `GET /test/report?session_id=` | 200 coverage from `control.coverage_report` |
@@ -42,6 +44,7 @@ The system's web layer. `server.py` mounts `system_app` at `/system`, so every p
 - Register every route before the catch-all, which matches every path. `tests/test_server.py` checks that each project operation in `system-openapi.yaml` has its own route.
 - `/health` is the check that a deploy reaches the database (root "Deployment"). It logs the cause of a 503 as a warning and never puts it in the response.
 - The status page shows in a browser that the deploy is up and what it answers. It still loads when the database can't be reached, showing it as unavailable, so it also works on previews. It reads `system-openapi.yaml` on first use, not at import, and caches it for the life of the process, so a missing file breaks only this page. `tester/` keeps its own page.
+- The dashboard takes no identity headers and only reads. Its date form sends `test_now` to `PATCH /test/sessions/{session_id}/settings` from the browser, through a path relative to the page, keeping the time of day, and reloads on success; any other answer shows the error's `message` on the page. Everything shown from storage or the query string is escaped. Below 640 px each incident stacks into a block, so its notices stay in view.
 - Keep `pages.STATUS` in step with the routes. `tests/test_server.py` checks that it lists exactly the operations in `system-openapi.yaml` and that each label matches what the route tests prove.
 - Touch the database only inside a request, never at import: preview deployments have no `DATABASE_URL`, and the app must still start there.
 - Never import `tester`; the two apps meet only in `server.py`.

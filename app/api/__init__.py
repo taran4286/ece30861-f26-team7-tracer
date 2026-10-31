@@ -1,7 +1,8 @@
 """The system's FastAPI app; server.py mounts it at /system.
 
-It serves a status page, a health check, the test-control routes, the project operations
-this team builds, and 405 or 501 for the rest of the spec's operations. Other paths get 501.
+It serves a status page, a dashboard, a health check, the test-control routes, the project
+operations this team builds, and 405 or 501 for the rest of the spec's operations. Other paths
+get 501.
 """
 
 import logging
@@ -15,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api import pages
 from app.api.calls import error_response
 from app.api.control import router as control_router
+from app.api.dashboard import router as dashboard_router
 from app.api.routes import router as project_router
 from app.api.stubs import router as stub_router
 from app.db import get_engine
@@ -62,6 +64,7 @@ async def tracer_error(request: Request, error: TracerError) -> JSONResponse:
 
 
 # Every route must be registered before the catch-all.
+system_app.include_router(dashboard_router)
 system_app.include_router(control_router)
 system_app.include_router(project_router)
 system_app.include_router(stub_router)

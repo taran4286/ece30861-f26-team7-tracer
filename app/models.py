@@ -82,6 +82,14 @@ class SiemSeverity(StrEnum):
     CRITICAL = "critical"
 
 
+class Flag(StrEnum):
+    """An incident's computed flags (not stored as a column)."""
+
+    AT_RISK = "at_risk"
+    WARNING = "warning"
+    OVERDUE = "overdue"
+
+
 class RegistrantType(StrEnum):
     DOMESTIC = "Domestic"
     FPI = "FPI"
