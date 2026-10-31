@@ -10,7 +10,7 @@ One module per area, callable without any web framework. Each project operation 
 | `control.py` | `setup_session(body)`, `coverage_report(session_id)`, `snapshot(run_id)`, `run_to_dict`, `DEFAULTS`, `INTEGER_MAX` and `CODE_COVERAGE_BASIS` | `tests/test_control.py` |
 | `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, evidence_id=None, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
-| `deadlines.py` | `federal_holidays`, `is_business_day`, `add_business_days`, and `disclosure_due_date` | `tests/test_deadlines.py` |
+| `deadlines.py` | `federal_holidays`, `is_business_day`, `add_business_days`, `disclosure_due_date`, `MIN_CALENDAR_YEAR` and `MAX_CALENDAR_YEAR` | `tests/test_deadlines.py` |
 
 Add a row for each new module.
 
@@ -96,18 +96,18 @@ These take no identity headers or role and write no audit entries. They raise `T
 
 `record_determination` (DisclosureApprover only) is the only code that writes a materiality value.
 
-- It checks, in order: `decision` (Material or NotMaterial); `determination_date` (a date, then on or after `discovery_date` and not after today, both ends included); `rationale` (`require_string`); `evidence_refs` (a non-empty array of unique, non-blank strings without NUL, then every ID must belong to this incident, both on `evidence_refs`); `version`; then `voluntary_disclosure` if sent: a non-boolean is a 400, and `true` or `false` is a 501 `NOT_IMPLEMENTED`.
+- It checks, in order: `decision` (Material or NotMaterial); `determination_date` (a date, then on or after `discovery_date` and not after today, both ends included, then a due date the holiday calendar can compute; see Deadline calendar); `rationale` (`require_string`); `evidence_refs` (a non-empty array of unique, non-blank strings without NUL, then every ID must belong to this incident, both on `evidence_refs`); `version`; then `voluntary_disclosure` if sent: a non-boolean is a 400, and `true` or `false` is a 501 `NOT_IMPLEMENTED`.
 - After those, a state other than UnderAssessment is 409 `INVALID_TRANSITION`, so a second determination is a 409.
 - Material sets `DeterminedMaterial` and `required_form` from the session: `8-K Item 1.05` for Domestic, `6-K` for FPI. NotMaterial sets `DeterminedNotMaterial` and `required_form: null`.
-- Domestic Material sets `due_date` to four business days after `determination_date`; FPI and NotMaterial set it to null. A deadline beyond the supported date range is a 400 on `determination_date` without writes. Delay/resume transitions preserve the deadline.
+- Domestic Material sets `due_date` to four business days after `determination_date`; FPI and NotMaterial set it to null.
 - It stores the determination with `voluntary_disclosure: false`, `recorded_by` = the user and `recorded_at` = server time, adds 1 to `version`, writes a `record_determination` audit entry (`before: {state, determination: null, version}`, `after: {state, determination: {decision, determination_date}, required_form, due_date, version}`) and returns the full Incident.
 
 ## Deadline calendar (`deadlines.py`)
 
 - Business days are Monday through Friday excluding U.S. federal holidays from the `holidays` library's `UnitedStates` calendar with `observed=True` and no state subdivision. Each cached year includes the following year's holidays before filtering, so New Year's Day observed in December is retained. Holiday dates and historical rules come from the library.
 - `add_business_days(start, days=4)` excludes the start date, including a weekend or holiday start. Zero days returns the start unchanged. Calendar calculations do not depend on real time or session settings.
-- Calendar years must be within the library's `start_year` and `end_year` (currently 1777–2100). Unsupported starts, direct calendar queries and deadlines crossing the range raise `OverflowError`, mapped to a 400 on `determination_date` by the workflow. The final supported year's calendar retains next New Year's observed holiday without requesting an unsupported year.
-- `disclosure_due_date(required_form, start)` returns four business days after start for `8-K Item 1.05` and `8-K/A`, and null for other forms. For amendments the caller supplies the information-available date; the transition operation still rejects AmendmentPending.
+- Calendar years must be within the library's `start_year` and `end_year` (`MIN_CALENDAR_YEAR` and `MAX_CALENDAR_YEAR`). Unsupported starts, direct calendar queries and deadlines crossing the range raise `OverflowError`, which `record_determination` turns into a 400 on `determination_date` as part of that field's checks, so it comes before the `voluntary_disclosure` 501 and the state 409. The final supported year's calendar retains next New Year's observed holiday without requesting an unsupported year.
+- `disclosure_due_date(required_form, start)` returns four business days after start for `8-K Item 1.05` and `8-K/A`, and null for other forms.
 
 ## State transitions (`workflow.py`; REQ-06)
 
@@ -122,7 +122,7 @@ These take no identity headers or role and write no audit entries. They raise `T
 - It checks `to` (a `State` name: a non-string or unknown name is a 400 on `to`), then `version`, then `info_available_date` (a date not after today) and `elements` (a non-empty array, else a 400 on `elements`; each entry one of `DRAFT_ELEMENTS` (nature, scope, timing, impact) and not repeated, else a 400 on `elements[i]`).
 - `info_available_date` and `elements` are required when `to` is AmendmentPending and checked whenever they're sent for any other target.
 - After the body, any pair not in the table is 409 `INVALID_TRANSITION` with nothing changed: staying in the same state, UnderAssessment → either Determined state (that goes through the determination), DeterminedNotMaterial → DeterminedMaterial, every move out of Closed, and every move to DisclosureRecorded or AmendmentPending (with valid fields).
-- On success it sets `state`, adds 1 to `version`, leaves `determination` and `required_form` as they are, writes a `transition` audit entry (`before: {state, version}`, `after: {state, version}`) and returns the full Incident.
+- On success it sets `state`, adds 1 to `version`, leaves `determination`, `required_form` and `due_date` as they are, writes a `transition` audit entry (`before: {state, version}`, `after: {state, version}`) and returns the full Incident.
 
 ## Audit trail (`workflow.py`; REQ-22)
 
