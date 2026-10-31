@@ -13,15 +13,14 @@ from urllib.parse import urlsplit
 import httpx2
 
 from tester.cases import planned
-from tester.client import Target, TargetError
+from tester.client import SETUP_TIMEOUT_SECONDS, Target, TargetError
 from tester.sessions import ControlError, create_session, finish_run, start_run
 from tester.spec import operation_tags, report_errors, schema_errors, tags
 from tester.suite import Case, run_cases
 
-# The pod's proposed limits (Tester API description): setup waits up to 20 s for the target,
-# and a run has 130 s, so it starts no new call after 105 s. That leaves room for the last
-# call, the coverage request and storing the report.
-SETUP_TIMEOUT_SECONDS = 20.0
+# The pod's proposed limits (Tester API description): setup waits up to SETUP_TIMEOUT_SECONDS
+# (20 s) for the target, and a run has 130 s, so it starts no new call after 105 s. That leaves
+# room for the last call, the coverage request and storing the report.
 CALL_CUTOFF_SECONDS = 105.0
 
 

@@ -10,8 +10,10 @@ import httpx2
 
 from tester.spec import response_errors
 
-# Each project call waits this long, with no retry (Tester API description).
+# Each project call waits this long, with no retry, and preparing a session on the target this
+# long (Tester API description).
 CALL_TIMEOUT = 10.0
+SETUP_TIMEOUT_SECONDS = 20.0
 NO_BODY = object()
 
 
@@ -50,9 +52,11 @@ class Reply:
     schema_errors: list[str] = field(default_factory=list)
 
     def detail(self) -> str:
-        """The error code and message of an Error body, for test messages."""
+        """The error code and message of an Error or TestControlError body, for test messages."""
         if isinstance(self.body, dict) and "error" in self.body:
             return f" {self.body.get('error')}: {self.body.get('message')}"
+        if isinstance(self.body, dict) and "source" in self.body:
+            return f" from {self.body.get('source')}: {self.body.get('message')}"
         return ""
 
 
@@ -62,7 +66,8 @@ class Target:
     `http` is an httpx2 client whose base URL is the system base URL. Every reply is
     checked against the spec's schema for its operation and status. `deadline` is a
     `time.monotonic()` value after which `call` sends nothing; `called` records each
-    (method, template) sent, for component coverage.
+    (method, template) sent, for component coverage. `session_id` is the run's session; a
+    call can name another session the run prepared with `setup`.
     """
 
     def __init__(self, http: httpx2.Client, session_id: str, deadline: float | None = None):
@@ -79,17 +84,21 @@ class Target:
         actor: Actor | None,
         *,
         json: Any = NO_BODY,
+        session: str | None = None,
+        timeout: float = CALL_TIMEOUT,
         **path: str,
     ) -> Reply:
         """Send one call; `template` is the spec path, filled from `path`.
 
-        Raises Stopped once the deadline has passed, and TargetError("communication") when no
-        response arrives.
+        A project call's X-Test-Run is `session`, or the run's session when it's None. Raises
+        Stopped once the deadline has passed, and TargetError("communication") when no response
+        arrives.
         """
         if self.deadline is not None and time.monotonic() >= self.deadline:
             self.stopped = True
             raise Stopped(f"{method} {template} wasn't sent: the run reached its time limit")
-        return self._send(method, template, actor, json=json, path=path)
+        return self._send(method, template, actor, json=json, path=path, session=session,
+                          timeout=timeout)
 
     def coverage(self) -> Reply:
         """The session's code coverage report (TEST-02).
@@ -98,9 +107,19 @@ class Target:
         """
         return self._send("GET", "/test/report", None, query={"session_id": self.session_id})
 
-    def snapshot(self) -> Reply:
-        """The session's stored incidents, groups and audit entries (TEST-06)."""
-        return self.call("GET", "/test/report/{run_id}", None, run_id=self.session_id)
+    def snapshot(self, session: str | None = None) -> Reply:
+        """A session's stored incidents, groups and audit entries (TEST-06)."""
+        return self.call("GET", "/test/report/{run_id}", None, run_id=session or self.session_id)
+
+    def settings(self, session: str, changes: dict[str, Any]) -> Reply:
+        """Change a session's clock or other mutable settings (TEST-07)."""
+        return self.call("PATCH", "/test/sessions/{session_id}/settings", None, json=changes,
+                         session_id=session)
+
+    def setup(self, session: str, setup: dict[str, Any]) -> Reply:
+        """Prepare another session on the target (TEST-01), waiting as long as the runner does."""
+        return self.call("POST", "/test/setup", None, json={"session_id": session, "setup": setup},
+                         timeout=SETUP_TIMEOUT_SECONDS)
 
     def _send(
         self,
@@ -111,6 +130,8 @@ class Target:
         json: Any = NO_BODY,
         path: dict[str, str] | None = None,
         query: dict[str, str] | None = None,
+        session: str | None = None,
+        timeout: float = CALL_TIMEOUT,
     ) -> Reply:
         label = f"{method} {template}"
         self.called.add((method, template))
@@ -120,12 +141,12 @@ class Target:
         headers = {}
         if actor is not None:
             # Project calls carry the session; test-control calls take no identity headers.
-            headers["X-Test-Run"] = self.session_id
+            headers["X-Test-Run"] = session or self.session_id
             if actor.user is not None:
                 headers["X-User-Id"] = actor.user
             if actor.role is not None:
                 headers["X-User-Role"] = actor.role
-        kwargs: dict[str, Any] = {"headers": headers, "timeout": CALL_TIMEOUT}
+        kwargs: dict[str, Any] = {"headers": headers, "timeout": timeout}
         if json is not NO_BODY:
             kwargs["json"] = json
         sent_at = datetime.now(UTC)
@@ -133,7 +154,7 @@ class Target:
             # httpx2 appends a relative URL to the base URL's path, /system included.
             response = self.http.request(method, url, **kwargs)
         except httpx2.TimeoutException:
-            raise TargetError("communication", f"{label}: no response within {CALL_TIMEOUT:g} s")
+            raise TargetError("communication", f"{label}: no response within {timeout:g} s")
         except httpx2.TransportError as exc:
             raise TargetError("communication", f"{label}: {type(exc).__name__}: {exc}")
         received_at = datetime.now(UTC)

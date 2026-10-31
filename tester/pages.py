@@ -7,8 +7,8 @@ messages can quote another team's system, so everything shown is HTML-escaped.
 from html import escape
 from typing import Any
 
-from tester.client import CALL_TIMEOUT
-from tester.runner import CALL_CUTOFF_SECONDS, SETUP_TIMEOUT_SECONDS
+from tester.client import CALL_TIMEOUT, SETUP_TIMEOUT_SECONDS
+from tester.runner import CALL_CUTOFF_SECONDS
 
 TITLE = "Team 7 — Tracer tester"
 OUTCOMES = ("pass", "fail", "error", "skip")

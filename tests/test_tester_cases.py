@@ -1,7 +1,7 @@
 """The tester's cross-team cases, run against the in-memory system in fake_system.py."""
 
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from email.utils import formatdate
 
 import httpx2
@@ -9,7 +9,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tester.cases import STATES, clock_problems, name, planned
+from tester import business_days
+from tester.cases import SETUP_TEST_NOW, STATES, clock_problems, name, planned
 from tester.client import Reply, Target
 from tester.spec import response_errors, schema_errors
 from tester.suite import Fail, run_cases
@@ -18,13 +19,9 @@ from tests.fake_system import FakeSystem
 # Target sets the 10 s call timeout on every request; TestClient warns that it ignores it.
 pytestmark = pytest.mark.filterwarnings("ignore:You should not use the 'timeout' argument")
 
-CRITERIA = ["AC-02", "AC-03", "AC-07", "AC-08", "AC-20", "AC-06", "AC-09", "AC-23", "AC-01"]
-FILING_PAIRS = {
-    *(f"AC-06-{source}-to-{name(to)}" for source in ("DisclosureRecorded", "AmendmentPending")
-      for to in STATES),
-    "AC-06-DM-to-DisclosureRecorded",
-    "AC-06-DisclosureDelayed-to-DisclosureRecorded",
-}
+CRITERIA = ["AC-02", "AC-03", "AC-07", "AC-08", "AC-20", "AC-14", "AC-12", "AC-13", "AC-15",
+            "AC-06", "AC-09", "AC-23", "AC-01"]
+SETTINGS = "/test/sessions/{session_id}/settings"
 
 
 class StaleDate:
@@ -39,6 +36,17 @@ class StaleDate:
         return response
 
 
+class Recorded:
+    """An HTTP client that records each request's method, URL and JSON body in `sent`."""
+
+    def __init__(self, http: TestClient, sent: list):
+        self.http, self.sent = http, sent
+
+    def request(self, method: str, url: str, **kwargs):
+        self.sent.append((method, url, kwargs.get("json")))
+        return self.http.request(method, url, **kwargs)
+
+
 class TimesOut:
     """An HTTP client whose calls to paths containing `fragment` never answer."""
 
@@ -47,6 +55,18 @@ class TimesOut:
 
     def request(self, method: str, url: str, **kwargs):
         if self.fragment in url:
+            raise httpx2.ReadTimeout("timed out")
+        return self.http.request(method, url, **kwargs)
+
+
+class ResetTimesOut:
+    """An HTTP client whose calls setting test_now back to the setup default never answer."""
+
+    def __init__(self, http: TestClient):
+        self.http = http
+
+    def request(self, method: str, url: str, **kwargs):
+        if method == "PATCH" and (kwargs.get("json") or {}).get("test_now") == SETUP_TEST_NOW:
             raise httpx2.ReadTimeout("timed out")
         return self.http.request(method, url, **kwargs)
 
@@ -63,16 +83,19 @@ def run_against(fake: FakeSystem, criterion: str | None = None, wrap=None) -> di
 
 
 @pytest.fixture(scope="module")
-def conforming() -> dict[str, dict]:
-    return run_against(FakeSystem())
+def conforming_system() -> tuple[FakeSystem, list]:
+    """A conforming system, and every request the full run below sends it."""
+    return FakeSystem(), []
 
 
-def test_a_conforming_system_passes_every_case_that_runs(conforming):
-    skipped = {test_id for test_id, r in conforming.items() if r["outcome"] == "skip"}
-    assert skipped == FILING_PAIRS
-    others = {t: r["message"] for t, r in conforming.items()
-              if r["outcome"] not in ("pass", "skip")}
-    assert others == {}
+@pytest.fixture(scope="module")
+def conforming(conforming_system) -> dict[str, dict]:
+    fake, sent = conforming_system
+    return run_against(fake, wrap=lambda http: Recorded(http, sent))
+
+
+def test_a_conforming_system_passes_every_case(conforming):
+    assert {t: r["message"] for t, r in conforming.items() if r["outcome"] != "pass"} == {}
 
 
 def test_every_result_is_a_valid_test_result(conforming):
@@ -87,11 +110,96 @@ def test_test_ids_are_unique_and_in_criterion_order():
     assert list(dict.fromkeys(test_id[:5] for test_id in ids)) == CRITERIA
 
 
-def test_ac06_plans_all_49_pairs_and_runs_33(conforming):
+def test_ac06_runs_all_49_pairs(conforming):
     pairs = {f"AC-06-{name(source)}-to-{name(to)}" for source in STATES for to in STATES}
     assert len(pairs) == 49
     assert pairs <= set(conforming)
-    assert sum(conforming[p]["outcome"] == "pass" for p in pairs) == 33
+    assert sum(conforming[p]["outcome"] == "pass" for p in pairs) == 49
+
+
+def test_every_clock_move_is_set_back_to_the_setup_default(conforming, conforming_system):
+    fake, sent = conforming_system
+    moves: dict[str, list[str]] = {}
+    for method, url, body in sent:
+        if method == "PATCH" and url.endswith("/settings"):
+            assert set(body) == {"test_now"}
+            moves.setdefault(url, []).append(body["test_now"])
+    assert set(moves) == {SETTINGS.format(session_id="run-1"),
+                          SETTINGS.format(session_id="run-1-fpi")}
+    for days in moves.values():
+        # Each move to another day is followed by a move back, and by nothing else.
+        assert len(days) % 2 == 0
+        assert days[1::2] == [SETUP_TEST_NOW] * (len(days) // 2)
+        assert SETUP_TEST_NOW not in days[::2]
+    assert {s: fake.sessions[s].run["test_now"] for s in ("run-1", "run-1-fpi")} == {
+        "run-1": SETUP_TEST_NOW, "run-1-fpi": SETUP_TEST_NOW}
+
+
+def test_fpi_cases_act_in_a_second_session_prepared_as_fpi(conforming, conforming_system):
+    fake, _ = conforming_system
+    main, fpi = fake.sessions["run-1"], fake.sessions["run-1-fpi"]
+    assert (main.run["registrant_type"], fpi.run["registrant_type"]) == ("Domestic", "FPI")
+    assert [i["required_form"] for i in fpi.incidents.values()] == ["6-K"]
+    assert "6-K" not in {i["required_form"] for i in main.incidents.values()}
+
+
+@pytest.mark.parametrize(
+    ("bug", "test_id"),
+    [
+        ("stale_flags", "AC-12-warning-1-business-day-left"),
+        ("settings_not_built", "AC-12-warning-1-business-day-left"),
+        ("fpi_flags", "AC-13-no-warning-or-overdue"),
+        # The transition inside AC-15's clock move fails: no filing lists impact as unavailable.
+        ("filing_not_stored", "AC-15-amendment-pending"),
+    ],
+)
+def test_a_failed_clock_case_still_sets_the_clock_back(bug, test_id):
+    fake = FakeSystem({bug})
+    results = run_against(fake, test_id[:5])
+    assert results[test_id]["outcome"] == "fail", results[test_id]
+    assert {s.run["test_now"] for s in fake.sessions.values()} == {SETUP_TEST_NOW}
+
+
+def test_a_failed_reset_is_added_to_a_failed_cases_message():
+    # The case fails inside clock_at, and setting the clock back gets no answer either.
+    results = run_against(FakeSystem({"flags_not_built"}), "AC-12", wrap=ResetTimesOut)
+    result = results["AC-12-filing-clears-flags"]
+    assert result["outcome"] == "fail", result
+    assert "nothing to clear" in result["message"], result
+    assert f"also couldn't set test_now back to {SETUP_TEST_NOW}" in result["message"], result
+
+
+def test_the_fake_systems_settings_route_follows_the_spec():
+    http = TestClient(FakeSystem().app)
+    assert http.post("/test/setup", json={"session_id": "s", "setup": {}}).status_code == 201
+    url = SETTINGS.format(session_id="s")
+    before = http.get("/test/report/s").json()["run"]
+    for body in ({"registrant_type": "FPI"}, {"theme": "dark"}, {"test_now": "2026-10-08"},
+                 {"at_risk_threshold_days": 0}):
+        response = http.patch(url, json=body)
+        assert response.status_code == 400, body
+        assert response_errors("PATCH", SETTINGS, 400, response.json()) == []
+    assert http.get("/test/report/s").json()["run"] == before
+    response = http.patch(url, json={"test_now": "2026-10-08T15:00:00Z"})
+    assert response.status_code == 200
+    assert response_errors("PATCH", SETTINGS, 200, response.json()) == []
+    assert response.json() == {**before, "test_now": "2026-10-08T15:00:00Z"}
+    assert http.patch(SETTINGS.format(session_id="other"), json={}).status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("start", "due"),
+    [
+        ("2026-10-05", "2026-10-09"),  # AC-12
+        ("2026-11-09", "2026-11-16"),  # AC-15: Veterans Day, Wednesday 2026-11-11
+        ("2026-10-08", "2026-10-15"),  # Columbus Day, Monday 2026-10-12
+        ("2026-10-03", "2026-10-08"),  # a Saturday start
+        ("2027-06-17", "2027-06-24"),  # Juneteenth on a Saturday, observed Friday 2027-06-18
+        ("2021-12-29", "2022-01-05"),  # New Year's Day 2022 observed Friday 2021-12-31
+    ],
+)
+def test_the_testers_calendar_counts_4_business_days(start, due):
+    assert business_days.add_business_days(date.fromisoformat(start)) == date.fromisoformat(due)
 
 
 @pytest.mark.parametrize(
@@ -106,6 +214,31 @@ def test_ac06_plans_all_49_pairs_and_runs_33(conforming):
         ("transitions_determine", "AC-09-a-incident-01"),
         ("audited_reads", "AC-23-a-reads-not-audited"),
         ("audit_delete", "AC-23-b-DELETE-audit-as-DisclosureApprover"),
+        ("accession_optional", "AC-14-missing-accession_number"),
+        ("filing_date_bumps_version", "AC-14-missing-filing_date"),
+        ("filing_keeps_state", "AC-14-filing-recorded"),
+        ("filing_not_stored", "AC-14-filing-retrievable"),
+        ("due_date_counts_start", "AC-12-due-date-4-business-days"),
+        ("early_warning", "AC-12-no-flag-2-business-days-left"),
+        ("stale_flags", "AC-12-warning-1-business-day-left"),
+        ("overdue_on_due_date", "AC-12-warning-on-due-date"),
+        ("stale_flags", "AC-12-overdue-after-due-date"),
+        ("settings_not_built", "AC-12-overdue-after-due-date"),
+        ("filing_keeps_flags", "AC-12-filing-clears-flags"),
+        ("flags_not_built", "AC-12-filing-clears-flags"),
+        ("flags_not_built", "AC-12-warning-1-business-day-left"),
+        ("fpi_gets_8k", "AC-13-material-requires-6-K"),
+        ("fpi_flags", "AC-13-no-warning-or-overdue"),
+        ("home_date_optional", "AC-13-6-K-missing-home_disclosure_date"),
+        ("home_date_dropped", "AC-13-6-K-stores-home_disclosure_date"),
+        ("no_amendments", "AC-15-amendment-pending"),
+        ("amendment_keeps_form", "AC-15-amendment-requires-8-K-A"),
+        ("due_date_ignores_holidays", "AC-15-due-date-skips-Veterans-Day"),
+        ("filing_keeps_state", "AC-06-DM-to-DisclosureRecorded"),
+        ("recorded_reopens", "AC-06-DisclosureRecorded-to-DM"),
+        ("no_amendments", "AC-06-DisclosureRecorded-to-AmendmentPending"),
+        ("amendment_closes", "AC-06-AmendmentPending-to-Closed"),
+        ("amendment_keeps_form", "AC-06-AmendmentPending-to-DisclosureRecorded"),
     ],
 )
 def test_cases_fail_a_faulty_system(bug, test_id):
@@ -113,11 +246,28 @@ def test_cases_fail_a_faulty_system(bug, test_id):
     assert results[test_id]["outcome"] == "fail", results[test_id]
 
 
-def test_a_wrongly_allowed_move_doesnt_spoil_later_cases_from_that_state():
-    results = run_against(FakeSystem({"dnm_to_dm"}), "AC-06")
-    assert results["AC-06-DNM-to-DM"]["outcome"] == "fail"
-    later = ["AC-06-DNM-to-DNM", "AC-06-DNM-to-DM-via-determination", "AC-06-DNM-to-Closed"]
-    assert [results[t]["outcome"] for t in later] == ["pass"] * 3
+def test_refused_moves_pass_whichever_amendmentpending_check_comes_first():
+    # Without a filing, a system may reject the elements before the state; both are rejections.
+    results = run_against(FakeSystem(elements_first=True), "AC-06")
+    assert {r["outcome"] for r in results.values()} == {"pass"}, [
+        r for r in results.values() if r["outcome"] != "pass"]
+    assert "400 VALIDATION_ERROR on elements" in results["AC-06-UA-to-AmendmentPending"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("bug", "failed", "later"),
+    [
+        ("dnm_to_dm", "AC-06-DNM-to-DM",
+         ["AC-06-DNM-to-DNM", "AC-06-DNM-to-DM-via-determination", "AC-06-DNM-to-Closed"]),
+        ("recorded_reopens", "AC-06-DisclosureRecorded-to-DM",
+         ["AC-06-DisclosureRecorded-to-DNM", "AC-06-DisclosureRecorded-to-AmendmentPending",
+          "AC-06-DisclosureRecorded-to-Closed"]),
+    ],
+)
+def test_a_wrongly_allowed_move_doesnt_spoil_later_cases_from_that_state(bug, failed, later):
+    results = run_against(FakeSystem({bug}), "AC-06")
+    assert results[failed]["outcome"] == "fail"
+    assert [results[t]["outcome"] for t in later] == ["pass"] * len(later)
 
 
 def test_clock_checks_bracket_the_call_with_the_testers_clock():
