@@ -1,13 +1,13 @@
 # app/services/: business logic
 
-One module per area, callable without any web framework. Each project operation takes the acting user's ID and role and the request's session ID as keyword arguments; test-control operations take only a body or a session ID. The API layer checks the identity headers before calling any of them (see `api/AGENTS.md`).
+One module per area, callable without any web framework. Each project operation takes the acting user's ID and role and the request's session ID as keyword arguments; test-control operations take only a session ID, a body, or both. The API layer checks the identity headers before calling any of them (see `api/AGENTS.md`).
 
 | Module | Functions and constants | Tests |
 | --- | --- | --- |
 | `incidents.py` | `create_incident(body, …)`, `get_incident(incident_id, …)`, and the shared `load_incident` and `*_to_dict` builders | `tests/test_incidents.py` |
 | `evidence.py` | `import_evidence(incident_id, body, …)`, `load_evidence`, `SHAPES` (where each source's fields come from) and `_FOREIGN_KEYS` | `tests/test_evidence.py` |
 | `workflow.py` | `record_determination(incident_id, body, …)`, `transition_incident(incident_id, body, …)`, `list_audit_entries(incident_id, …)`, `audit_entry_to_dict`, `ALLOWED_TRANSITIONS` and `DRAFT_ELEMENTS` | `tests/test_workflow.py` |
-| `control.py` | `setup_session(body)`, `coverage_report(session_id)`, `snapshot(run_id)`, `run_to_dict`, `DEFAULTS`, `INTEGER_MAX` and `CODE_COVERAGE_BASIS` | `tests/test_control.py` |
+| `control.py` | `setup_session(body)`, `coverage_report(session_id)`, `update_settings(session_id, body)`, `snapshot(run_id)`, `run_to_dict`, `DEFAULTS`, `MUTABLE_SETTINGS`, `INTEGER_MAX` and `CODE_COVERAGE_BASIS` | `tests/test_control.py` |
 | `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, evidence_id=None, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
 | `filings.py` | `validate_filing_request` (pure validation), `record_filing` (storage, state and audit) | `tests/test_filings.py`, `tests/test_filing_storage.py` |
@@ -82,16 +82,23 @@ def record_determination(
 - It writes one `record_filing` audit entry in the same transaction: `before: {state, version}`, `after: {state, version, filing}`. `filing` uses the public Filing schema, including nullable home-disclosure date, without internal `seq` or incident ID. Any failure rolls back the filing, incident change and audit together.
 - Returns the full Incident, including all saved filings. The API returns 201; single reads and snapshots use the same formatter.
 
-## Test control (`control.py`; TEST-01, TEST-02, TEST-06)
+## Test control (`control.py`; TEST-01, TEST-02, TEST-06, TEST-07)
 
-These take no identity headers or role and write no audit entries. They raise `TracerError` like the rest, and the API layer turns it into `{message, source: "system"}` (see `api/AGENTS.md`).
+These take no identity headers or role and write no audit entries or project records. They raise `TracerError` like the rest, and the API layer turns it into `{message, source: "system"}` (see `api/AGENTS.md`).
 
+- Each setting's value is checked by one function in `_CHECKS`, which setup and the settings update share, so both accept the same values: `test_now` (date-time), `registrant_type` (Domestic or FPI), `at_risk_threshold_days` (integer from 1 to `INTEGER_MAX`, 2,147,483,647) and `llm_base_url` (an absolute URI: a scheme, a colon, then no whitespace, and no NUL).
 - `setup_session(body)` (`POST /test/setup`) checks the whole body before opening a transaction, so its 400s need no database:
   - `session_id` must be a non-blank string, and `setup` an object.
-  - `setup` may hold only `test_now` (date-time), `registrant_type` (Domestic or FPI), `at_risk_threshold_days` (integer from 1 to `INTEGER_MAX`, 2,147,483,647) and `llm_base_url` (an absolute URI: a scheme, a colon, then no whitespace); any other key or a bad value is a 400 on `setup.<key>`.
+  - `setup` may hold only the four settings; any other key or a bad value is a 400 on `setup.<key>`. Unknown keys are checked first, then values in the order above.
   - A missing setting takes `DEFAULTS`: `test_now` 2026-10-05T15:00:00Z, Domestic, 7, and `https://llm.invalid/v1`.
   - It stores the session and returns `{session_id}`. An ID already in use is `CONFLICT` (409), including one stored by a concurrent setup after the existence check, caught on flush.
 - `coverage_report(session_id)` (`GET /test/report?session_id=`) rejects a missing or blank `session_id` (400) before touching the database, then 404s an unknown session. It returns `{session_id, coverage: {code: {covered: null, total: null, basis}}}` with `basis` = `CODE_COVERAGE_BASIS`: code coverage isn't measured.
+- `update_settings(session_id, body)` (`PATCH /test/sessions/{session_id}/settings`) changes an existing session's `MUTABLE_SETTINGS` (`test_now`, `at_risk_threshold_days`, `llm_base_url`). It checks the whole request before opening a transaction, so its 400s need no database and come before the 404:
+  - A missing or blank `session_id` is a 400, as in `coverage_report`; a body that isn't an object is a 400 with no field.
+  - Each key in body order: `registrant_type` is a 400 on `registrant_type` saying it's fixed for the session and can't be changed, whatever its value; any other key outside `MUTABLE_SETTINGS` is a 400 on that key ("Unknown setting '<key>'"). Then each value sent, in `MUTABLE_SETTINGS` order, through `_CHECKS`: a bad one is a 400 on `<key>`.
+  - A setting left out keeps its value, so `{}` changes nothing and returns the settings as stored.
+  - In one transaction it loads the session with `load_session(..., for_update=True)` (unknown, or an ID with NUL, → 404), sets the changed attributes and returns `run_to_dict(session)` (200). The ORM's UPDATE names only the attributes set, which are the columns the app role may update (see `scripts/AGENTS.md`); `{}` issues no UPDATE. Any error leaves the session as it was.
+  - Every later date rule in the session uses the new `test_now` through `clock.today(session)`.
 - `snapshot(run_id)` (`GET /test/report/{run_id}`) returns `{run, incidents, groups: [], audit}`: the session's TestRun from `run_to_dict` (`run_id` is the session ID, `implemented_optional: []`), its incidents as full Incidents ordered by `incident_id` (random, not creation order), and its audit entries ordered by `seq`. Unknown session → 404.
 
 ## Incidents (`incidents.py`; REQ-01, REQ-22)

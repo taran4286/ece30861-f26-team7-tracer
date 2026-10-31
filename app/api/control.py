@@ -1,4 +1,4 @@
-"""The test-control routes (TEST-01, TEST-02, TEST-06).
+"""The test-control routes (TEST-01, TEST-02, TEST-06, TEST-07).
 
 They take no identity headers, and their errors use the spec's TestControlError
 ({message, source}), not the project Error schema.
@@ -63,9 +63,6 @@ async def snapshot(run_id: str) -> JSONResponse:
 
 
 @router.patch("/test/sessions/{session_id}/settings")
-def update_settings(session_id: str) -> JSONResponse:
-    """The optional settings extension (TEST-07) isn't built."""
-    return JSONResponse(
-        {"message": "/test/sessions/{session_id}/settings is not implemented", "source": "system"},
-        status_code=501,
-    )
+async def update_settings(session_id: str, request: Request) -> JSONResponse:
+    """Change a session's clock or mutable settings and return its TestRun (TEST-07)."""
+    return await _respond(control.update_settings, session_id, await read_body(request))

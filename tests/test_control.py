@@ -74,6 +74,20 @@ def test_a_session_id_already_in_use_is_a_conflict():
     assert stored(session_id).registrant_type == RegistrantType.DOMESTIC
 
 
+# Setting values that setup and the settings update both reject, as (key, value).
+INVALID_SETTINGS = [
+    ("test_now", "2026-10-05"),
+    ("test_now", "2026-10-05T15:00:00"),
+    ("test_now", None),
+    ("registrant_type", "domestic"),
+    ("registrant_type", None),
+    *(("at_risk_threshold_days", value)
+      for value in (0, -1, 1.5, "7", True, None, control.INTEGER_MAX + 1, 10**12, 1e30)),
+    *(("llm_base_url", value)
+      for value in ("llm.example", "http://llm example", "", 5, None, "http://llm.example/\x00")),
+]
+
+
 @pytest.mark.parametrize("body,field", [
     (None, None),
     ([], None),
@@ -86,16 +100,8 @@ def test_a_session_id_already_in_use_is_a_conflict():
     ({"session_id": UNUSED_ID, "setup": None}, "setup"),
     ({"session_id": UNUSED_ID, "setup": []}, "setup"),
     ({"session_id": UNUSED_ID, "setup": {"clock": "x"}}, "setup.clock"),
-    ({"session_id": UNUSED_ID, "setup": {"test_now": "2026-10-05"}}, "setup.test_now"),
-    ({"session_id": UNUSED_ID, "setup": {"test_now": "2026-10-05T15:00:00"}}, "setup.test_now"),
-    ({"session_id": UNUSED_ID, "setup": {"test_now": None}}, "setup.test_now"),
-    ({"session_id": UNUSED_ID, "setup": {"registrant_type": "domestic"}}, "setup.registrant_type"),
-    ({"session_id": UNUSED_ID, "setup": {"registrant_type": None}}, "setup.registrant_type"),
-    *(({"session_id": UNUSED_ID, "setup": {"at_risk_threshold_days": value}},
-       "setup.at_risk_threshold_days")
-      for value in (0, -1, 1.5, "7", True, None, control.INTEGER_MAX + 1, 10**12, 1e30)),
-    *(({"session_id": UNUSED_ID, "setup": {"llm_base_url": value}}, "setup.llm_base_url")
-      for value in ("llm.example", "http://llm example", "", 5, None)),
+    *(({"session_id": UNUSED_ID, "setup": {key: value}}, f"setup.{key}")
+      for key, value in INVALID_SETTINGS),
 ])
 def test_invalid_setup_stores_nothing(body, field):
     before = table_counts()
@@ -168,6 +174,172 @@ def test_snapshot_of_an_unknown_session_is_not_found(run_id):
     with pytest.raises(TracerError) as error:
         control.snapshot(run_id)
     assert error.value.code == ErrorCode.NOT_FOUND
+
+
+# --- Settings update ---------------------------------------------------------
+
+# A valid change to every mutable setting, which a rejected update must not apply.
+VALID_UPDATE = {
+    "test_now": "2026-10-09T00:00:00Z", "at_risk_threshold_days": 2,
+    "llm_base_url": "http://llm.example/v2",
+}
+
+
+def run_of(session_id: str) -> dict:
+    """The session's settings, as its snapshot reports them."""
+    return control.snapshot(session_id)["run"]
+
+
+@pytest.fixture
+def no_database(monkeypatch):
+    """Fail the test if the settings update opens a transaction."""
+    def forbidden():
+        pytest.fail("This update must be rejected before it reaches the database")
+    monkeypatch.setattr(control, "transaction", forbidden)
+
+
+def rejected(session_id, body) -> TracerError:
+    with pytest.raises(TracerError) as error:
+        control.update_settings(session_id, body)
+    return error.value
+
+
+@pytest.mark.parametrize("key,sent,returned", [
+    ("test_now", "2026-10-08T09:30:00-04:00", "2026-10-08T13:30:00+00:00"),
+    ("at_risk_threshold_days", 3.0, 3),
+    ("llm_base_url", "http://llm.example/v2", "http://llm.example/v2"),
+])
+def test_a_settings_update_changes_only_the_setting_sent(key, sent, returned):
+    session_id = new_session()
+    before = run_of(session_id)
+    run = control.update_settings(session_id, {key: sent})
+    assert run == {**before, key: returned}
+    assert run_of(session_id) == run
+
+
+def test_a_settings_update_changes_every_setting_sent():
+    session_id = new_session(registrant_type=RegistrantType.FPI)
+    run = control.update_settings(session_id, VALID_UPDATE)
+    assert run == {
+        "run_id": session_id, "test_now": "2026-10-09T00:00:00+00:00", "registrant_type": "FPI",
+        "at_risk_threshold_days": 2, "llm_base_url": "http://llm.example/v2",
+        "implemented_optional": [],
+    }
+    session = stored(session_id)
+    assert session.test_now == datetime(2026, 10, 9, tzinfo=UTC)
+    assert session.registrant_type == RegistrantType.FPI
+    assert (session.at_risk_threshold_days, session.llm_base_url) == (2, "http://llm.example/v2")
+
+
+def test_an_empty_settings_update_changes_nothing():
+    session_id = new_session()
+    before, counts = run_of(session_id), table_counts()
+    assert control.update_settings(session_id, {}) == before
+    assert run_of(session_id) == before
+    assert table_counts() == counts
+
+
+def test_a_settings_update_writes_no_records():
+    session_id = new_session()
+    me = in_session(RESPONDER, session_id)
+    incident = create_incident({"title": "Phishing", "discovery_date": "2026-10-01"}, **me)
+    before, counts = control.snapshot(session_id), table_counts()
+
+    control.update_settings(session_id, VALID_UPDATE)
+
+    after = control.snapshot(session_id)
+    assert table_counts() == counts
+    assert after["audit"] == before["audit"]
+    assert [i["incident_id"] for i in after["incidents"]] == [incident["incident_id"]]
+    assert after["incidents"][0]["version"] == 1
+
+
+@pytest.mark.parametrize("body", [
+    {"registrant_type": "FPI"},
+    {"registrant_type": "Domestic"},
+    {"test_now": "2026-10-09T00:00:00Z", "registrant_type": "FPI"},
+    {"registrant_type": "FPI", "at_risk_threshold_days": 3},
+])
+def test_registrant_type_cannot_be_changed(body):
+    session_id = new_session()
+    before, counts = run_of(session_id), table_counts()
+    error = rejected(session_id, body)
+    assert (error.code, error.field) == (ErrorCode.VALIDATION_ERROR, "registrant_type")
+    assert "can't be changed" in error.message
+    assert run_of(session_id) == before
+    assert table_counts() == counts
+
+
+@pytest.mark.parametrize("body,key", [
+    ({"clock": "2026-10-09T00:00:00Z"}, "clock"),
+    ({"session_id": "pytest-other"}, "session_id"),
+    ({**VALID_UPDATE, "setup": {}}, "setup"),
+])
+def test_an_unknown_setting_changes_nothing(body, key):
+    session_id = new_session()
+    before = run_of(session_id)
+    error = rejected(session_id, body)
+    assert (error.code, error.field) == (ErrorCode.VALIDATION_ERROR, key)
+    assert repr(key) in error.message
+    assert run_of(session_id) == before
+
+
+@pytest.mark.parametrize("key,value", [(k, v) for k, v in INVALID_SETTINGS
+                                       if k != "registrant_type"])
+def test_an_invalid_setting_changes_nothing(key, value):
+    session_id = new_session()
+    before, counts = run_of(session_id), table_counts()
+    error = rejected(session_id, {**VALID_UPDATE, key: value})
+    assert (error.code, error.field) == (ErrorCode.VALIDATION_ERROR, key)
+    assert run_of(session_id) == before
+    assert table_counts() == counts
+
+
+@pytest.mark.parametrize("body", [None, [], [VALID_UPDATE], "test_now", 5])
+def test_a_settings_body_that_isnt_an_object_changes_nothing(body):
+    session_id = new_session()
+    before = run_of(session_id)
+    error = rejected(session_id, body)
+    assert (error.code, error.field) == (ErrorCode.VALIDATION_ERROR, None)
+    assert run_of(session_id) == before
+
+
+@pytest.mark.parametrize("session_id,body,field", [
+    ("", {}, "session_id"),
+    ("   ", VALID_UPDATE, "session_id"),
+    (None, {}, "session_id"),
+    # The body is checked before the session is looked up.
+    ("pytest-missing", {"registrant_type": "FPI"}, "registrant_type"),
+    ("pytest-missing", None, None),
+])
+@pytest.mark.usefixtures("no_database")
+def test_a_settings_update_checks_the_request_before_the_database(session_id, body, field):
+    error = rejected(session_id, body)
+    assert (error.code, error.field) == (ErrorCode.VALIDATION_ERROR, field)
+
+
+@pytest.mark.parametrize("session_id", ["pytest-missing", "nul\x00id"])
+@pytest.mark.parametrize("body", [{}, VALID_UPDATE])
+def test_a_settings_update_of_an_unknown_session_is_not_found(session_id, body):
+    counts = table_counts()
+    assert rejected(session_id, body).code == ErrorCode.NOT_FOUND
+    assert table_counts() == counts
+
+
+def test_date_rules_follow_the_new_clock():
+    session_id = new_session()
+    me = in_session(RESPONDER, session_id)
+    body = {"title": "Found later", "discovery_date": "2026-10-08"}
+    with pytest.raises(TracerError) as error:
+        create_incident(body, **me)
+    assert error.value.field == "discovery_date"
+
+    control.update_settings(session_id, {"test_now": "2026-10-08T15:00:00Z"})
+
+    assert create_incident(body, **me)["discovery_date"] == "2026-10-08"
+    with pytest.raises(TracerError) as error:
+        create_incident({"title": "Too late", "discovery_date": "2026-10-09"}, **me)
+    assert error.value.field == "discovery_date"
 
 
 # --- Database roles ----------------------------------------------------------
