@@ -59,6 +59,18 @@ class TimesOut:
         return self.http.request(method, url, **kwargs)
 
 
+class ResetTimesOut:
+    """An HTTP client whose calls setting test_now back to the setup default never answer."""
+
+    def __init__(self, http: TestClient):
+        self.http = http
+
+    def request(self, method: str, url: str, **kwargs):
+        if method == "PATCH" and (kwargs.get("json") or {}).get("test_now") == SETUP_TEST_NOW:
+            raise httpx2.ReadTimeout("timed out")
+        return self.http.request(method, url, **kwargs)
+
+
 def run_against(fake: FakeSystem, criterion: str | None = None, wrap=None) -> dict[str, dict]:
     """Run the planned cases (or one criterion's) against `fake` served under /system."""
     server = FastAPI()
@@ -148,6 +160,15 @@ def test_a_failed_clock_case_still_sets_the_clock_back(bug, test_id):
     assert {s.run["test_now"] for s in fake.sessions.values()} == {SETUP_TEST_NOW}
 
 
+def test_a_failed_reset_is_added_to_a_failed_cases_message():
+    # The case fails inside clock_at, and setting the clock back gets no answer either.
+    results = run_against(FakeSystem({"flags_not_built"}), "AC-12", wrap=ResetTimesOut)
+    result = results["AC-12-filing-clears-flags"]
+    assert result["outcome"] == "fail", result
+    assert "nothing to clear" in result["message"], result
+    assert f"also couldn't set test_now back to {SETUP_TEST_NOW}" in result["message"], result
+
+
 def test_the_fake_systems_settings_route_follows_the_spec():
     http = TestClient(FakeSystem().app)
     assert http.post("/test/setup", json={"session_id": "s", "setup": {}}).status_code == 201
@@ -204,6 +225,8 @@ def test_the_testers_calendar_counts_4_business_days(start, due):
         ("stale_flags", "AC-12-overdue-after-due-date"),
         ("settings_not_built", "AC-12-overdue-after-due-date"),
         ("filing_keeps_flags", "AC-12-filing-clears-flags"),
+        ("flags_not_built", "AC-12-filing-clears-flags"),
+        ("flags_not_built", "AC-12-warning-1-business-day-left"),
         ("fpi_gets_8k", "AC-13-material-requires-6-K"),
         ("fpi_flags", "AC-13-no-warning-or-overdue"),
         ("home_date_optional", "AC-13-6-K-missing-home_disclosure_date"),
@@ -221,6 +244,14 @@ def test_the_testers_calendar_counts_4_business_days(start, due):
 def test_cases_fail_a_faulty_system(bug, test_id):
     results = run_against(FakeSystem({bug}), test_id[:5])
     assert results[test_id]["outcome"] == "fail", results[test_id]
+
+
+def test_refused_moves_pass_whichever_amendmentpending_check_comes_first():
+    # Without a filing, a system may reject the elements before the state; both are rejections.
+    results = run_against(FakeSystem(elements_first=True), "AC-06")
+    assert {r["outcome"] for r in results.values()} == {"pass"}, [
+        r for r in results.values() if r["outcome"] != "pass"]
+    assert "400 VALIDATION_ERROR on elements" in results["AC-06-UA-to-AmendmentPending"]["message"]
 
 
 @pytest.mark.parametrize(

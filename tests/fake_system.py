@@ -75,6 +75,7 @@ BUGS = {
     "amendment_keeps_form",     # DisclosureRecorded → AmendmentPending keeps the old required_form
     "recorded_reopens",         # /transitions allows DisclosureRecorded → DeterminedMaterial
     "amendment_closes",         # /transitions allows AmendmentPending → Closed
+    "flags_not_built",          # flags are always empty
 }
 
 
@@ -194,10 +195,13 @@ async def control_body(request: Request) -> dict[str, Any] | None:
 
 
 class FakeSystem:
-    def __init__(self, bugs: set[str] = frozenset()):
+    def __init__(self, bugs: set[str] = frozenset(), elements_first: bool = False):
+        """`elements_first` checks AmendmentPending's elements against the latest filing before
+        the state, a 400 on `elements[i]` where there's no filing; the spec allows either order."""
         unknown = set(bugs) - BUGS
         assert not unknown, f"unknown bugs: {unknown}"
         self.bugs = set(bugs)
+        self.elements_first = elements_first
         self.sessions: dict[str, Session] = {}
         self.app = self._build()
 
@@ -236,7 +240,7 @@ class FakeSystem:
         return day.isoformat()
 
     def _due_flags(self, session: Session, incident: dict[str, Any]) -> list[str]:
-        if incident["incident_id"] in session.filed:
+        if incident["incident_id"] in session.filed or "flags_not_built" in self.bugs:
             return []
         due = incident["due_date"]
         if due is None and "fpi_flags" in self.bugs and incident["required_form"] == "6-K":
@@ -249,6 +253,16 @@ class FakeSystem:
         left = sum(self._business_day(today + timedelta(days=k))
                    for k in range(1, (due_day - today).days + 1))
         return ["warning"] if left <= (2 if "early_warning" in self.bugs else 1) else []
+
+    @staticmethod
+    def _check_elements(incident: dict[str, Any], elements: list[str]) -> None:
+        """Each element must be among the latest filing's unavailable_elements."""
+        filings = incident["filings"]
+        unavailable = filings[-1]["unavailable_elements"] if filings else []
+        for index, element in enumerate(elements):
+            if element not in unavailable:
+                raise invalid(f"elements[{index}]",
+                              "Not among the latest filing's unavailable_elements")
 
     def _changed(self, session: Session, incident: dict[str, Any]) -> None:
         # What stale_flags serves: the flags as of the incident's last change.
@@ -477,13 +491,12 @@ class FakeSystem:
                 moves.add(("AmendmentPending", "Closed"))
             if "no_amendments" in self.bugs:
                 moves.discard(("DisclosureRecorded", "AmendmentPending"))
+            if to == "AmendmentPending" and self.elements_first:
+                self._check_elements(incident, elements)
             if (incident["state"], to) not in moves:
                 raise Reject(409, "INVALID_TRANSITION", f"{incident['state']} → {to} not allowed")
             if to == "AmendmentPending":
-                filings = incident["filings"]
-                unavailable = filings[-1]["unavailable_elements"] if filings else []
-                if not set(elements) <= set(unavailable):
-                    raise invalid("elements", "Not among the latest filing's unavailable_elements")
+                self._check_elements(incident, elements)
             before = {"state": incident["state"], "version": incident["version"]}
             incident.update(state=to, version=incident["version"] + 1)
             if to == "AmendmentPending":

@@ -8,7 +8,7 @@ fields come from system-openapi.yaml, and expected due dates from the tester's o
 
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import cache
@@ -53,6 +53,8 @@ FORM_8K, FORM_8KA, FORM_6K = "8-K Item 1.05", "8-K/A", "6-K"
 # The form a filing move files in a Domestic session: the incident's required_form (3.2.2).
 FILING_FORMS = {DM: FORM_8K, DELAYED: FORM_8K, AMENDMENT: FORM_8KA}
 DUE_FLAGS = ("warning", "overdue")
+# The states incident_in reaches through a filing.
+FILED = {RECORDED, AMENDMENT}
 
 INCIDENTS = "/incidents"
 INCIDENT = "/incidents/{incident_id}"
@@ -221,14 +223,19 @@ def clock_at(run: Run, day: date) -> Iterator[None]:
     """Run the block with the session's test_now at 15:00 UTC on `day`.
 
     The clock goes back to the setup default however the block ends, since later cases assume
-    TODAY. A reset that fails fails the case, unless the block already failed it.
+    TODAY. A reset that fails fails the case; when the block already failed it, the reset's
+    failure is added to that message.
     """
     try:
         run.set_clock(f"{day.isoformat()}T15:00:00Z")
         yield
-    except Exception:
-        with suppress(Exception):
+    except Exception as exc:
+        try:
             run.set_clock(SETUP_TEST_NOW)
+        except Exception as reset:
+            if isinstance(exc, Fail):
+                raise Fail(f"{exc}; also couldn't set test_now back to {SETUP_TEST_NOW}: "
+                           f"{reset}") from exc
         raise
     try:
         run.set_clock(SETUP_TEST_NOW)
@@ -837,13 +844,16 @@ def ac12() -> list[Case]:
     def filing_clears(run: Run) -> str:
         inc = subject(run)[0]
         with clock_at(run, AC12_DUE + timedelta(days=1)):
+            # Otherwise a system without flags would pass: there'd be nothing to clear.
+            if problems := flag_problems("GET before the filing", get(run, inc.id), {"overdue"}):
+                raise Fail(f"{problems[0]}, so the filing has nothing to clear")
             incident = file(run, inc, FORM_8K, day=AC12_DUE)
             stored = get(run, inc.id)
         problems = (flag_problems("The filing's response", incident, set())
                     + flag_problems("GET after it", stored, set()))
         return problems_or(problems, "Overdue incident's filing",
-                           f"201; after an 8-K Item 1.05 filing dated {AC12_DUE}, neither "
-                           f"warning nor overdue on {AC12_DUE + timedelta(days=1)}")
+                           f"Overdue on {AC12_DUE + timedelta(days=1)}; after an 8-K Item 1.05 "
+                           f"filing dated {AC12_DUE}, 201 and neither warning nor overdue")
 
     return [
         ("AC-12-due-date-4-business-days", due_date),
@@ -1005,11 +1015,18 @@ def ac06() -> list[Case]:
             if moved:
                 # Later cases from this source need a new incident still in it.
                 run.forget(f"ac06-{source}")
-            expect(reply, 409, "INVALID_TRANSITION")
+            if to == AMENDMENT and source not in FILED and reply.status == 400:
+                # With no filing, elements can't be a subset of the latest filing's
+                # unavailable_elements, so a 400 on elements also rejects the move.
+                expect(reply, 400, "VALIDATION_ERROR", "elements")
+                answer = "400 VALIDATION_ERROR on elements"
+            else:
+                expect(reply, 409, "INVALID_TRANSITION")
+                answer = "409 INVALID_TRANSITION"
             if moved:
-                raise Fail(f"409 returned, but the incident is now {after['state']} at version "
-                           f"{after['version']}")
-            return f"409 INVALID_TRANSITION; still {source} at version {inc.version}"
+                raise Fail(f"{answer} returned, but the incident is now {after['state']} at "
+                           f"version {after['version']}")
+            return f"{answer}; still {source} at version {inc.version}"
         return case
 
     def allowed(source: str, to: str):
