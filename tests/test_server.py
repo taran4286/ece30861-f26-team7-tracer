@@ -459,6 +459,83 @@ def test_unknown_incident_comes_before_the_body(session_id, method, template):
     project_error(response, 404, "NOT_FOUND")
 
 
+@pytest.mark.parametrize("registrant", ["Domestic", "FPI"])
+def test_filing_route_returns_saved_incident_and_snapshot(registrant):
+    """Exercise determination to filing over HTTP, then verify reads and the audit schema."""
+    session_id = new_session(registrant_type=registrant)
+    actor = headers(session_id, "DisclosureApprover")
+    created = client.post("/system/incidents", headers=actor,
+                          json={"title": "Filing", "discovery_date": "2026-10-01"})
+    assert created.status_code == 201
+    incident_id = created.json()["incident_id"]
+    imported = client.post(url("/incidents/{incident_id}/evidence/import", incident_id),
+                           headers=actor, json={"source": "ticketing", "items": [{
+                               "ticket_id": "T-1", "summary": "Impact",
+                               "created_at": "2026-10-01T12:00:00Z"}]})
+    assert imported.status_code == 201
+    determined = client.post(url("/incidents/{incident_id}/determination", incident_id),
+                             headers=actor, json={
+                                 "decision": "Material", "determination_date": "2026-10-01",
+                                 "rationale": "Impact", "version": 1,
+                                 "evidence_refs": [imported.json()["evidence"][0]["evidence_id"]]})
+    assert determined.status_code == 200
+    body = {"form_type": determined.json()["required_form"], "filing_date": "2026-10-05",
+            "accession_number": "0001234567-26-000001", "version": 2,
+            "unavailable_elements": ["impact"]}
+    if registrant == "FPI":
+        body["home_disclosure_date"] = "2026-10-02"
+    response = client.post(url("/incidents/{incident_id}/filings", incident_id),
+                           headers=actor, json=body)
+    assert response.status_code == 201
+    matches_spec("POST", "/incidents/{incident_id}/filings", response)
+    result = response.json()
+    assert result["state"] == "DisclosureRecorded" and result["version"] == 3
+    assert len(result["filings"]) == 1
+    assert client.get(url("/incidents/{incident_id}", incident_id), headers=actor).json() == result
+    report = snapshot(session_id)
+    assert report["incidents"] == [result]
+    assert report["audit"][-1]["action"] == "record_filing"
+    trail = client.get(url("/incidents/{incident_id}/audit", incident_id), headers=actor)
+    assert trail.status_code == 200
+    matches_spec("GET", "/incidents/{incident_id}/audit", trail)
+    before = snapshot(session_id)
+    duplicate = client.post(url("/incidents/{incident_id}/filings", incident_id),
+                            headers=actor, json=body)
+    project_error(duplicate, 409, "INVALID_TRANSITION")
+    assert snapshot(session_id) == before
+    pending = client.post(url("/incidents/{incident_id}/transitions", incident_id),
+                          headers=actor, json={
+                              "to": "AmendmentPending", "version": 3,
+                              "info_available_date": "2026-10-05", "elements": ["impact"]})
+    assert pending.status_code == 200
+    matches_spec("POST", "/incidents/{incident_id}/transitions", pending)
+    assert pending.json()["required_form"] == ("6-K" if registrant == "FPI" else "8-K/A")
+    assert pending.json()["due_date"] == (None if registrant == "FPI" else "2026-10-09")
+    amended = client.post(url("/incidents/{incident_id}/filings", incident_id),
+                          headers=actor, json={
+                              **body, "form_type": pending.json()["required_form"], "version": 4,
+                              "accession_number": "0001234567-26-000002", "unavailable_elements": []})
+    assert amended.status_code == 201
+    matches_spec("POST", "/incidents/{incident_id}/filings", amended)
+    assert amended.json()["state"] == "DisclosureRecorded" and len(amended.json()["filings"]) == 2
+    closed = client.post(url("/incidents/{incident_id}/transitions", incident_id),
+                         headers=actor, json={"to": "Closed", "version": 5})
+    assert closed.status_code == 200 and closed.json()["version"] == 6
+    matches_spec("POST", "/incidents/{incident_id}/transitions", closed)
+    assert snapshot(session_id)["incidents"] == [closed.json()]
+
+
+def test_filing_body_validation_precedes_state_over_http(api_incident):
+    """A malformed body on UnderAssessment is a field error, without any stored change."""
+    incident_id, session_id = api_incident["incident_id"], api_incident["session_id"]
+    before = snapshot(session_id)
+    response = client.post(
+        url("/incidents/{incident_id}/filings", incident_id),
+        headers=headers(session_id, "DisclosureApprover"), content="not json")
+    project_error(response, 400, "VALIDATION_ERROR")
+    assert snapshot(session_id) == before
+
+
 # --- 405 and 501 ----------------------------------------------------------------------------
 
 REFUSED = [
@@ -498,7 +575,6 @@ def test_evidence_routes_look_up_the_evidence(api_incident, method):
 NOT_BUILT = [
     ("PATCH", "/incidents/{incident_id}/evidence/{evidence_id}", {"Responder", "DisclosureApprover"}),
     ("POST", "/groups", {"Responder", "DisclosureApprover"}),
-    ("POST", "/incidents/{incident_id}/filings", {"DisclosureApprover"}),
     ("POST", "/incidents/{incident_id}/drafts", {"DisclosureApprover"}),
     ("POST", "/drafts/{draft_id}/accept", {"DisclosureApprover"}),
 ]

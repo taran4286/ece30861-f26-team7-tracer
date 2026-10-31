@@ -1,16 +1,65 @@
-"""Validate filing requests without reading or changing stored records."""
+"""Validate and record filings submitted on EDGAR outside Tracer."""
 
 import re
 from datetime import date
 from typing import Any
 
-from app.models import FormType
+from app import clock
+from app.audit import audit
+from app.db import transaction
+from app.errors import ErrorCode, TracerError
+from app.models import AuditAction, Determination, Filing, FormType, State
+from app.roles import Operation, Role, require_role
+from app.services.incidents import filing_to_dict, incident_to_dict, load_incident
 from app.services.validation import invalid, parse_date, parse_integer, require_object
+from app.sessions import load_session
 
 
 FILING_FORMS = frozenset({FormType.FORM_8K_ITEM_105, FormType.FORM_6K, FormType.FORM_8KA})
 FILING_ELEMENTS = ("nature", "scope", "timing", "impact")
 _ACCESSION_NUMBER = re.compile(r"[0-9]{10}-[0-9]{2}-[0-9]{6}")
+
+
+def record_filing(
+    incident_id: str, body: Any, *, user_id: str, role: Role | str, session_id: str
+) -> dict[str, Any]:
+    """Save the filing, incident change and audit entry together, or roll back all three.
+
+    Checks follow the common error order: session, role, incident, body, then state.
+    The supplied version is validated, but stale versions are accepted like other operations.
+    """
+    with transaction() as tx:
+        session = load_session(tx, session_id)
+        require_role(role, Operation.RECORD_FILING)
+        # Serialize requests on this incident so only one can record the next filing.
+        incident = load_incident(tx, incident_id, session_id=session_id, for_update=True)
+        determination = tx.get(Determination, incident_id)
+        fields = validate_filing_request(
+            body, today=clock.today(session),
+            determination_date=determination.determination_date if determination else None,
+            required_form=incident.required_form,
+        )
+        if incident.state not in {
+            State.DETERMINED_MATERIAL, State.DISCLOSURE_DELAYED, State.AMENDMENT_PENDING,
+        }:
+            raise TracerError(ErrorCode.INVALID_TRANSITION, "The incident's state does not allow filing")
+
+        before = {"state": incident.state.value, "version": incident.version}
+        # version belongs to the incident, not the stored filing.
+        filing = Filing(
+            incident_id=incident_id,
+            **{key: value for key, value in fields.items() if key != "version"},
+            recorded_by=user_id, recorded_at=clock.utcnow(),
+        )
+        tx.add(filing)
+        incident.state = State.DISCLOSURE_RECORDED
+        incident.version += 1
+        # Keep the determination, required form and deadline as historical context.
+        audit(tx, AuditAction.RECORD_FILING, incident_id, before, {
+            "state": incident.state.value, "version": incident.version,
+            "filing": filing_to_dict(filing),
+        }, user_id=user_id, session_id=session_id)
+        return incident_to_dict(tx, incident)
 
 
 def validate_filing_request(
