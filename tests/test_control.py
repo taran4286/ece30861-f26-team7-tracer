@@ -57,6 +57,15 @@ def test_setup_stores_the_settings_sent():
     assert session.llm_base_url == "http://llm.example/v1"
 
 
+@pytest.mark.parametrize("uri", [
+    "http://[::1]:8080/v1", "https://llm.example/v1?model=a&n=1#top", "https://llm.example/%41pi",
+])
+def test_setup_stores_any_rfc_3986_absolute_uri(uri):
+    session_id = new_id()
+    control.setup_session({"session_id": session_id, "setup": {"llm_base_url": uri}})
+    assert stored(session_id).llm_base_url == uri
+
+
 def test_the_largest_storable_threshold_is_accepted():
     session_id = new_id()
     control.setup_session({"session_id": session_id,
@@ -84,7 +93,9 @@ INVALID_SETTINGS = [
     *(("at_risk_threshold_days", value)
       for value in (0, -1, 1.5, "7", True, None, control.INTEGER_MAX + 1, 10**12, 1e30)),
     *(("llm_base_url", value)
-      for value in ("llm.example", "http://llm example", "", 5, None, "http://llm.example/\x00")),
+      for value in ("llm.example", "http://llm example", "", 5, None, "http://llm.example/\x00",
+                    "https:", "https://example.com/%ZZ", "https://exa<mple.com/v1",
+                    "https://llm.example/v1#a#b")),
 ]
 
 

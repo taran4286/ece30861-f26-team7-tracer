@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
+from rfc3986_validator import validate_rfc3986
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -46,7 +47,8 @@ MUTABLE_SETTINGS = ("test_now", "at_risk_threshold_days", "llm_base_url")
 # one would fail on insert, which would answer 500 instead of 400.
 INTEGER_MAX = 2**31 - 1
 
-# format: uri is an absolute URI: a scheme, a colon, then no whitespace.
+# format: uri is an absolute URI: a scheme, a colon, then no whitespace. _absolute_uri also
+# checks it against RFC 3986.
 _URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:\S+")
 
 CODE_COVERAGE_BASIS = "Source lines; this system doesn't measure code coverage per session"
@@ -87,7 +89,10 @@ def _registrant_type(value: Any, field: str) -> RegistrantType:
 
 
 def _absolute_uri(value: Any, field: str) -> str:
-    if not isinstance(value, str) or not _URI.fullmatch(value) or "\x00" in value:
+    # _URI asks for something after the scheme's colon, which RFC 3986 alone doesn't; the RFC
+    # check rejects what _URI lets through, such as a malformed escape like %ZZ or a NUL.
+    if (not isinstance(value, str) or not _URI.fullmatch(value)
+            or not validate_rfc3986(value, rule="URI")):
         raise invalid(field, "Expected an absolute URI")
     return value
 
