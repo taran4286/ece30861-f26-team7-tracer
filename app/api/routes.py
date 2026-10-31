@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.api.calls import call, read_body
-from app.services import evidence, incidents, workflow
+from app.services import evidence, filings, incidents, workflow
 
 router = APIRouter()
 
@@ -40,3 +40,10 @@ async def transition_incident(request: Request, incident_id: str) -> JSONRespons
 @router.get("/incidents/{incident_id}/audit")
 async def list_audit_entries(request: Request, incident_id: str) -> JSONResponse:
     return await call(request, workflow.list_audit_entries, incident_id)
+
+
+@router.post("/incidents/{incident_id}/filings")
+async def record_filing(request: Request, incident_id: str) -> JSONResponse:
+    """Record an external filing and return the updated incident with status 201."""
+    body = await read_body(request)
+    return await call(request, filings.record_filing, incident_id, body, status=201)

@@ -43,7 +43,7 @@ def not_built(
     role: Role | str,
     session_id: str,
 ) -> NoReturn:
-    """An operation this team doesn't build: tagging, groups, filings and drafts."""
+    """An operation this team doesn't build: tagging, groups and drafts."""
     _check(operation, incident_id, evidence_id, role=role, session_id=session_id)
     raise TracerError(ErrorCode.NOT_IMPLEMENTED, f"{operation.value} is not implemented")
 

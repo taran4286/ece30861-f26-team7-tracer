@@ -12,7 +12,7 @@ The building blocks every service uses, and the system's tables. Business logic 
 | `errors.py` | `ErrorCode`, `HTTP_STATUS` (each code's status) and `TracerError(code, message, field=None)`, whose `status` comes from that map; `to_dict()` returns `error`, `message` and `field`, with `field` as `None` when unset, which the API layer leaves out (see `api/AGENTS.md`). Two codes map to 409: `INVALID_TRANSITION` for a project state error and `CONFLICT`, raised only for a test session ID already in use |
 | `roles.py` | `Role`, `Operation`, the `PERMISSIONS` map and `require_role(role, operation)`, which raises `FORBIDDEN_ROLE`; a role string that isn't a `Role` gets no permissions, so it also gets `FORBIDDEN_ROLE`. `Operation.REPLACE_OR_DELETE` covers the 405 routes: only DisclosureApprover passes it, and then gets 405 |
 | `clock.py` | `today(session)`, the UTC date of the session's `test_now`, for every date rule, and `utcnow()` for stored timestamps |
-| `sessions.py` | `load_session(tx, session_id)`: the `TestSession` a request names in `X-Test-Run`, or `NOT_FOUND` |
+| `sessions.py` | `load_session(tx, session_id, *, for_update=False)`: the `TestSession` a request names in `X-Test-Run` or a test-control path, or `NOT_FOUND`; `for_update=True` locks its row, which the app role's column-level UPDATE grant on `test_sessions` allows |
 | `audit.py` | `audit(tx, action, target_id, before, after, *, user_id, session_id)`, which adds one entry inside the caller's transaction, with a new `entry_id` and `timestamp` from `utcnow()` |
 
 ## Data model
@@ -40,7 +40,7 @@ Six tables hold the system's data; the tester keeps its own in `tester_sessions`
 | discovery_date | date, not null | |
 | state | `state` enum, not null | |
 | required_form | `form_type` enum, nullable | |
-| due_date | date, nullable | four business days after a Domestic Material determination; null for FPI or NotMaterial |
+| due_date | date, nullable | four business days after a Domestic Material determination or amendment availability date; null for FPI or NotMaterial |
 | group_id | text, nullable | always null |
 | version | integer, not null | |
 
@@ -59,7 +59,7 @@ Six tables hold the system's data; the tester keeps its own in `tester_sessions`
 
 **filings** (`Filing`)
 
-No service reads or writes this table; `scripts/setup_db.py` creates it and its grants.
+`services/filings.py` appends filings; the shared incident formatter reads them oldest first. `scripts/setup_db.py` creates the table and its grants.
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -108,7 +108,7 @@ No service reads or writes this table; `scripts/setup_db.py` creates it and its 
 - `FormType`: `8-K Item 1.05`, `8-K Item 8.01`, `6-K`, `8-K/A`.
 - `Decision`: Material, NotMaterial.
 - `EvidenceSource`: ticketing, siem.
-- `AuditAction`: create_incident, import_evidence, record_determination, transition, record_filing. No service writes `record_filing`.
+- `AuditAction`: create_incident, import_evidence, record_determination, transition, record_filing.
 - `RegistrantType`: Domestic, FPI.
 - Not stored as a type: `ImpactCategory` (operational, financial, legal_regulatory, reputational, data_compromised) and `SiemSeverity` (low, medium, high, critical, checked on import).
 
