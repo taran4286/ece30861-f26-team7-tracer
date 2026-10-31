@@ -7,6 +7,7 @@ the run's deadline, every later case is skipped.
 """
 
 from collections.abc import Callable, Iterable
+from datetime import datetime
 from typing import Any
 
 from tester.client import Actor, Reply, Stopped, Target, TargetError
@@ -21,17 +22,40 @@ class Skip(Exception):
 
 
 class Run:
-    """One session's state, shared by the cases in order."""
+    """One session's state, shared by the cases in order.
 
-    def __init__(self, target: Target):
+    It acts in the target's session unless `session_id` names another one the run prepared
+    with `prepare`; every session shares the target's deadline and `called`.
+    """
+
+    def __init__(self, target: Target, session_id: str | None = None):
         self.target = target
+        self.session_id = target.session_id if session_id is None else session_id
         self._setups: dict[str, tuple[bool, Any]] = {}
         self._baseline: dict[str, Any] | None = None
 
     def call(self, method: str, template: str, actor: Actor | None, **kwargs: Any) -> Reply:
         # Any call may change stored data, so it ends the saved baseline.
         self._baseline = None
-        return self.target.call(method, template, actor, **kwargs)
+        return self.target.call(method, template, actor, session=self.session_id, **kwargs)
+
+    def set_clock(self, test_now: str) -> None:
+        """Set this session's test_now (TEST-07); fail unless the target confirms it."""
+        self._baseline = None
+        reply = self.target.settings(self.session_id, {"test_now": test_now})
+        run = expect(reply, 200)
+        confirmed = datetime.fromisoformat(run["test_now"].upper())
+        if run["run_id"] != self.session_id or confirmed != datetime.fromisoformat(test_now):
+            raise Fail(f"{reply.label} sent test_now {test_now} for {self.session_id}, but the "
+                       f"target returned run_id {run['run_id']}, test_now {run['test_now']}")
+
+    def prepare(self, session_id: str, setup: dict[str, Any]) -> "Run":
+        """Prepare another session on the target (TEST-01) and return a Run acting in it."""
+        body = expect(self.target.setup(session_id, setup), 201)
+        if body["session_id"] != session_id:
+            raise Fail(f"POST /test/setup returned session_id {body['session_id']}, not "
+                       f"{session_id}")
+        return Run(self.target, session_id)
 
     def once(self, key: str, build: Callable[[], Any]) -> Any:
         """Build a shared setup on first use; a failed build fails every case that needs it."""
@@ -54,7 +78,7 @@ class Run:
         self._setups.pop(key, None)
 
     def snapshot(self) -> dict[str, Any]:
-        return expect(self.target.snapshot(), 200)
+        return expect(self.target.snapshot(self.session_id), 200)
 
     def baseline(self) -> dict[str, Any]:
         """A snapshot that matches stored data now; reused until the next call."""

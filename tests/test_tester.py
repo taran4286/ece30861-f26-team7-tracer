@@ -484,7 +484,7 @@ def test_a_run_reports_code_component_and_system_coverage(finished):
         "covered": None, "total": None, "basis": "The fake system doesn't measure code coverage"
     }
     assert (coverage["component"]["covered"], coverage["component"]["total"]) == (7, 7)
-    assert (coverage["system"]["covered"], coverage["system"]["total"]) == (9, 9)
+    assert (coverage["system"]["covered"], coverage["system"]["total"]) == (13, 13)
 
 
 def test_a_session_runs_only_once(finished):
