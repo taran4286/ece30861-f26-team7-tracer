@@ -1,4 +1,4 @@
-"""Phase 3 determinations, state transitions and audit retrieval."""
+"""Determinations, disclosure deadlines, state transitions and audit retrieval."""
 
 from datetime import date
 from typing import Any
@@ -20,6 +20,7 @@ from app.models import (
     State,
 )
 from app.roles import Operation, Role, require_role
+from app.services.deadlines import disclosure_due_date
 from app.services.incidents import incident_to_dict, load_incident
 from app.services.validation import (
     invalid,
@@ -191,6 +192,16 @@ def record_determination(
         if incident.state != State.UNDER_ASSESSMENT:
             raise TracerError(ErrorCode.INVALID_TRANSITION, "Determination requires UnderAssessment")
 
+        required_form = None
+        if decision == Decision.MATERIAL:
+            required_form = (
+                FormType.FORM_6K if session.registrant_type == RegistrantType.FPI
+                else FormType.FORM_8K_ITEM_105
+            )
+        try:
+            due_date = disclosure_due_date(required_form, determination_date)
+        except OverflowError:
+            raise invalid("determination_date", "Deadline is outside the supported holiday calendar range") from None
         before = {"state": incident.state.value, "determination": None, "version": incident.version}
         determination = Determination(
             incident_id=incident_id, decision=decision, determination_date=determination_date,
@@ -199,19 +210,17 @@ def record_determination(
         )
         if decision == Decision.MATERIAL:
             incident.state = State.DETERMINED_MATERIAL
-            incident.required_form = (
-                FormType.FORM_6K if session.registrant_type == RegistrantType.FPI
-                else FormType.FORM_8K_ITEM_105
-            )
         else:
             incident.state = State.DETERMINED_NOT_MATERIAL
-            incident.required_form = None
+        incident.required_form = required_form
+        incident.due_date = due_date
         incident.version += 1
         tx.add(determination)
         audit(tx, AuditAction.RECORD_DETERMINATION, incident_id, before, {
             "state": incident.state.value,
             "determination": {"decision": decision.value, "determination_date": determination_date.isoformat()},
             "required_form": incident.required_form.value if incident.required_form else None,
+            "due_date": due_date.isoformat() if due_date else None,
             "version": incident.version,
         }, user_id=user_id, session_id=session_id)
         return incident_to_dict(tx, incident)

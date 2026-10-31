@@ -10,6 +10,7 @@ One module per area, callable without any web framework. Each project operation 
 | `control.py` | `setup_session(body)`, `coverage_report(session_id)`, `snapshot(run_id)`, `run_to_dict`, `DEFAULTS`, `INTEGER_MAX` and `CODE_COVERAGE_BASIS` | `tests/test_control.py` |
 | `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, evidence_id=None, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
+| `deadlines.py` | `federal_holidays`, `is_business_day`, `add_business_days`, and `disclosure_due_date` | `tests/test_deadlines.py` |
 
 Add a row for each new module.
 
@@ -62,7 +63,7 @@ def record_determination(
 - `incidents.load_incident(tx, incident_id, *, session_id, for_update=False)` loads the path incident or raises `NOT_FOUND`, treating another session's incident as unknown. `for_update=True` locks the row; the determination and transition operations use it, so two concurrent requests can't both pass the state check or bump `version` from the same value.
 - `evidence.load_evidence(tx, incident_id, evidence_id)` loads evidence named in the path, after its incident, or raises `NOT_FOUND`; evidence of another incident counts as unknown.
 - `incidents.incident_to_dict(tx, incident)` builds the full Incident (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values), and every operation that returns an Incident uses it. `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations and evidence. `evidence_to_dict` and `determination_to_dict` build the parts; `raw_item` is never returned.
-- An Incident always has `due_date: null`, `flags: []` and `filings: []`. Its `evidence` is ordered by `imported_at`, then `evidence_id`; items from one import share an `imported_at` and their IDs are random, so they don't come back in the order they were sent.
+- An Incident returns its stored `due_date` as YYYY-MM-DD or null, with `flags: []` and `filings: []`. Its `evidence` is ordered by `imported_at`, then `evidence_id`; items from one import share an `imported_at` and their IDs are random, so they don't come back in the order they were sent.
 - `workflow.audit_entry_to_dict(entry)` builds an audit entry (without `seq` or `session_id`) for the audit list and the snapshot.
 
 ## Test control (`control.py`; TEST-01, TEST-02, TEST-06)
@@ -98,7 +99,15 @@ These take no identity headers or role and write no audit entries. They raise `T
 - It checks, in order: `decision` (Material or NotMaterial); `determination_date` (a date, then on or after `discovery_date` and not after today, both ends included); `rationale` (`require_string`); `evidence_refs` (a non-empty array of unique, non-blank strings without NUL, then every ID must belong to this incident, both on `evidence_refs`); `version`; then `voluntary_disclosure` if sent: a non-boolean is a 400, and `true` or `false` is a 501 `NOT_IMPLEMENTED`.
 - After those, a state other than UnderAssessment is 409 `INVALID_TRANSITION`, so a second determination is a 409.
 - Material sets `DeterminedMaterial` and `required_form` from the session: `8-K Item 1.05` for Domestic, `6-K` for FPI. NotMaterial sets `DeterminedNotMaterial` and `required_form: null`.
-- It stores the determination with `voluntary_disclosure: false`, `recorded_by` = the user and `recorded_at` = server time, adds 1 to `version`, writes a `record_determination` audit entry (`before: {state, determination: null, version}`, `after: {state, determination: {decision, determination_date}, required_form, version}`) and returns the full Incident.
+- Domestic Material sets `due_date` to four business days after `determination_date`; FPI and NotMaterial set it to null. A deadline beyond the supported date range is a 400 on `determination_date` without writes. Delay/resume transitions preserve the deadline.
+- It stores the determination with `voluntary_disclosure: false`, `recorded_by` = the user and `recorded_at` = server time, adds 1 to `version`, writes a `record_determination` audit entry (`before: {state, determination: null, version}`, `after: {state, determination: {decision, determination_date}, required_form, due_date, version}`) and returns the full Incident.
+
+## Deadline calendar (`deadlines.py`)
+
+- Business days are Monday through Friday excluding U.S. federal holidays from the `holidays` library's `UnitedStates` calendar with `observed=True` and no state subdivision. Each cached year includes the following year's holidays before filtering, so New Year's Day observed in December is retained. Holiday dates and historical rules come from the library.
+- `add_business_days(start, days=4)` excludes the start date, including a weekend or holiday start. Zero days returns the start unchanged. Calendar calculations do not depend on real time or session settings.
+- Calendar years must be within the library's `start_year` and `end_year` (currently 1777–2100). Unsupported starts, direct calendar queries and deadlines crossing the range raise `OverflowError`, mapped to a 400 on `determination_date` by the workflow. The final supported year's calendar retains next New Year's observed holiday without requesting an unsupported year.
+- `disclosure_due_date(required_form, start)` returns four business days after start for `8-K Item 1.05` and `8-K/A`, and null for other forms. For amendments the caller supplies the information-available date; the transition operation still rejects AmendmentPending.
 
 ## State transitions (`workflow.py`; REQ-06)
 

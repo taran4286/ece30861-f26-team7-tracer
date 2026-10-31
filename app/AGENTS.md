@@ -40,7 +40,7 @@ Five tables hold the system's data; the tester keeps its own in `tester_sessions
 | discovery_date | date, not null | |
 | state | `state` enum, not null | |
 | required_form | `form_type` enum, nullable | |
-| due_date | date, nullable | always null |
+| due_date | date, nullable | four business days after a Domestic Material determination; null for FPI or NotMaterial |
 | group_id | text, nullable | always null |
 | version | integer, not null | |
 
