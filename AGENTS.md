@@ -85,7 +85,7 @@ Run these in order when someone asks to set up the project or the local database
 5. Run `python scripts/setup_db.py`. It prints the app and tester roles' privileges; judge the result by the exit code. 0 is success, and the last line starts with `setup_db: done;`. 1 is failure: a message starting `setup_db:` says what went wrong and whether anything was changed, except for a missing variable, a malformed URL or a bare `postgresql://` scheme, which end in a Python traceback instead (see `scripts/AGENTS.md`).
 
 - Re-run `scripts/setup_db.py` after adding a table or changing the grants; it is safe to re-run.
-- A re-run only creates missing tables and types; it doesn't alter existing ones. After changing a column or an enum's values in `app/models.py` or `tester/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Deployment).
+- A re-run creates missing tables and types and adds new enum values; it doesn't change existing columns or remove enum values. After changing a column, or removing or renaming an enum value, in `app/models.py` or `tester/models.py`, wipe the local database with `docker compose down -v` and redo steps 4 and 5. A deployed database needs a migration instead (see Deployment).
 - `docker compose stop` keeps the data; `docker compose down -v` wipes it, after which steps 4 and 5 rebuild it.
 - The image reads `POSTGRES_PASSWORD` only when it initializes an empty volume, so changing it later has no effect: wipe with `docker compose down -v` and redo steps 4 and 5.
 
@@ -99,7 +99,7 @@ Three roles keep the grants enforceable: a table's owner can always grant itself
 | App (`tracer_app`) | `DATABASE_URL` | No | The service, tests and `scripts/backfill_deadlines.py` |
 | Tester (`tracer_tester`) | `TESTER_DATABASE_URL` | No | The tester's session storage and tests |
 
-- `scripts/setup_db.py` creates both login roles, all six tables and the grants, and fails unless each role ends up with exactly its expected privileges; `scripts/AGENTS.md` lists the grants and checks. Neither login role can DELETE or TRUNCATE anything, and the app role has only INSERT and SELECT on `audit_entries` (REQ-22, AC-23).
+- `scripts/setup_db.py` creates both login roles, all seven tables and the grants, and fails unless each role ends up with exactly its expected privileges; `scripts/AGENTS.md` lists the grants and checks. Neither login role can DELETE or TRUNCATE anything, and the app role has only INSERT and SELECT on `audit_entries` (REQ-22, AC-23).
 - Neither the service nor the tester creates tables at startup; their roles can't.
 - The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
 
@@ -116,7 +116,7 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 - Use the direct connection string (the host without `-pooler`). Neon's Connect dialog shows the pooled one by default, so turn off "Connection pooling" there. Change its scheme from `postgresql://` to `postgresql+psycopg://` and keep its query parameters, including `sslmode=require` and `channel_binding=require` when present; with the bare scheme, SQLAlchemy looks for psycopg2, which isn't installed. Our traffic is far below the direct connection limit, and Neon recommends direct connections for schema changes such as `setup_db.py`'s.
 - Neon rejects passwords with less than 60 bits of entropy; one from `secrets.token_urlsafe(24)` passes.
 - The free plan pauses the database after 5 idle minutes and drops its connections. The first request after a pause waits a few hundred milliseconds for it to wake, and `app/db.py` replaces the dropped connections.
-- A schema change here needs a migration, not a wipe; try it on a Neon branch first.
+- A new table, grant or enum value needs only a `setup_db.py` re-run (below). Any other schema change needs a migration, not a wipe. Try either on a Neon branch first.
 
 **Running `setup_db.py` against Neon**
 
