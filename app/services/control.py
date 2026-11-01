@@ -89,6 +89,7 @@ def _registrant_type(value: Any, field: str) -> RegistrantType:
 
 
 def _absolute_uri(value: Any, field: str) -> str:
+    """Return an RFC 3986 absolute URI with content after the colon, or raise a field error."""
     # _URI asks for something after the scheme's colon, which RFC 3986 alone doesn't; the RFC
     # check rejects what _URI lets through, such as a malformed escape like %ZZ or a NUL.
     if (not isinstance(value, str) or not _URI.fullmatch(value)
