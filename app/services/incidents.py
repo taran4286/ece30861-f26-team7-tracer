@@ -10,8 +10,18 @@ from app.audit import audit
 from app.clock import today
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
-from app.models import AuditAction, Determination, Evidence, Filing, Incident, State, new_id
+from app.models import (
+    AuditAction,
+    Determination,
+    Evidence,
+    Filing,
+    Incident,
+    State,
+    TestSession,
+    new_id,
+)
 from app.roles import Operation, Role, require_role
+from app.services.flags import incident_flags
 from app.services.validation import invalid, parse_date, require_object, require_string
 from app.sessions import load_session
 
@@ -105,14 +115,16 @@ def incidents_to_dicts(tx: Session, incidents: Sequence[Incident]) -> list[dict[
         filings[filing.incident_id].append(filing)
     return [
         _incident_dict(incident, determinations.get(incident.incident_id),
-                       evidence[incident.incident_id], filings[incident.incident_id])
+                       evidence[incident.incident_id], filings[incident.incident_id],
+                       # Already loaded by the operation's load_session, so this runs no query.
+                       tx.get(TestSession, incident.session_id))
         for incident in incidents
     ]
 
 
 def _incident_dict(
     incident: Incident, determination: Determination | None, evidence: list[Evidence],
-    filings: list[Filing],
+    filings: list[Filing], session: TestSession,
 ) -> dict[str, Any]:
     """Build the public incident response, including its stored deadline when present."""
     return {
@@ -123,7 +135,7 @@ def _incident_dict(
         "determination": determination_to_dict(determination) if determination else None,
         "required_form": incident.required_form.value if incident.required_form else None,
         "due_date": incident.due_date.isoformat() if incident.due_date else None,
-        "flags": [],
+        "flags": incident_flags(incident, filings, session),
         "filings": [filing_to_dict(filing) for filing in filings],
         "evidence": [evidence_to_dict(item) for item in evidence],
         "group_id": incident.group_id,

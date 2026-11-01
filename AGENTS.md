@@ -10,7 +10,7 @@ The `AGENTS.md` files describe the code as it is, so an agent can rely on them i
 | Guide | Covers |
 | --- | --- |
 | `app/AGENTS.md` | Foundation modules (config, db, models, errors, roles, clock, sessions, audit) and the data model: the system's tables and enums |
-| `app/api/AGENTS.md` | The system's FastAPI app: identity headers, the status page, health check, test-control routes, project routes, the 405 and 501 routes, and the 501 catch-all |
+| `app/api/AGENTS.md` | The system's FastAPI app: identity headers, the status page, dashboard, health check, test-control routes, project routes, the 405 and 501 routes, and the 501 catch-all |
 | `app/services/AGENTS.md` | Business logic: the steps and error order every operation follows, sessions, roles, dates and versions, and what each operation does, test control and the 405 and 501 operations included |
 | `tester/AGENTS.md` | Our tester's FastAPI app, its session storage and cross-team test cases, and the rule that it never imports `app` |
 | `fixtures/AGENTS.md` | The incident, ticketing and SIEM fixtures our tester sends |
