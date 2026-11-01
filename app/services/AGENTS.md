@@ -87,7 +87,7 @@ def record_determination(
 
 These take no identity headers or role and write no audit entries or project records. They raise `TracerError` like the rest, and the API layer turns it into `{message, source: "system"}` (see `api/AGENTS.md`).
 
-- Each setting's value is checked by one function in `_CHECKS`, which setup and the settings update share, so both accept the same values: `test_now` (date-time), `registrant_type` (Domestic or FPI), `at_risk_threshold_days` (integer from 1 to `INTEGER_MAX`, 2,147,483,647) and `llm_base_url` (an absolute URI: a scheme, a colon, then no whitespace, and no NUL).
+- Each setting's value is checked by one function in `_CHECKS`, which setup and the settings update share, so both accept the same values: `test_now` (date-time), `registrant_type` (Domestic or FPI), `at_risk_threshold_days` (integer from 1 to `INTEGER_MAX`, 2,147,483,647) and `llm_base_url` (an absolute URI: a scheme, a colon, then something without whitespace, and valid under RFC 3986 by `rfc3986-validator`, so a malformed escape such as `%ZZ`, a character RFC 3986 doesn't allow, or a second `#` is a 400).
 - `setup_session(body)` (`POST /test/setup`) checks the whole body before opening a transaction, so its 400s need no database:
   - `session_id` must be a non-blank string, and `setup` an object.
   - `setup` may hold only the four settings; any other key or a bad value is a 400 on `setup.<key>`. Unknown keys are checked first, then values in the order above.

@@ -18,6 +18,8 @@ dependencies = [
     # The tester checks target responses against system-openapi.yaml.
     "jsonschema>=4.18",
     "pyyaml>=6.0",
+    # Checks llm_base_url against RFC 3986, as format: uri asks.
+    "rfc3986-validator>=0.1.1",
 ]
 
 [project.optional-dependencies]

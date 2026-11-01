@@ -43,6 +43,7 @@ The business logic is independent of the web framework; the FastAPI layer (route
 - httpx2 for the tester's calls to target systems, and jsonschema with PyYAML to check their responses against `system-openapi.yaml`.
 - Vercel runs the deployed service and Neon hosts its Postgres (see Deployment).
 - Dependencies are declared in `pyproject.toml`.
+- `rfc3986-validator` checks a session's `llm_base_url` against RFC 3986 (see `app/services/AGENTS.md`, "Test control").
 - The `holidays` library supplies the U.S. federal holiday calendar, both for the system's disclosure deadlines and, separately, for the due dates our tester expects.
 
 **Repo layout**
