@@ -47,6 +47,14 @@ def new_session(session_id: str | None = None, **settings: Any) -> str:
     return session_id
 
 
+def change_session(session_id: str, **settings: Any) -> None:
+    """Change a stored session's settings directly, to test clock-dependent behavior."""
+    with transaction() as tx:
+        tx.execute(
+            update(TestSession).where(TestSession.session_id == session_id).values(**settings)
+        )
+
+
 def in_session(who: dict[str, Any], session_id: str) -> dict[str, Any]:
     """An acting user from above, working in another session."""
     return {**who, "session_id": session_id}

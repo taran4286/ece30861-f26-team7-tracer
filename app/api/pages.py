@@ -67,7 +67,8 @@ PAGE = """<!doctype html>
 <p>Database: <strong class="{health_class}">{health}</strong></p>
 <p>Implements <a href="{spec_link}">{spec_title} {spec_version}</a>. Every project request needs
 <code>X-User-Id</code>, <code>X-User-Role</code> and <code>X-Test-Run</code>, the session ID from
-<code>POST /test/setup</code>; test control takes no identity headers.</p>
+<code>POST /test/setup</code>; test control takes no identity headers.
+<a href="dashboard">Open the dashboard</a>.</p>
 <h2>Operations</h2>
 <div class="wrap"><table>
 <tr><th>Method</th><th>Path</th><th>Status</th><th>Summary</th></tr>
