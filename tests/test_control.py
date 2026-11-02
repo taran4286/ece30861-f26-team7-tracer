@@ -158,7 +158,7 @@ def test_snapshot_holds_only_its_sessions_records():
     assert snapshot["run"] == {
         "run_id": mine, "test_now": "2026-10-05T15:00:00+00:00", "registrant_type": "FPI",
         "at_risk_threshold_days": 7, "llm_base_url": "https://llm.invalid/v1",
-        "implemented_optional": [],
+        "implemented_optional": ["REQ-09"],
     }
     ids = sorted([first["incident_id"], second["incident_id"]])
     assert snapshot["incidents"] == [get_incident(i, **reader) for i in ids]
@@ -234,7 +234,7 @@ def test_a_settings_update_changes_every_setting_sent():
     assert run == {
         "run_id": session_id, "test_now": "2026-10-09T00:00:00+00:00", "registrant_type": "FPI",
         "at_risk_threshold_days": 2, "llm_base_url": "http://llm.example/v2",
-        "implemented_optional": [],
+        "implemented_optional": ["REQ-09"],
     }
     session = stored(session_id)
     assert session.test_now == datetime(2026, 10, 9, tzinfo=UTC)
