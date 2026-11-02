@@ -141,7 +141,7 @@ def test_optional_elements_and_home_date():
 
 
 @pytest.mark.parametrize("version", [1, 1.0, 2])
-def test_valid_version_shape_without_stale_version_check(version):
+def test_validation_checks_only_the_version_shape(version):
     result = validate({**BODY, "version": version})
     assert type(result["version"]) is int and result["version"] == int(version)
 

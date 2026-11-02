@@ -220,6 +220,9 @@ def test_wrong_state_after_validation(case, state):
 
 def test_second_determination(case):
     workflow.record_determination(case[0], case[1], **APPROVER)
+    # The same body still carries version 1, which the first determination made stale.
+    rejected(case, ErrorCode.STALE_VERSION)
+    case[1]['version'] = 2
     rejected(case, ErrorCode.INVALID_TRANSITION)
 
 
@@ -229,12 +232,53 @@ def test_voluntary_disclosure_boolean(case, value):
     rejected(case, ErrorCode.NOT_IMPLEMENTED)
 
 
-@pytest.mark.parametrize('version', [1, 1.0])
-def test_stale_and_integral_float_versions(case, version):
+def stored_version(incident_id, version):
+    """Set an incident's stored version directly, as if other changes had come first."""
     with db.transaction() as tx:
-        tx.get(Incident, case[0]).version = 5
+        tx.get(Incident, incident_id).version = version
+
+
+@pytest.mark.parametrize('version', [1, 1.0, 4])
+def test_stale_version_is_rejected(case, version):
+    stored_version(case[0], 5)
+    case[1]['version'] = version
+    rejected(case, ErrorCode.STALE_VERSION)
+
+
+def test_stale_version_message_says_to_reload(case):
+    stored_version(case[0], 5)
+    case[1]['version'] = 4
+    with pytest.raises(TracerError) as error:
+        workflow.record_determination(case[0], case[1], **APPROVER)
+    assert 'reload' in error.value.message
+    assert error.value.status == 409
+
+
+@pytest.mark.parametrize('version', [5, 5.0, 6])
+def test_current_or_newer_version_is_accepted(case, version):
+    """Only an older version is stale; a whole-number float counts as its integer."""
+    stored_version(case[0], 5)
     case[1]['version'] = version
     assert workflow.record_determination(case[0], case[1], **APPROVER)['version'] == 6
+
+
+def test_body_errors_precede_a_stale_version(case):
+    stored_version(case[0], 5)
+    case[1]['rationale'] = ''
+    rejected(case, field='rationale')
+
+
+def test_voluntary_disclosure_precedes_a_stale_version(case):
+    stored_version(case[0], 5)
+    case[1]['voluntary_disclosure'] = False
+    rejected(case, ErrorCode.NOT_IMPLEMENTED)
+
+
+@pytest.mark.parametrize('state', [s for s in State if s != State.UNDER_ASSESSMENT])
+def test_a_stale_version_precedes_the_state_check(case, state):
+    set_state(case[0], state)
+    stored_version(case[0], 5)
+    rejected(case, ErrorCode.STALE_VERSION)
 
 
 def test_audit_failure_rolls_back(case, monkeypatch):
@@ -375,22 +419,69 @@ def test_existence_before_body():
     assert_rejected("missing", None, ErrorCode.NOT_FOUND)
 
 
-@pytest.mark.parametrize("version", [1, 1.0])
-def test_stale_version_and_existing_determination(incident, version):
-    """Check transitions accept stale whole-number versions and preserve determination data."""
+def determined_material(incident):
+    """Record a Material determination on the incident and return the Incident (version 2)."""
     ident = incident["incident_id"]
     evidence = import_evidence(ident, {"source": "ticketing", "items": [ticket()]}, **RESPONDER)
-    determined = workflow.record_determination(ident, {
+    return workflow.record_determination(ident, {
         "decision": "Material", "determination_date": incident["discovery_date"],
         "rationale": "Significant impact", "evidence_refs": [evidence["evidence"][0]["evidence_id"]],
         "version": 1,
     }, **APPROVER)
+
+
+@pytest.mark.parametrize("as_float", [False, True])
+def test_transitions_keep_the_determination(incident, as_float):
+    """Check transitions sent with the current version, a whole-number float included,
+    preserve determination data."""
+    ident = incident["incident_id"]
+    determined = determined_material(incident)
+    result = determined
     for target in ["DisclosureDelayed", "DeterminedMaterial"]:
+        version = float(result["version"]) if as_float else result["version"]
         result = workflow.transition_incident(ident, {"to": target, "version": version}, **APPROVER)
         assert result["determination"] == determined["determination"]
         assert result["required_form"] == determined["required_form"]
         assert result["evidence"] == determined["evidence"]
     assert result["version"] == 4
+
+
+@pytest.mark.parametrize("version", [1, 1.0])
+def test_a_stale_transition_is_rejected(incident, version):
+    ident = determined_material(incident)["incident_id"]
+    assert_rejected(ident, {"to": "DisclosureDelayed", "version": version}, ErrorCode.STALE_VERSION)
+
+
+def test_a_newer_transition_version_is_accepted(incident):
+    ident = determined_material(incident)["incident_id"]
+    result = workflow.transition_incident(ident, {"to": "DisclosureDelayed", "version": 3}, **APPROVER)
+    assert (result["state"], result["version"]) == ("DisclosureDelayed", 3)
+
+
+def test_transition_body_errors_precede_a_stale_version(incident):
+    ident = determined_material(incident)["incident_id"]
+    assert_rejected(ident, {"to": "Archived", "version": 1}, ErrorCode.VALIDATION_ERROR, "to")
+    assert_rejected(ident, {"to": "DisclosureDelayed", "version": 1, "elements": []},
+                    ErrorCode.VALIDATION_ERROR, "elements")
+
+
+def test_reload_after_a_stale_save_then_save_again(incident):
+    """AC-22: two approvers read version 2; the second one's save after the first one's is
+    rejected as stale, even though the state also moved, and succeeds after a reload."""
+    ident = determined_material(incident)["incident_id"]
+    read_by_second = get_incident(ident, **APPROVER)
+    workflow.transition_incident(ident, {"to": "DisclosureDelayed", "version": 2}, **APPROVER)
+    with pytest.raises(TracerError) as error:
+        workflow.transition_incident(
+            ident, {"to": "DisclosureDelayed", "version": read_by_second["version"]}, **APPROVER
+        )
+    assert error.value.code == ErrorCode.STALE_VERSION and "reload" in error.value.message
+    reloaded = get_incident(ident, **APPROVER)
+    assert (reloaded["state"], reloaded["version"]) == ("DisclosureDelayed", 3)
+    result = workflow.transition_incident(
+        ident, {"to": "DeterminedMaterial", "version": reloaded["version"]}, **APPROVER
+    )
+    assert (result["state"], result["version"]) == ("DeterminedMaterial", 4)
 
 
 def test_audit_failure_rolls_back_transition(incident, monkeypatch):
@@ -412,8 +503,11 @@ def test_audit_read_is_scoped_ordered_and_does_not_write(incident, who):
     import_evidence(ident, {"source": "ticketing", "items": [ticket()]}, **RESPONDER)
     set_state(ident, State.DETERMINED_MATERIAL)
     # Create + import + eight transitions gives ten real audit entries.
+    version = 1
     for target in ["DisclosureDelayed", "DeterminedMaterial"] * 4:
-        workflow.transition_incident(ident, {"to": target, "version": 1}, **APPROVER)
+        version = workflow.transition_incident(
+            ident, {"to": target, "version": version}, **APPROVER
+        )["version"]
     counts = table_counts()
     previous = get_incident(ident, **BOARD)
     result = workflow.list_audit_entries(ident, **who)

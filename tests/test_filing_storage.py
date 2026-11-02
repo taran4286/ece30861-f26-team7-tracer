@@ -66,7 +66,9 @@ def test_records_filing_and_audit_with_preserved_context(registrant, delayed):
     """Both registrants can file directly or during delay, with one atomic audit entry."""
     incident_id, actor, body = material_case(registrant)
     if delayed:
-        transition_incident(incident_id, {"to": "DisclosureDelayed", "version": 2}, **actor)
+        body["version"] = transition_incident(
+            incident_id, {"to": "DisclosureDelayed", "version": 2}, **actor
+        )["version"]
     previous = get_incident(incident_id, **actor)
     old_entries = audit_entries(incident_id)
     started = clock.utcnow()
@@ -111,7 +113,7 @@ def test_amendment_filing_and_oldest_first_reads(case):
         incident.due_date = date(2026, 10, 9)
     amended = filings.record_filing(incident_id, {
         **body, "form_type": "8-K/A", "accession_number": "0001234567-26-000002",
-        "unavailable_elements": [],
+        "unavailable_elements": [], "version": original["version"],
     }, **actor)
     assert amended["state"] == "DisclosureRecorded" and amended["due_date"] == "2026-10-09"
     assert amended["filings"][0] == original["filings"][0]
@@ -142,6 +144,39 @@ def test_bad_body_precedes_state_and_stores_nothing(case, field, value):
         sent["home_disclosure_date"] = "2026-10-01"
     expected = "unavailable_elements[0]" if field == "unavailable_elements" else field
     rejected(incident_id, actor, sent, ErrorCode.VALIDATION_ERROR, expected)
+
+
+def delayed_case():
+    """A material case moved to DisclosureDelayed, so its filing body's version 2 is stale."""
+    incident_id, actor, body = material_case()
+    transition_incident(incident_id, {"to": "DisclosureDelayed", "version": 2}, **actor)
+    return incident_id, actor, body
+
+
+@pytest.mark.parametrize("version", [1, 2, 2.0])
+def test_a_stale_version_files_nothing(version):
+    incident_id, actor, body = delayed_case()
+    rejected(incident_id, actor, {**body, "version": version}, ErrorCode.STALE_VERSION)
+
+
+@pytest.mark.parametrize("version", [3, 4])
+def test_the_current_or_a_newer_version_files(version):
+    incident_id, actor, body = delayed_case()
+    result = filings.record_filing(incident_id, {**body, "version": version}, **actor)
+    assert (result["state"], result["version"]) == ("DisclosureRecorded", 4)
+
+
+def test_filing_body_errors_precede_a_stale_version():
+    incident_id, actor, body = delayed_case()
+    rejected(incident_id, actor, {**body, "accession_number": "invalid"},
+             ErrorCode.VALIDATION_ERROR, "accession_number")
+
+
+@pytest.mark.parametrize("state", [State.UNDER_ASSESSMENT, State.CLOSED])
+def test_a_stale_version_precedes_the_filing_state_check(state):
+    incident_id, actor, body = delayed_case()
+    set_state(incident_id, state)
+    rejected(incident_id, actor, body, ErrorCode.STALE_VERSION)
 
 
 def test_fpi_requires_home_disclosure_date():
@@ -214,7 +249,7 @@ def test_audit_failure_rolls_back_filing_and_incident(case, monkeypatch):
 
 
 def test_competing_requests_record_only_one_filing(case):
-    """The row lock makes the second request see DisclosureRecorded and reject it."""
+    """The row lock makes the second request see the new version and reject it as stale."""
     incident_id, actor, body = case
     ready = Barrier(2)
 
@@ -229,7 +264,7 @@ def test_competing_requests_record_only_one_filing(case):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: submit(), range(2)))
     assert results.count("saved") == 1
-    assert results.count(ErrorCode.INVALID_TRANSITION) == 1
+    assert results.count(ErrorCode.STALE_VERSION) == 1
     result = get_incident(incident_id, **actor)
     assert result["version"] == 3 and len(result["filings"]) == 1
     assert sum(entry.action.value == "record_filing" for entry in audit_entries(incident_id)) == 1

@@ -552,8 +552,14 @@ def test_filing_route_returns_saved_incident_and_snapshot(registrant):
     assert trail.status_code == 200
     matches_spec("GET", "/incidents/{incident_id}/audit", trail)
     before = snapshot(session_id)
+    # Resending the same body sends version 2, which the filing made stale (REQ-21).
+    resent = client.post(url("/incidents/{incident_id}/filings", incident_id),
+                         headers=actor, json=body)
+    project_error(resent, 409, "STALE_VERSION")
+    matches_spec("POST", "/incidents/{incident_id}/filings", resent)
+    assert "reload" in resent.json()["message"]
     duplicate = client.post(url("/incidents/{incident_id}/filings", incident_id),
-                            headers=actor, json=body)
+                            headers=actor, json={**body, "version": 3})
     project_error(duplicate, 409, "INVALID_TRANSITION")
     assert snapshot(session_id) == before
     pending = client.post(url("/incidents/{incident_id}/transitions", incident_id),
