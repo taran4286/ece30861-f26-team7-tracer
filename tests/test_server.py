@@ -277,7 +277,7 @@ def test_setup_coverage_and_snapshot_match_the_spec():
     assert response.json() == {
         "run": {"run_id": session_id, "test_now": "2026-10-05T15:00:00+00:00",
                 "registrant_type": "Domestic", "at_risk_threshold_days": 7,
-                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": []},
+                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-09"]},
         "incidents": [], "groups": [], "audit": [],
     }
 
@@ -288,7 +288,7 @@ def test_setup_keeps_the_settings_sent():
     assert snapshot(session_id)["run"] == {
         "run_id": session_id, "test_now": "2026-10-09T12:00:00+00:00", "registrant_type": "FPI",
         "at_risk_threshold_days": 3, "llm_base_url": "http://llm.example/v1",
-        "implemented_optional": [],
+        "implemented_optional": ["REQ-09"],
     }
 
 
@@ -321,7 +321,7 @@ def test_a_settings_update_answers_with_the_run(session_id):
     assert response.json() == {
         "run_id": session_id, "test_now": "2026-10-08T15:00:00+00:00",
         "registrant_type": "Domestic", "at_risk_threshold_days": 3,
-        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": [],
+        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-09"],
     }
     assert snapshot(session_id)["run"] == response.json()
 
