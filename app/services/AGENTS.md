@@ -7,7 +7,7 @@ One module per area, callable without any web framework. Each project operation 
 | `incidents.py` | `create_incident(body, …)`, `get_incident(incident_id, …)`, and the shared `load_incident`, `require_current_version` and `*_to_dict` builders | `tests/test_incidents.py` |
 | `evidence.py` | `import_evidence(incident_id, body, …)`, `load_evidence`, `SHAPES` (where each source's fields come from) and `_FOREIGN_KEYS` | `tests/test_evidence.py` |
 | `workflow.py` | `record_determination(incident_id, body, …)`, `transition_incident(incident_id, body, …)`, `list_audit_entries(incident_id, …)`, `audit_entry_to_dict`, `ALLOWED_TRANSITIONS` and `DRAFT_ELEMENTS` | `tests/test_workflow.py` |
-| `control.py` | `setup_session(body)`, `coverage_report(session_id)`, `update_settings(session_id, body)`, `snapshot(run_id)`, `run_to_dict`, `DEFAULTS`, `MUTABLE_SETTINGS`, `INTEGER_MAX` and `CODE_COVERAGE_BASIS` | `tests/test_control.py` |
+| `control.py` | `setup_session(body)`, `coverage_report(session_id)`, `update_settings(session_id, body)`, `snapshot(run_id)`, `run_to_dict`, `DEFAULTS`, `MUTABLE_SETTINGS`, `INTEGER_MAX`, `CODE_COVERAGE_BASIS` and `IMPLEMENTED_OPTIONAL` | `tests/test_control.py` |
 | `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, evidence_id=None, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
 | `filings.py` | `validate_filing_request` (pure validation), `record_filing` (storage, state and audit) | `tests/test_filings.py`, `tests/test_filing_storage.py` |
@@ -102,7 +102,7 @@ These take no identity headers or role and write no audit entries or project rec
   - A setting left out keeps its value, so `{}` changes nothing and returns the settings as stored.
   - In one transaction it loads the session with `load_session(..., for_update=True)` (unknown, or an ID with NUL, → 404), sets the changed attributes and returns `run_to_dict(session)` (200). The ORM's UPDATE names only the attributes set, which are the columns the app role may update (see `scripts/AGENTS.md`); `{}` issues no UPDATE. Any error leaves the session as it was.
   - Every later date rule in the session uses the new `test_now` through `clock.today(session)`.
-- `snapshot(run_id)` (`GET /test/report/{run_id}`) returns `{run, incidents, groups: [], audit}`: the session's TestRun from `run_to_dict` (`run_id` is the session ID, `implemented_optional: []`), its incidents as full Incidents ordered by `incident_id` (random, not creation order), and its audit entries ordered by `seq`. Unknown session → 404.
+- `snapshot(run_id)` (`GET /test/report/{run_id}`) returns `{run, incidents, groups: [], audit}`: the session's TestRun from `run_to_dict` (`run_id` is the session ID, `implemented_optional` lists `IMPLEMENTED_OPTIONAL`: `["REQ-09"]`, the at-risk flag under Flags), its incidents as full Incidents ordered by `incident_id` (random, not creation order), and its audit entries ordered by `seq`. Unknown session → 404.
 
 ## Incidents (`incidents.py`; REQ-01, REQ-22)
 

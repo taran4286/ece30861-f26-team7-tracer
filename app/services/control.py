@@ -53,6 +53,9 @@ _URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:\S+")
 
 CODE_COVERAGE_BASIS = "Source lines; this system doesn't measure code coverage per session"
 
+# The nice-to-have requirements this deployment built, as TestRun's implemented_optional lists them.
+IMPLEMENTED_OPTIONAL = ("REQ-09",)
+
 
 def setup_session(body: Any) -> dict[str, str]:
     """POST /test/setup: store a new, empty session under the supplied ID (TEST-01).
@@ -178,12 +181,15 @@ def snapshot(run_id: str) -> dict[str, Any]:
 
 
 def run_to_dict(session: TestSession) -> dict[str, Any]:
-    """The TestRun schema; run_id is the session ID, and no nice-to-have requirement is built."""
+    """The TestRun schema.
+
+    run_id is the session ID, and implemented_optional lists IMPLEMENTED_OPTIONAL.
+    """
     return {
         "run_id": session.session_id,
         "test_now": session.test_now.astimezone(UTC).isoformat(),
         "registrant_type": session.registrant_type.value,
         "at_risk_threshold_days": session.at_risk_threshold_days,
         "llm_base_url": session.llm_base_url,
-        "implemented_optional": [],
+        "implemented_optional": list(IMPLEMENTED_OPTIONAL),
     }
