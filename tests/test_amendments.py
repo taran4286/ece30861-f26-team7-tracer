@@ -76,8 +76,9 @@ def test_every_transition_pair_with_valid_amendment_context(source, target):
     """All 49 pairs have an explicit result, including the two newly reachable states."""
     incident_id, actor, _ = recorded_case()
     set_state(incident_id, source)
+    # recorded_case leaves the incident at version 3, and set_state keeps it.
     body = {**AMENDMENT, "to": target.value} if target == State.AMENDMENT_PENDING else {
-        "to": target.value, "version": 1,
+        "to": target.value, "version": 3,
     }
     if (source, target) not in TRANSITION_PAIRS:
         rejected(incident_id, actor, body, ErrorCode.INVALID_TRANSITION)
@@ -131,14 +132,17 @@ def test_refiling_uses_new_form_and_only_latest_unavailable_elements(registrant)
     }, **actor)
     assert filed["state"] == "DisclosureRecorded" and filed["version"] == 5
     assert len(filed["filings"]) == 2
-    rejected(incident_id, actor, AMENDMENT, ErrorCode.VALIDATION_ERROR, "elements[0]")
-    next_pending = workflow.transition_incident(incident_id, {**AMENDMENT, "elements": ["nature"]}, **actor)
+    rejected(incident_id, actor, {**AMENDMENT, "version": 5},
+             ErrorCode.VALIDATION_ERROR, "elements[0]")
+    next_pending = workflow.transition_incident(
+        incident_id, {**AMENDMENT, "elements": ["nature"], "version": 5}, **actor
+    )
     assert next_pending["state"] == "AmendmentPending" and next_pending["version"] == 6
     record_filing(incident_id, {
         **original_body, "form_type": next_pending["required_form"], "version": 6,
         "accession_number": "0001234567-26-000003", "unavailable_elements": [],
     }, **actor)
-    rejected(incident_id, actor, {**AMENDMENT, "elements": ["nature"]},
+    rejected(incident_id, actor, {**AMENDMENT, "elements": ["nature"], "version": 7},
              ErrorCode.VALIDATION_ERROR, "elements[0]")
     before = get_incident(incident_id, **actor)
     closed = workflow.transition_incident(incident_id, {"to": "Closed", "version": 7}, **actor)

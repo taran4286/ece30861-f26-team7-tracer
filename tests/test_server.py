@@ -277,7 +277,7 @@ def test_setup_coverage_and_snapshot_match_the_spec():
     assert response.json() == {
         "run": {"run_id": session_id, "test_now": "2026-10-05T15:00:00+00:00",
                 "registrant_type": "Domestic", "at_risk_threshold_days": 7,
-                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-09"]},
+                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-09", "REQ-21"]},
         "incidents": [], "groups": [], "audit": [],
     }
 
@@ -288,7 +288,7 @@ def test_setup_keeps_the_settings_sent():
     assert snapshot(session_id)["run"] == {
         "run_id": session_id, "test_now": "2026-10-09T12:00:00+00:00", "registrant_type": "FPI",
         "at_risk_threshold_days": 3, "llm_base_url": "http://llm.example/v1",
-        "implemented_optional": ["REQ-09"],
+        "implemented_optional": ["REQ-09", "REQ-21"],
     }
 
 
@@ -321,7 +321,7 @@ def test_a_settings_update_answers_with_the_run(session_id):
     assert response.json() == {
         "run_id": session_id, "test_now": "2026-10-08T15:00:00+00:00",
         "registrant_type": "Domestic", "at_risk_threshold_days": 3,
-        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-09"],
+        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-09", "REQ-21"],
     }
     assert snapshot(session_id)["run"] == response.json()
 
@@ -552,8 +552,14 @@ def test_filing_route_returns_saved_incident_and_snapshot(registrant):
     assert trail.status_code == 200
     matches_spec("GET", "/incidents/{incident_id}/audit", trail)
     before = snapshot(session_id)
+    # Resending the same body sends version 2, which the filing made stale (REQ-21).
+    resent = client.post(url("/incidents/{incident_id}/filings", incident_id),
+                         headers=actor, json=body)
+    project_error(resent, 409, "STALE_VERSION")
+    matches_spec("POST", "/incidents/{incident_id}/filings", resent)
+    assert "reload" in resent.json()["message"]
     duplicate = client.post(url("/incidents/{incident_id}/filings", incident_id),
-                            headers=actor, json=body)
+                            headers=actor, json={**body, "version": 3})
     project_error(duplicate, 409, "INVALID_TRANSITION")
     assert snapshot(session_id) == before
     pending = client.post(url("/incidents/{incident_id}/transitions", incident_id),

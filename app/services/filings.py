@@ -10,7 +10,12 @@ from app.db import transaction
 from app.errors import ErrorCode, TracerError
 from app.models import AuditAction, Determination, Filing, FormType, State
 from app.roles import Operation, Role, require_role
-from app.services.incidents import filing_to_dict, incident_to_dict, load_incident
+from app.services.incidents import (
+    filing_to_dict,
+    incident_to_dict,
+    load_incident,
+    require_current_version,
+)
 from app.services.validation import invalid, parse_date, parse_integer, require_object
 from app.sessions import load_session
 
@@ -25,8 +30,8 @@ def record_filing(
 ) -> dict[str, Any]:
     """Save the filing, incident change and audit entry together, or roll back all three.
 
-    Checks follow the common error order: session, role, incident, body, then state.
-    The supplied version is validated, but stale versions are accepted like other operations.
+    Checks follow the common error order: session, role, incident, body, stale version, then
+    state.
     """
     with transaction() as tx:
         session = load_session(tx, session_id)
@@ -39,6 +44,7 @@ def record_filing(
             determination_date=determination.determination_date if determination else None,
             required_form=incident.required_form,
         )
+        require_current_version(incident, fields["version"])
         if incident.state not in {
             State.DETERMINED_MATERIAL, State.DISCLOSURE_DELAYED, State.AMENDMENT_PENDING,
         }:
@@ -90,7 +96,7 @@ def validate_filing_request(
     accession = body.get("accession_number")
     if not isinstance(accession, str) or not _ACCESSION_NUMBER.fullmatch(accession):
         raise invalid("accession_number", "Expected an accession number in 0000000000-00-000000 form")
-    # This checks the value's type and range, not whether the client's version is stale.
+    # This checks the value's type and range; record_filing checks whether it's stale.
     version = parse_integer(body.get("version"), "version")
 
     elements = _unavailable_elements(body.get("unavailable_elements", []))

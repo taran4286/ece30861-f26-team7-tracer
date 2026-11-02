@@ -88,6 +88,19 @@ def load_incident(
     return incident
 
 
+def require_current_version(incident: Incident, version: int) -> None:
+    """REQ-21: reject a change based on an older version than the stored one.
+
+    Only an older version is stale; the spec defines no error for a newer one.
+    """
+    if version < incident.version:
+        raise TracerError(
+            ErrorCode.STALE_VERSION,
+            f"Incident {incident.incident_id} has changed since version {version} and is now at "
+            f"version {incident.version}; reload it and try again",
+        )
+
+
 def incident_to_dict(tx: Session, incident: Incident) -> dict[str, Any]:
     """The full Incident schema, JSON-ready. Every operation that returns an Incident uses this."""
     [result] = incidents_to_dicts(tx, [incident])

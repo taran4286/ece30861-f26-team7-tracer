@@ -40,17 +40,23 @@ def determined(session_id: str, determination_date: str, decision: str = "Materi
     return incident_id
 
 
+def current_version(session_id: str, incident_id: str) -> int:
+    """The version a change must send, read as a client would before saving."""
+    return get_incident(incident_id, **in_session(APPROVER, session_id))["version"]
+
+
 def file_form(session_id: str, incident_id: str, filing_date: str, form: str = "8-K Item 1.05",
               **fields: Any) -> dict[str, Any]:
     body = {"form_type": form, "filing_date": filing_date,
-            "accession_number": "0001234567-26-000001", "version": 1, **fields}
+            "accession_number": "0001234567-26-000001",
+            "version": current_version(session_id, incident_id), **fields}
     return record_filing(incident_id, body, **in_session(APPROVER, session_id))
 
 
 def amend(session_id: str, incident_id: str, info_available_date: str) -> None:
     transition_incident(incident_id, {
-        "to": "AmendmentPending", "version": 1, "info_available_date": info_available_date,
-        "elements": ["impact"],
+        "to": "AmendmentPending", "version": current_version(session_id, incident_id),
+        "info_available_date": info_available_date, "elements": ["impact"],
     }, **in_session(APPROVER, session_id))
 
 

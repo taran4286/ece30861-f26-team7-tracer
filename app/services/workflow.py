@@ -22,7 +22,7 @@ from app.models import (
 )
 from app.roles import Operation, Role, require_role
 from app.services.deadlines import disclosure_due_date
-from app.services.incidents import incident_to_dict, load_incident
+from app.services.incidents import incident_to_dict, load_incident, require_current_version
 from app.services.validation import (
     invalid,
     parse_date,
@@ -49,8 +49,8 @@ ALLOWED_TRANSITIONS = frozenset(
 DRAFT_ELEMENTS = ("nature", "scope", "timing", "impact")
 
 
-def _transition_target(body: Any, today: date) -> State:
-    """Check the request fields and return the requested state."""
+def _transition_target(body: Any, today: date) -> tuple[State, int]:
+    """Check the request fields and return the requested state and the sent version."""
     body = require_object(body)
     target = body.get("to")
     if not isinstance(target, str):
@@ -60,8 +60,8 @@ def _transition_target(body: Any, today: date) -> State:
         target = State(target)
     except ValueError:
         raise invalid("to", "Unknown state")
-    # Stale versions are accepted.
-    parse_integer(body.get("version"), "version")
+    # Whether the version is stale is checked after the body, with the other 409s.
+    version = parse_integer(body.get("version"), "version")
     # Required for AmendmentPending, and checked whenever sent, since the request schema types
     # them for every target. Body errors come before disallowed state changes.
     amendment = target == State.AMENDMENT_PENDING
@@ -70,7 +70,7 @@ def _transition_target(body: Any, today: date) -> State:
             raise invalid("info_available_date", "info_available_date must not be after today")
     if amendment or "elements" in body:
         _check_elements(body.get("elements"))
-    return target
+    return target, version
 
 
 def _check_elements(elements: Any) -> None:
@@ -100,7 +100,7 @@ def transition_incident(
         # Lock the incident so simultaneous requests cannot overwrite each other.
         incident = load_incident(tx, incident_id, session_id=session_id, for_update=True)
         # Check existence before input, as required by the error order.
-        target = _transition_target(body, clock.today(session))
+        target, version = _transition_target(body, clock.today(session))
         amendment = target == State.AMENDMENT_PENDING
         latest_filing = None
         amendment_form = None
@@ -125,6 +125,8 @@ def transition_incident(
                 )
             except OverflowError:
                 raise invalid("info_available_date", "Deadline is outside the supported holiday calendar range") from None
+        # A stale version is reported before the state check: the state may be what changed.
+        require_current_version(incident, version)
         if (incident.state, target) not in ALLOWED_TRANSITIONS:
             raise TracerError(
                 ErrorCode.INVALID_TRANSITION,
@@ -199,7 +201,7 @@ def record_determination(
     """Record one determination and return the full incident as JSON-ready data.
 
     The API layer checks the identity headers first. Service error order is session,
-    role, incident existence, body validation, then state. Stale versions are accepted.
+    role, incident existence, body validation, stale version, then state.
     """
     with transaction() as tx:
         session = load_session(tx, session_id)
@@ -237,11 +239,12 @@ def record_determination(
         )))
         if owned_refs != set(refs):
             raise invalid("evidence_refs", "Every evidence ID must belong to this incident")
-        parse_integer(body.get("version"), "version")
+        version = parse_integer(body.get("version"), "version")
         if "voluntary_disclosure" in body:
             if not isinstance(body["voluntary_disclosure"], bool):
                 raise invalid("voluntary_disclosure", "Expected a boolean")
             raise TracerError(ErrorCode.NOT_IMPLEMENTED, "Voluntary disclosure is not implemented")
+        require_current_version(incident, version)
         if incident.state != State.UNDER_ASSESSMENT:
             raise TracerError(ErrorCode.INVALID_TRANSITION, "Determination requires UnderAssessment")
 

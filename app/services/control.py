@@ -54,7 +54,7 @@ _URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:\S+")
 CODE_COVERAGE_BASIS = "Source lines; this system doesn't measure code coverage per session"
 
 # The nice-to-have requirements this deployment built, as TestRun's implemented_optional lists them.
-IMPLEMENTED_OPTIONAL = ("REQ-09",)
+IMPLEMENTED_OPTIONAL = ("REQ-09", "REQ-21")
 
 
 def setup_session(body: Any) -> dict[str, str]:
