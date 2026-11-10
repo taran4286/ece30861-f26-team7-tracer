@@ -1,5 +1,5 @@
-"""Test control (TEST-01, TEST-02, TEST-06, TEST-07): prepare a session, report its coverage,
-snapshot it, and change its clock or mutable settings.
+"""Test control (TEST-01, TEST-02, TEST-06, TEST-07): prepare a session, report its code
+coverage, snapshot it, and change its clock or mutable settings.
 
 These take no identity headers and write no audit entries. The API layer turns their
 TracerErrors into the spec's TestControlError ({message, source}).
@@ -15,6 +15,7 @@ from rfc3986_validator import validate_rfc3986
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app import code_coverage
 from app.clock import utcnow
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
@@ -51,7 +52,12 @@ INTEGER_MAX = 2**31 - 1
 # checks it against RFC 3986.
 _URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:\S+")
 
-CODE_COVERAGE_BASIS = "Source lines; this system doesn't measure code coverage per session"
+# What the code measure counts (app/code_coverage.py).
+CODE_COVERAGE_BASIS = (
+    "Source lines: the executable lines inside functions in the system's code (app/), "
+    "counting those this session's project calls have run since setup. Module and class "
+    "bodies, which run once at import, aren't counted"
+)
 
 # The nice-to-have requirements this deployment built, as TestRun's implemented_optional lists them.
 IMPLEMENTED_OPTIONAL = ("REQ-09", "REQ-21")
@@ -119,13 +125,21 @@ def _duplicate(session_id: str) -> TracerError:
 def coverage_report(session_id: Any) -> dict[str, Any]:
     """GET /test/report?session_id=: code coverage for a session (TEST-02).
 
-    Coverage isn't measured, so the counts are null and `basis` says why, as the spec allows.
+    Counts the lines the session's project calls ran, as stored; reading it records nothing.
+    Null counts with the reason when this process can't record lines.
     """
     _require_session_id(session_id)
     with transaction() as tx:
         load_session(tx, session_id)
-    unmeasured = {"covered": None, "total": None, "basis": CODE_COVERAGE_BASIS}
-    return {"session_id": session_id, "coverage": {"code": unmeasured}}
+        if (reason := code_coverage.unavailable()) is not None:
+            code = {"covered": None, "total": None, "basis": f"Source lines; {reason}"}
+        else:
+            code = {
+                "covered": code_coverage.covered_lines(tx, session_id),
+                "total": code_coverage.total_lines(),
+                "basis": CODE_COVERAGE_BASIS,
+            }
+    return {"session_id": session_id, "coverage": {"code": code}}
 
 
 def _require_session_id(session_id: Any) -> None:

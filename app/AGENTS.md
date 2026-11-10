@@ -8,16 +8,17 @@ The building blocks every service uses, and the system's tables. Business logic 
 | --- | --- |
 | `config.py` | `Settings` (`database_url`, from `DATABASE_URL`) through the cached `get_settings()` |
 | `db.py` | `Base`, the cached `get_engine()`, and `transaction()`: one session per operation, committed on success and rolled back on any error. `get_engine()` reads `DATABASE_URL` through `parse_url(value, setting)`, which raises `ArgumentError`, a `SQLAlchemyError`, for a malformed URL, where SQLAlchemy alone would raise a plain `ValueError` that storage handlers miss. Its message names the setting, never the URL, which holds a password |
-| `models.py` | The six tables (`TestSession` first), their enums, `SiemSeverity` (checked on import, not stored), `Flag` (computed on read, not stored) and `new_id(prefix)` |
+| `models.py` | The seven tables (`TestSession` first), their enums, `SiemSeverity` (checked on import, not stored), `Flag` (computed on read, not stored) and `new_id(prefix)` |
 | `errors.py` | `ErrorCode`, `HTTP_STATUS` (each code's status) and `TracerError(code, message, field=None)`, whose `status` comes from that map; `to_dict()` returns `error`, `message` and `field`, with `field` as `None` when unset, which the API layer leaves out (see `api/AGENTS.md`). Three codes map to 409: `INVALID_TRANSITION` for a project state error, `STALE_VERSION` for a change sent with an older incident version than the stored one (REQ-21), and `CONFLICT`, raised only for a test session ID already in use |
 | `roles.py` | `Role`, `Operation`, the `PERMISSIONS` map and `require_role(role, operation)`, which raises `FORBIDDEN_ROLE`; a role string that isn't a `Role` gets no permissions, so it also gets `FORBIDDEN_ROLE`. `Operation.REPLACE_OR_DELETE` covers the 405 routes: only DisclosureApprover passes it, and then gets 405 |
 | `clock.py` | `today(session)`, the UTC date of the session's `test_now`, for every date rule, and `utcnow()` for stored timestamps |
 | `sessions.py` | `load_session(tx, session_id, *, for_update=False)`: the `TestSession` a request names in `X-Test-Run` or a test-control path, or `NOT_FOUND`; `for_update=True` locks its row, which the app role's column-level UPDATE grant on `test_sessions` allows |
 | `audit.py` | `audit(tx, action, target_id, before, after, *, user_id, session_id)`, which adds one entry inside the caller's transaction, with a new `entry_id` and `timestamp` from `utcnow()` |
+| `code_coverage.py` | Per-session code coverage (TEST-02): `start()`, `unavailable()`, `recording()`, `claim(session_id)`, `save(session_id, hits)`, `covered_lines(tx, session_id)`, `executable_lines()`, `total_lines()` and `SAVED_SESSIONS`; see Code coverage below |
 
 ## Data model
 
-Six tables hold the system's data; the tester keeps its own in `tester_sessions` (see `tester/AGENTS.md`). IDs are opaque strings from `new_id()` except session IDs, which the caller supplies. Every timestamp column is `timestamp with time zone`, stored in UTC. JSON columns are `JSONB`.
+Seven tables hold the system's data; the tester keeps its own in `tester_sessions` (see `tester/AGENTS.md`). IDs are opaque strings from `new_id()` except session IDs, which the caller supplies. Every timestamp column is `timestamp with time zone`, stored in UTC. JSON columns are `JSONB`.
 
 **test_sessions** (`TestSession`)
 
@@ -102,6 +103,16 @@ Six tables hold the system's data; the tester keeps its own in `tester_sessions`
 | before | JSONB, nullable | SQL `NULL` on create and import |
 | after | JSONB, not null | |
 
+**coverage_lines** (`CoverageLine`)
+
+A line of the system's code that a session's project calls ran, written only by `code_coverage.save()`. It isn't project data, so snapshots leave it out.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| session_id | text, primary key, references test_sessions | |
+| path | text, primary key | from the repo root, e.g. `app/services/workflow.py` |
+| line | integer, primary key | so each line is stored once per session |
+
 **Enums** (each stored as the Postgres enum type named in the tables above, by value)
 
 - `State`: UnderAssessment, DeterminedMaterial, DeterminedNotMaterial, DisclosureDelayed, DisclosureRecorded, AmendmentPending, Closed.
@@ -126,6 +137,17 @@ Six tables hold the system's data; the tester keeps its own in `tester_sessions`
 - JSON columns accept `date` and `datetime` values directly; `db.py` stores them as ISO-8601 strings.
 - Enums are stored by value (`"8-K Item 1.05"`), not by member name, through `_db_enum()`.
 - `AuditEntry.before` stores Python `None` as SQL `NULL`, not JSON `null`.
+
+## Code coverage (`code_coverage.py`)
+
+What `GET /test/report` counts for a session (see `services/AGENTS.md`, "Test control"). The API layer decides which requests record (see `api/AGENTS.md`).
+
+- `executable_lines()` compiles every `.py` file under `app/` and keeps, per file, the lines of the instructions inside functions, lambdas and generator expressions. It leaves out module and class bodies, which run once at import, and each function's prologue (its `def` or decorator line), which `sys.monitoring` never reports. `total_lines()` is their sum. Both are cached per process.
+- The measuring code, `code_coverage.py` and `api/recording.py`, is neither recorded nor counted.
+- `start()` turns on `sys.monitoring` LINE events for the whole process once, under the first free tool ID of `COVERAGE_ID`, 3 and 4, and turns them off at exit. If all three are taken, it returns False and `unavailable()` gives the reason. The callback disables each location outside `app/` after its first event, so other code runs at full speed.
+- `recording()` collects the `(path, line)` pairs app code runs in its context until it ends or the recording's `active` is cleared. A thread running a copy of the context, as FastAPI's thread pool does, records into the same recording. `claim(session_id)` names the session the current recording counts for; it does nothing outside one.
+- `save(session_id, hits)` stores, in one transaction, the lines this process hasn't already stored for the session, with `ON CONFLICT DO NOTHING` and only if the session exists. Lines are sorted, so concurrent saves in one session can't deadlock. The process remembers its stored lines for its latest `SAVED_SESSIONS` (64) sessions, so most calls skip the query; an unknown session stores nothing and isn't remembered. A session ID with NUL returns without a query.
+- `covered_lines(tx, session_id)` counts the session's stored lines that are still in `executable_lines()`, so lines from an earlier deploy's code don't count and `covered` never exceeds `total`.
 
 ## When you change `models.py`
 

@@ -6,13 +6,14 @@ The system's web layer. `server.py` mounts `system_app` at `/system`, so every p
 
 | Module | Provides |
 | --- | --- |
-| `__init__.py` | `system_app`: the status page, `/health` and the `database_ok()` check both use, the `TracerError` handler, the four routers below, then the 501 catch-all |
+| `__init__.py` | `system_app`: the `RecordCoverage` middleware, the status page, `/health` and the `database_ok()` check both use, the `TracerError` handler, the four routers below, then the 501 catch-all |
 | `pages.py` | The status page: `render()`, `operations()` read from `system-openapi.yaml`, `STATUS` (how each operation in that file is answered, the 501s included) and `shown_operations()`, the ones the page lists. `SPEC_LINK` points at the file on GitHub's `main`, not the deployed copy |
 | `dashboard.py` | The dashboard: its route, `NOTICES` (each flag's text and color, most urgent first) and the HTML, built from `control.snapshot` |
-| `calls.py` | `identity()` (the header checks), `read_body()`, `call()` (headers, then the service in the thread pool) and `error_response()` (the Error body) |
+| `calls.py` | `identity()` (the header checks), `read_body()`, `call()` (headers, then the coverage claim, then the service in the thread pool) and `error_response()` (the Error body) |
 | `control.py` | The test-control routes, answering errors as `{message, source}` |
 | `routes.py` | The project operations, one route per service operation |
 | `stubs.py` | The 405 and 501 routes, through `services/placeholders.py` |
+| `recording.py` | `RecordCoverage`, the ASGI middleware that records each project call's lines for its session's code coverage (see Rules) |
 
 ## What it serves
 
@@ -41,6 +42,8 @@ The system's web layer. `server.py` mounts `system_app` at `/system`, so every p
 - A `TracerError` from a project route reaches the app's handler, which answers with `error_response()`: `{error, message, field}` with the status from `errors.HTTP_STATUS`, and `field` left out when it has no value.
 - 405 responses carry an `Allow` header naming the methods the path does have; `stubs._refuse()` adds it.
 - Test-control routes catch errors themselves in `control._respond()` and answer `{message, source: "system"}`: a `TracerError` with its status, unreachable storage (a missing or invalid setting, a driver we don't install, a malformed URL, or no database) with 500 "System storage is unavailable", and any other fault with 500 "System fault: <exception name>". Setup's and the settings update's 400s still answer when the database is down, since those services validate first.
+- Every request carrying `X-Test-Run` runs inside a `code_coverage.recording()`. `calls.call()` claims it for that header's session once `identity()` passes, so only project routes, the 405 and 501 routes included, store lines. Test control, the status page, the dashboard, `/health`, the catch-all and header errors store none and touch no database for it. Rejected project calls store their lines too, and an unknown session stores nothing.
+- `RecordCoverage` saves the lines in the thread pool before the response's last body chunk is sent, so a report read after a reply counts it. A failed save is logged as a warning and never changes the answer. A request that ends in an unhandled fault saves nothing, since Starlette's 500 bypasses the middleware.
 - Register every route before the catch-all, which matches every path. `tests/test_server.py` checks that each project operation in `system-openapi.yaml` has its own route.
 - `/health` is the check that a deploy reaches the database (root "Deployment"). It logs the cause of a 503 as a warning and never puts it in the response.
 - The status page shows in a browser that the deploy is up and what it answers. It still loads when the database can't be reached, showing it as unavailable, so it also works on previews. It reads `system-openapi.yaml` on first use, not at import, and caches it for the life of the process, so a missing file breaks only this page. `tester/` keeps its own page.

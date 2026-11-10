@@ -100,7 +100,7 @@ Three roles keep the grants enforceable: a table's owner can always grant itself
 | App (`tracer_app`) | `DATABASE_URL` | No | The service, tests and `scripts/backfill_deadlines.py` |
 | Tester (`tracer_tester`) | `TESTER_DATABASE_URL` | No | The tester's session storage and tests |
 
-- `scripts/setup_db.py` creates both login roles, all seven tables and the grants, and fails unless each role ends up with exactly its expected privileges; `scripts/AGENTS.md` lists the grants and checks. Neither login role can DELETE or TRUNCATE anything, and the app role has only INSERT and SELECT on `audit_entries` (REQ-22, AC-23).
+- `scripts/setup_db.py` creates both login roles, all eight tables and the grants, and fails unless each role ends up with exactly its expected privileges; `scripts/AGENTS.md` lists the grants and checks. Neither login role can DELETE or TRUNCATE anything, and the app role has only INSERT and SELECT on `audit_entries` (REQ-22, AC-23).
 - Neither the service nor the tester creates tables at startup; their roles can't.
 - The owner role needs permission to create tables and roles. Locally that's the container's superuser; on Neon it's `neondb_owner` (see Deployment).
 

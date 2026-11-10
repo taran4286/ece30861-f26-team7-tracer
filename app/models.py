@@ -233,3 +233,20 @@ class AuditEntry(Base):
     # none_as_null: a Python None is stored as SQL NULL, not JSON null.
     before: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     after: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class CoverageLine(Base):
+    """A line of the system's code that a session's project calls ran (TEST-02).
+
+    `app/code_coverage.py` inserts each line once per session and counts them for the
+    coverage report. It isn't project data, so snapshots don't include it.
+    """
+
+    __tablename__ = "coverage_lines"
+
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("test_sessions.session_id"), primary_key=True
+    )
+    # From the repo root, e.g. "app/services/workflow.py".
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    line: Mapped[int] = mapped_column(Integer, primary_key=True)

@@ -8,6 +8,7 @@ from psycopg.errors import InsufficientPrivilege
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from app import code_coverage
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
 from app.models import RegistrantType, TestSession
@@ -122,11 +123,28 @@ def test_invalid_setup_stores_nothing(body, field):
     assert table_counts() == before
 
 
-def test_coverage_report_has_null_counts_and_a_reason():
+def test_coverage_report_counts_the_sessions_stored_lines():
     session_id = new_session()
-    unmeasured = {"covered": None, "total": None, "basis": control.CODE_COVERAGE_BASIS}
+    measure = {"covered": 0, "total": code_coverage.total_lines(),
+               "basis": control.CODE_COVERAGE_BASIS}
     assert control.coverage_report(session_id) == {
-        "session_id": session_id, "coverage": {"code": unmeasured}
+        "session_id": session_id, "coverage": {"code": measure}
+    }
+    ran = sorted(code_coverage.executable_lines()["app/clock.py"])
+    code_coverage.save(session_id, frozenset(("app/clock.py", line) for line in ran))
+    before = table_counts()
+    report = control.coverage_report(session_id)
+    assert report["coverage"]["code"] == {**measure, "covered": len(ran)}
+    # Reading the report changes nothing, so a second read gives the same answer.
+    assert control.coverage_report(session_id) == report
+    assert table_counts() == before
+
+
+def test_coverage_report_has_null_counts_when_lines_cant_be_recorded(monkeypatch):
+    session_id = new_session()
+    monkeypatch.setattr(code_coverage, "unavailable", lambda: "no tool ID is free")
+    assert control.coverage_report(session_id)["coverage"]["code"] == {
+        "covered": None, "total": None, "basis": "Source lines; no tool ID is free"
     }
 
 
