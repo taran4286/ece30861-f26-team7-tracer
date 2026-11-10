@@ -7,6 +7,7 @@ from fastapi import Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
+from app import code_coverage
 from app.errors import ErrorCode, TracerError
 from app.roles import Role
 
@@ -53,8 +54,10 @@ async def call(
     """Check the identity headers, then run the blocking service in the thread pool.
 
     A TracerError from either reaches the app's handler, which answers with error_response().
+    Once the headers pass, the request's lines count for its session's coverage.
     """
     who = identity(request)
+    code_coverage.claim(who["session_id"])
     return JSONResponse(await run_in_threadpool(service, *args, **who), status_code=status)
 
 

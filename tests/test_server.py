@@ -11,13 +11,16 @@ from pathlib import Path
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.exc import ArgumentError, OperationalError
 
 import app.api as system_api
 import app.db as db
 import app.services.control as control_service
+from app import code_coverage
 from app.api import pages
 from app.config import get_settings
+from app.models import CoverageLine
 from server import app as server_app
 from tester.spec import response_errors
 
@@ -269,7 +272,7 @@ def test_setup_coverage_and_snapshot_match_the_spec():
     response = client.get("/system/test/report", params={"session_id": session_id})
     assert response.status_code == 200
     matches_spec("GET", "/test/report", response)
-    assert response.json()["coverage"]["code"]["covered"] is None
+    assert response.json()["coverage"]["code"]["covered"] == 0
 
     response = client.get(f"/system/test/report/{session_id}")
     assert response.status_code == 200
@@ -379,6 +382,62 @@ def test_setup_answers_when_storage_is_down(monkeypatch):
                            json={"session_id": "pytest-never-stored", "setup": {}})
     control_error(response, 500)
     assert response.json()["message"] == "System storage is unavailable"
+
+
+def code_coverage_of(session_id: str) -> dict:
+    response = client.get("/system/test/report", params={"session_id": session_id})
+    assert response.status_code == 200
+    return response.json()["coverage"]["code"]
+
+
+def stored_paths(session_id: str) -> set[str]:
+    with db.transaction() as tx:
+        return set(tx.scalars(
+            select(CoverageLine.path).where(CoverageLine.session_id == session_id)
+        ))
+
+
+def test_project_calls_count_toward_their_sessions_code_coverage(api_incident):
+    session_id, other = api_incident["session_id"], new_session()
+    measure = code_coverage_of(session_id)
+    assert 0 < measure["covered"] <= measure["total"] == code_coverage.total_lines()
+    assert {"app/api/calls.py", "app/api/routes.py", "app/services/incidents.py",
+            "app/services/evidence.py"} <= stored_paths(session_id)
+    assert code_coverage_of(other)["covered"] == 0
+
+
+def test_rejected_project_calls_count_too(session_id):
+    response = client.post("/system/incidents", headers=headers(session_id, "Board"), json={})
+    project_error(response, 403, "FORBIDDEN_ROLE")
+    assert "app/roles.py" in stored_paths(session_id)
+
+
+def test_test_control_and_header_errors_record_nothing(session_id):
+    sent = headers(session_id)
+    client.get("/system/test/report", params={"session_id": session_id}, headers=sent)
+    client.get(f"/system/test/report/{session_id}", headers=sent)
+    client.patch(f"/system/test/sessions/{session_id}/settings", json={}, headers=sent)
+    response = client.post("/system/incidents", headers={**sent, "X-User-Role": "Admin"}, json={})
+    project_error(response, 400, "VALIDATION_ERROR", "X-User-Role")
+    assert code_coverage_of(session_id)["covered"] == 0
+
+
+def test_an_unknown_session_stores_no_coverage():
+    session_id = f"pytest-{uuid.uuid4().hex}"
+    response = client.get(url("/incidents/{incident_id}"), headers=headers(session_id))
+    project_error(response, 404, "NOT_FOUND")
+    assert stored_paths(session_id) == set()
+
+
+def test_a_failed_coverage_save_leaves_the_answer_alone(session_id, monkeypatch):
+    def unreachable(*args):
+        raise OperationalError("INSERT", {}, Exception("connection refused"))
+
+    monkeypatch.setattr(code_coverage, "save", unreachable)
+    response = client.post("/system/incidents", headers=headers(session_id),
+                           json={"title": "Ransomware", "discovery_date": "2026-10-01"})
+    assert response.status_code == 201
+    assert code_coverage_of(session_id)["covered"] == 0
 
 
 # --- Project operations -------------------------------------------------------------------

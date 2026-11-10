@@ -27,7 +27,15 @@ from sqlalchemy.exc import DBAPIError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db import Base  # noqa: E402
-from app.models import AuditEntry, Determination, Evidence, Filing, Incident, TestSession  # noqa: E402
+from app.models import (  # noqa: E402
+    AuditEntry,
+    CoverageLine,
+    Determination,
+    Evidence,
+    Filing,
+    Incident,
+    TestSession,
+)
 from tester.db import Base as TesterBase  # noqa: E402
 from tester.models import StoredSession  # noqa: E402
 
@@ -42,6 +50,8 @@ GRANTS: dict[str, frozenset[str]] = {
     Determination.__tablename__: frozenset({"SELECT", "INSERT"}),
     Filing.__tablename__: frozenset({"SELECT", "INSERT"}),
     AuditEntry.__tablename__: frozenset({"SELECT", "INSERT"}),
+    # Lines are only ever added; ON CONFLICT DO NOTHING needs no UPDATE.
+    CoverageLine.__tablename__: frozenset({"SELECT", "INSERT"}),
 }
 
 # Column-level grants on top of GRANTS: the settings PATCH changes only these, so

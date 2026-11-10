@@ -17,6 +17,7 @@ from app.api import pages
 from app.api.calls import error_response
 from app.api.control import router as control_router
 from app.api.dashboard import router as dashboard_router
+from app.api.recording import RecordCoverage
 from app.api.routes import router as project_router
 from app.api.stubs import router as stub_router
 from app.db import get_engine
@@ -27,6 +28,8 @@ logger = logging.getLogger(__name__)
 ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 
 system_app = FastAPI(title="Tracer system")
+# Records each project call's lines for its session's coverage report.
+system_app.add_middleware(RecordCoverage)
 
 
 def database_ok() -> bool:

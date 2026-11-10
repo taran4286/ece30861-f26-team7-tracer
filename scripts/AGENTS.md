@@ -1,6 +1,6 @@
 # scripts/: database setup and the deadline backfill
 
-`setup_db.py` creates the app and tester roles, all seven tables and the grants, running as the owner role. Root "Database roles" says which role is which, and "Local setup steps" says how to run it and read the result. `backfill_deadlines.py` fills missing 8-K due dates (see its section at the end).
+`setup_db.py` creates the app and tester roles, all eight tables and the grants, running as the owner role. Root "Database roles" says which role is which, and "Local setup steps" says how to run it and read the result. `backfill_deadlines.py` fills missing 8-K due dates (see its section at the end).
 
 ## What it applies
 
@@ -8,10 +8,10 @@ Each run resets both login roles, so leftover privileges don't survive, then gra
 
 | Role | Schema `public` | Tables |
 | --- | --- | --- |
-| App (`GRANTS`, `COLUMN_GRANTS`) | USAGE | `test_sessions`: SELECT, INSERT, and UPDATE on `test_now`, `at_risk_threshold_days` and `llm_base_url` only; `incidents`: SELECT, INSERT, UPDATE; `evidence`: SELECT, INSERT; `determinations`: SELECT, INSERT; `filings`: SELECT, INSERT; `audit_entries`: SELECT, INSERT |
+| App (`GRANTS`, `COLUMN_GRANTS`) | USAGE | `test_sessions`: SELECT, INSERT, and UPDATE on `test_now`, `at_risk_threshold_days` and `llm_base_url` only; `incidents`: SELECT, INSERT, UPDATE; `evidence`: SELECT, INSERT; `determinations`: SELECT, INSERT; `filings`: SELECT, INSERT; `audit_entries`: SELECT, INSERT; `coverage_lines`: SELECT, INSERT |
 | Tester (`TESTER_GRANTS`) | USAGE | `tester_sessions`: SELECT, INSERT, UPDATE |
 
-Nothing else: no DELETE or TRUNCATE anywhere, no UPDATE on `evidence`, `determinations`, `filings` or `audit_entries`, none on `test_sessions`' other columns (so `registrant_type` can't change, TEST-07), and neither role gets anything on the other's tables. `audit_entries.seq` and `filings.seq` are identity columns, so the app role needs no sequence grant.
+Nothing else: no DELETE or TRUNCATE anywhere, no UPDATE on `evidence`, `determinations`, `filings`, `audit_entries` or `coverage_lines`, none on `test_sessions`' other columns (so `registrant_type` can't change, TEST-07), and neither role gets anything on the other's tables. `audit_entries.seq` and `filings.seq` are identity columns, so the app role needs no sequence grant.
 
 ## How it's built
 
@@ -22,7 +22,7 @@ Nothing else: no DELETE or TRUNCATE anywhere, no UPDATE on `evidence`, `determin
   2. For each login: refuse a user that is the owner; create its role, or set its password if it exists; revoke every role membership it holds; check `rolsuper`, `rolcreatedb`, `rolcreaterole`, `rolreplication` and `rolbypassrls`, clearing them with `ALTER ROLE` only when the owner is a superuser and failing otherwise; and fail if it owns the database or schema `public`, since a schema's owner can drop any table in it.
   3. Revoke CREATE on `public` from `PUBLIC`.
   4. Add each value an existing enum type lacks, in model order, with `ALTER TYPE … ADD VALUE`; fail if a type holds a value the models don't, since only a wipe or a migration fixes that. Then `create_all` for both models, which creates only missing tables and types.
-  5. Apply the grants: the owner takes ownership of all seven tables and every enum type they use; on each table, all privileges are revoked from `PUBLIC` and both roles, column privileges included; then each role gets USAGE on `public`, its table grants and its column grants.
+  5. Apply the grants: the owner takes ownership of all eight tables and every enum type they use; on each table, all privileges are revoked from `PUBLIC` and both roles, column privileges included; then each role gets USAGE on `public`, its table grants and its column grants.
   6. Verify each role with `has_table_privilege` on every table in both grant maps (SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, plus MAINTAIN on Postgres 17 and later), `has_column_privilege` on every column of each table in `COLUMN_GRANTS` for each privilege it lists (a column grant doesn't show in `has_table_privilege`), and `has_schema_privilege` on `public` (USAGE yes, CREATE no). It prints each role's grid and fails on any mismatch; the grids are the AC-23 permission demo.
 - It puts the repo root on `sys.path` so it can import `app` and `tester`; nothing in either imports it.
 
