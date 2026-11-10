@@ -11,6 +11,7 @@ One module per area, callable without any web framework. Each project operation 
 | `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, evidence_id=None, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
 | `filings.py` | `validate_filing_request` (pure validation), `record_filing` (storage, state and audit) | `tests/test_filings.py`, `tests/test_filing_storage.py` |
+| `drafts.py` | `load_draft_context` (eligibility and provider inputs), `validate_draft_elements` (pure output validation) | `tests/test_drafts.py` |
 | `flags.py` | `incident_flags(incident, filings, session)` | `tests/test_flags.py` |
 | `deadlines.py` | `federal_holidays`, `is_business_day`, `add_business_days`, `disclosure_due_date`, `MIN_CALENDAR_YEAR` and `MAX_CALENDAR_YEAR` | `tests/test_deadlines.py` |
 
@@ -69,6 +70,12 @@ def record_determination(
 - `incidents.incident_to_dict(tx, incident)` builds the full Incident (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values), and every operation that returns an Incident uses it. `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations, evidence and filings. `evidence_to_dict`, `determination_to_dict` and `filing_to_dict` build the parts; `raw_item` is never returned.
 - An Incident returns its stored `due_date` as YYYY-MM-DD or null, with `flags` computed on read (see Flags) and saved `filings` ordered oldest first by their internal `seq`. Its `evidence` is ordered by `imported_at`, then `evidence_id`; items from one import share an `imported_at` and their IDs are random, so they don't come back in the order they were sent.
 - `workflow.audit_entry_to_dict(entry)` builds an audit entry (without `seq` or `session_id`) for the audit list and the snapshot.
+
+## Draft preparation and validation (`drafts.py`; REQ-08, REQ-15, REQ-16)
+
+- `load_draft_context(incident_id, *, role, session_id)` checks session, role, scoped incident, then state. UnderAssessment and DeterminedNotMaterial return `NOT_MATERIAL`; other ineligible states return `INVALID_TRANSITION`. Eligible states are DeterminedMaterial, DisclosureDelayed and AmendmentPending. The stored form must be 8-K Item 1.05, 6-K or 8-K/A.
+- The loader returns the incident ID, title, discovery date, stored form type, session LLM URL and the incident's normalized evidence. The transaction closes before the caller uses those inputs. No incident, filing or audit record changes.
+- Pass the provider's normalized `elements` object and the set of evidence IDs from that context to `validate_draft_elements`. It checks all four elements, requires citations on drafted text, and accepts the exact placeholder `Not yet determined` with empty citations and flags. Invalid output raises a field-specific `TracerError` without mutating the response. The provider caller handles that error internally, since it describes generated output rather than a bad API request. The validator checks citation ownership, while reviewers check whether the prose is supported.
 
 ## Filing request validation (`filings.py`; REQ-12, REQ-13, REQ-19)
 
