@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
-from app.models import Evidence, FormType, State
+from app.models import Evidence, State
 from app.roles import Operation, Role, require_role
 from app.services.incidents import evidence_to_dict, load_incident
 from app.services.validation import invalid, require_object, require_string
@@ -17,7 +17,6 @@ from app.sessions import load_session
 _DRAFT_STATES = frozenset({
     State.DETERMINED_MATERIAL, State.DISCLOSURE_DELAYED, State.AMENDMENT_PENDING,
 })
-_DRAFT_FORMS = frozenset({FormType.FORM_8K_ITEM_105, FormType.FORM_6K, FormType.FORM_8KA})
 _UNDETERMINED = "Not yet determined"
 
 
@@ -33,8 +32,6 @@ def load_draft_context(
             raise TracerError(ErrorCode.NOT_MATERIAL, "A draft requires a material incident")
         if incident.state not in _DRAFT_STATES:
             raise TracerError(ErrorCode.INVALID_TRANSITION, "The incident state does not allow drafting")
-        if incident.required_form not in _DRAFT_FORMS:
-            raise TracerError(ErrorCode.CONFLICT, "The incident has no supported draft form")
         evidence = tx.scalars(
             select(Evidence)
             .where(Evidence.incident_id == incident_id)

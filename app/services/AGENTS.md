@@ -73,7 +73,7 @@ def record_determination(
 
 ## Draft preparation and validation (`drafts.py`; REQ-08, REQ-15, REQ-16)
 
-- `load_draft_context(incident_id, *, role, session_id)` checks session, role, scoped incident, then state. UnderAssessment and DeterminedNotMaterial return `NOT_MATERIAL`; other ineligible states return `INVALID_TRANSITION`. Eligible states are DeterminedMaterial, DisclosureDelayed and AmendmentPending. The stored form must be 8-K Item 1.05, 6-K or 8-K/A.
+- `load_draft_context(incident_id, *, role, session_id)` checks session, role, scoped incident, then state. UnderAssessment and DeterminedNotMaterial return `NOT_MATERIAL`; other ineligible states return `INVALID_TRANSITION`. Eligible states are DeterminedMaterial, DisclosureDelayed and AmendmentPending.
 - The loader returns the incident ID, title, discovery date, stored form type, session LLM URL and the incident's normalized evidence. The transaction closes before the caller uses those inputs. No incident, filing or audit record changes.
 - Pass the provider's normalized `elements` object and the set of evidence IDs from that context to `validate_draft_elements`. It checks all four elements, requires citations on drafted text, and accepts the exact placeholder `Not yet determined` with empty citations and flags. Invalid output raises a field-specific `TracerError` without mutating the response. The provider caller handles that error internally, since it describes generated output rather than a bad API request. The validator checks citation ownership, while reviewers check whether the prose is supported.
 
