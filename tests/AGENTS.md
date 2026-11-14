@@ -4,6 +4,7 @@ What each file covers, the shared helpers, and how the suite runs. Service tests
 
 | File | Covers |
 | --- | --- |
+| `test_drafts.py` | Draft eligibility, session and evidence scoping, no incident or audit writes, and output validation with fake responses |
 | `conftest.py` | The `default_session` fixture, which stores `SESSION_ID` once per test run, and the `incident` fixture: a fresh UnderAssessment incident created by a Responder in that session |
 | `test_filings.py` | Filing-request validation without storage: allowed/matching forms, required fields, date boundaries, accession format, version shapes, unique unavailable elements, conditional home-disclosure date, parsed output and unchanged input; a fixture refuses database access |
 | `test_filing_storage.py` | Filing persistence for Domestic and FPI, delay and prepared amendments, append order and batch reads, preserved context, session and role checks, body-before-state errors, stale versions (rejected before the state check, after body errors) and current or newer ones accepted, rollback after audit insertion, and competing requests saving only once, the second rejected as stale |
