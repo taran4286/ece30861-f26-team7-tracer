@@ -8,8 +8,8 @@ The building blocks every service uses, and the system's tables. Business logic 
 | --- | --- |
 | `config.py` | `Settings` (`database_url`, from `DATABASE_URL`) through the cached `get_settings()` |
 | `db.py` | `Base`, the cached `get_engine()`, and `transaction()`: one session per operation, committed on success and rolled back on any error. `get_engine()` reads `DATABASE_URL` through `parse_url(value, setting)`, which raises `ArgumentError`, a `SQLAlchemyError`, for a malformed URL, where SQLAlchemy alone would raise a plain `ValueError` that storage handlers miss. Its message names the setting, never the URL, which holds a password |
-| `models.py` | The six tables (`TestSession` first), their enums, `SiemSeverity` (checked on import, not stored), `Flag` (computed on read, not stored) and `new_id(prefix)` |
-| `errors.py` | `ErrorCode`, `HTTP_STATUS` (each code's status) and `TracerError(code, message, field=None)`, whose `status` comes from that map; `to_dict()` returns `error`, `message` and `field`, with `field` as `None` when unset, which the API layer leaves out (see `api/AGENTS.md`). Three codes map to 409: `INVALID_TRANSITION` for a project state error, `STALE_VERSION` for a change sent with an older incident version than the stored one (REQ-21), and `CONFLICT`, raised only for a test session ID already in use |
+| `models.py` | The eight tables (`TestSession` first), their enums, `SiemSeverity` (checked on import, not stored), `Flag` (computed on read, not stored) and `new_id(prefix)` |
+| `errors.py` | `ErrorCode`, `HTTP_STATUS` (each code's status) and `TracerError(code, message, field=None)`, whose `status` comes from that map; `to_dict()` returns `error`, `message` and `field`, with `field` as `None` when unset, which the API layer leaves out (see `api/AGENTS.md`). Three codes map to 409: `INVALID_TRANSITION` for a project state error, `STALE_VERSION` for a change sent with an older incident version than the stored one (REQ-21), and `CONFLICT`, raised only for a test session ID already in use. `DRAFTING_UNAVAILABLE` maps to 503; no operation raises it |
 | `roles.py` | `Role`, `Operation`, the `PERMISSIONS` map and `require_role(role, operation)`, which raises `FORBIDDEN_ROLE`; a role string that isn't a `Role` gets no permissions, so it also gets `FORBIDDEN_ROLE`. `Operation.REPLACE_OR_DELETE` covers the 405 routes: only DisclosureApprover passes it, and then gets 405 |
 | `clock.py` | `today(session)`, the UTC date of the session's `test_now`, for every date rule, and `utcnow()` for stored timestamps |
 | `sessions.py` | `load_session(tx, session_id, *, for_update=False)`: the `TestSession` a request names in `X-Test-Run` or a test-control path, or `NOT_FOUND`; `for_update=True` locks its row, which the app role's column-level UPDATE grant on `test_sessions` allows |
@@ -17,7 +17,7 @@ The building blocks every service uses, and the system's tables. Business logic 
 
 ## Data model
 
-Six tables hold the system's data; the tester keeps its own in `tester_sessions` (see `tester/AGENTS.md`). IDs are opaque strings from `new_id()` except session IDs, which the caller supplies. Every timestamp column is `timestamp with time zone`, stored in UTC. JSON columns are `JSONB`.
+Eight tables hold the system's data; the tester keeps its own in `tester_sessions` (see `tester/AGENTS.md`). IDs are opaque strings from `new_id()` except session IDs, which the caller supplies. Every timestamp column is `timestamp with time zone`, stored in UTC. JSON columns are `JSONB`.
 
 **test_sessions** (`TestSession`)
 
@@ -88,6 +88,29 @@ Six tables hold the system's data; the tester keeps its own in `tester_sessions`
 | impact_categories | JSONB array, not null | always empty |
 | raw_item | JSONB, not null | the item as sent; never returned by the API |
 
+**drafts** (`Draft`)
+
+No operation writes it. A draft reaches its session through its incident.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| draft_id | text, primary key | `drf_…` |
+| incident_id | text, not null, references incidents, indexed | |
+| form_type | `form_type` enum, not null | the same type as `incidents.required_form` |
+| elements | JSONB object, not null | `nature`, `scope`, `timing` and `impact`, each `{text, citations, sensitive_flags}` |
+| status | `draft_status` enum, not null | defaults to Proposed |
+| accepted_by | text, nullable | the accepting user |
+| accepted_at | timestamp, nullable | real server time |
+
+**incident_groups** (`IncidentGroup`)
+
+No operation writes it. Members aren't listed here: a member incident's `group_id` names its group, with no foreign key to this table.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| group_id | text, primary key | `grp_…` |
+| session_id | text, not null, references test_sessions, indexed | the session that created it |
+
 **audit_entries** (`AuditEntry`)
 
 | Column | Type | Notes |
@@ -108,7 +131,8 @@ Six tables hold the system's data; the tester keeps its own in `tester_sessions`
 - `FormType`: `8-K Item 1.05`, `8-K Item 8.01`, `6-K`, `8-K/A`.
 - `Decision`: Material, NotMaterial.
 - `EvidenceSource`: ticketing, siem.
-- `AuditAction`: create_incident, import_evidence, record_determination, transition, record_filing.
+- `AuditAction`: create_incident, import_evidence, tag_evidence, record_determination, transition, record_filing, accept_draft, create_group. No operation writes tag_evidence, accept_draft or create_group.
+- `DraftStatus`: Proposed, Accepted.
 - `RegistrantType`: Domestic, FPI.
 - Not stored as a type: `ImpactCategory` (operational, financial, legal_regulatory, reputational, data_compromised) `SiemSeverity` (low, medium, high, critical, checked on import) and `Flag` (at_risk, warning, overdue, computed on read).
 
@@ -118,7 +142,7 @@ Six tables hold the system's data; the tester keeps its own in `tester_sessions`
 - Never call `datetime.now()` or `date.today()` outside `clock.py`; use `clock`. Date rules use `today(session)`, never the real date.
 - Raise only `TracerError`, with a path-style `field` on validation errors. A new `ErrorCode` needs its status in `HTTP_STATUS`.
 - Loaders (`load_session`, `load_incident`, `load_evidence`) treat an ID containing NUL as unknown without querying: PostgreSQL text can't hold NUL, so the query would fail instead of returning nothing.
-- Make IDs with `new_id()`. Prefixes in use: `inc`, `ev`, `aud`. Session IDs are the exception: the caller supplies them.
+- Make IDs with `new_id()`. Prefixes in use: `inc`, `ev`, `aud`, `drf`, `grp`. Session IDs are the exception: the caller supplies them.
 - `TestSession` sets `__test__ = False`, so pytest doesn't collect it as a test class when a test file imports it.
 - `get_settings()`, `get_engine()` and the session factory behind `transaction()` (`_session_factory()`) are cached. A test that changes a setting, `DATABASE_URL` included, clears all three before and after; otherwise later code keeps the old settings or database.
 - `get_engine()` sets `pool_pre_ping`, so a pooled connection the server dropped while idle is replaced before use instead of failing the operation. Neon drops them whenever it pauses (see the root "Deployment" section); keep it on.

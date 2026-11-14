@@ -27,7 +27,16 @@ from sqlalchemy.exc import DBAPIError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db import Base  # noqa: E402
-from app.models import AuditEntry, Determination, Evidence, Filing, Incident, TestSession  # noqa: E402
+from app.models import (  # noqa: E402
+    AuditEntry,
+    Determination,
+    Draft,
+    Evidence,
+    Filing,
+    Incident,
+    IncidentGroup,
+    TestSession,
+)
 from tester.db import Base as TesterBase  # noqa: E402
 from tester.models import StoredSession  # noqa: E402
 
@@ -37,18 +46,26 @@ SCHEMA = "public"
 GRANTS: dict[str, frozenset[str]] = {
     TestSession.__tablename__: frozenset({"SELECT", "INSERT"}),
     Incident.__tablename__: frozenset({"SELECT", "INSERT", "UPDATE"}),
-    # Phase 4 adds UPDATE for tagging.
     Evidence.__tablename__: frozenset({"SELECT", "INSERT"}),
     Determination.__tablename__: frozenset({"SELECT", "INSERT"}),
     Filing.__tablename__: frozenset({"SELECT", "INSERT"}),
+    Draft.__tablename__: frozenset({"SELECT", "INSERT"}),
+    IncidentGroup.__tablename__: frozenset({"SELECT", "INSERT"}),
     AuditEntry.__tablename__: frozenset({"SELECT", "INSERT"}),
 }
 
-# Column-level grants on top of GRANTS: the settings PATCH changes only these, so
-# registrant_type stays fixed even for the app role (TEST-07).
+# Column-level grants on top of GRANTS. The settings PATCH changes only these session
+# columns, so registrant_type stays fixed even for the app role (TEST-07); tagging changes
+# only an evidence item's categories, and accepting a draft only its acceptance fields.
 COLUMN_GRANTS: dict[str, dict[str, frozenset[str]]] = {
     TestSession.__tablename__: {
         "UPDATE": frozenset({"test_now", "at_risk_threshold_days", "llm_base_url"}),
+    },
+    Evidence.__tablename__: {
+        "UPDATE": frozenset({"impact_categories"}),
+    },
+    Draft.__tablename__: {
+        "UPDATE": frozenset({"status", "accepted_by", "accepted_at"}),
     },
 }
 

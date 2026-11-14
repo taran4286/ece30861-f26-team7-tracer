@@ -11,9 +11,11 @@ from app.db import transaction
 from app.models import (
     AuditEntry,
     Determination,
+    Draft,
     Evidence,
     Filing,
     Incident,
+    IncidentGroup,
     RegistrantType,
     State,
     TestSession,
@@ -84,7 +86,10 @@ def table_counts() -> dict[str, int]:
     with transaction() as tx:
         return {
             model.__tablename__: tx.scalar(select(func.count()).select_from(model))
-            for model in (TestSession, Incident, Evidence, Determination, Filing, AuditEntry)
+            for model in (
+                TestSession, Incident, Evidence, Determination, Filing, Draft, IncidentGroup,
+                AuditEntry,
+            )
         }
 
 

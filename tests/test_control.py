@@ -377,11 +377,31 @@ def test_the_app_role_cannot_update_other_session_columns(column):
     assert isinstance(error.value.orig, InsufficientPrivilege)
 
 
+@pytest.mark.parametrize("table,column", [
+    ("evidence", "impact_categories"),
+    ("drafts", "status"), ("drafts", "accepted_by"), ("drafts", "accepted_at"),
+])
+def test_the_app_role_can_update_tags_and_draft_acceptance(table, column):
+    # Matches no row: only the privilege check is under test.
+    with transaction() as tx:
+        tx.execute(text(f"UPDATE {table} SET {column} = {column} WHERE incident_id = 'none'"))
+
+
 @pytest.mark.parametrize("statement", [
     "UPDATE filings SET accession_number = accession_number WHERE incident_id = 'none'",
     "DELETE FROM filings WHERE incident_id = 'none'",
+    *(f"UPDATE evidence SET {column} = {column} WHERE incident_id = 'none'"
+      for column in ("evidence_id", "incident_id", "source_ref", "summary", "raw_item")),
+    "DELETE FROM evidence WHERE incident_id = 'none'",
+    *(f"UPDATE drafts SET {column} = {column} WHERE incident_id = 'none'"
+      for column in ("draft_id", "incident_id", "form_type", "elements")),
+    "DELETE FROM drafts WHERE incident_id = 'none'",
+    *(f"UPDATE incident_groups SET {column} = {column} WHERE group_id = 'none'"
+      for column in ("group_id", "session_id")),
+    "DELETE FROM incident_groups WHERE group_id = 'none'",
 ])
-def test_the_app_role_cannot_change_or_delete_filings(statement):
+def test_the_app_role_cannot_change_or_delete_stored_records(statement):
+    # Matches no row, so a wrongly granted privilege still changes nothing.
     with pytest.raises(DBAPIError) as error, transaction() as tx:
         tx.execute(text(statement))
     assert isinstance(error.value.orig, InsufficientPrivilege)

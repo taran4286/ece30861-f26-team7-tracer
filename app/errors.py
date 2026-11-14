@@ -12,6 +12,7 @@ class ErrorCode(StrEnum):
     STALE_VERSION = "STALE_VERSION"
     CONFLICT = "CONFLICT"
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+    DRAFTING_UNAVAILABLE = "DRAFTING_UNAVAILABLE"
 
 
 # Each code's HTTP status, from the spec's shared responses.
@@ -24,6 +25,7 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.STALE_VERSION: 409,
     ErrorCode.CONFLICT: 409,
     ErrorCode.NOT_IMPLEMENTED: 501,
+    ErrorCode.DRAFTING_UNAVAILABLE: 503,
 }
 
 
