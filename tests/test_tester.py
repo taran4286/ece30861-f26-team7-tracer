@@ -586,7 +586,11 @@ def test_the_tester_role_cannot_delete_sessions():
 
 
 @pytest.mark.parametrize(
-    "table", ["test_sessions", "incidents", "evidence", "determinations", "filings", "audit_entries"]
+    "table",
+    [
+        "test_sessions", "incidents", "evidence", "determinations", "filings", "drafts",
+        "incident_groups", "audit_entries",
+    ],
 )
 def test_the_tester_role_cannot_read_system_tables(table):
     with pytest.raises(DBAPIError) as error, tester_db.transaction() as tx:

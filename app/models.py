@@ -23,7 +23,7 @@ from app.db import Base
 
 
 def new_id(prefix: str) -> str:
-    """Opaque, globally unique ID, e.g. inc_3f2a...; prefixes: inc, ev, aud."""
+    """Opaque, globally unique ID, e.g. inc_3f2a...; prefixes: inc, ev, aud, drf, grp."""
     return f"{prefix}_{uuid.uuid4().hex}"
 
 
@@ -58,9 +58,17 @@ class ImpactCategory(StrEnum):
 class AuditAction(StrEnum):
     CREATE_INCIDENT = "create_incident"
     IMPORT_EVIDENCE = "import_evidence"
+    TAG_EVIDENCE = "tag_evidence"
     RECORD_DETERMINATION = "record_determination"
     TRANSITION = "transition"
     RECORD_FILING = "record_filing"
+    ACCEPT_DRAFT = "accept_draft"
+    CREATE_GROUP = "create_group"
+
+
+class DraftStatus(StrEnum):
+    PROPOSED = "Proposed"
+    ACCEPTED = "Accepted"
 
 
 class Decision(StrEnum):
@@ -210,6 +218,39 @@ class Evidence(Base):
     impact_categories: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     # The original source item, kept for traceability.
     raw_item: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class Draft(Base):
+    """An advisory LLM draft of an incident's disclosure form."""
+
+    __tablename__ = "drafts"
+
+    draft_id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("drf"))
+    # Drafts belong to their incident, and through it to the incident's session.
+    incident_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("incidents.incident_id"), nullable=False, index=True
+    )
+    form_type: Mapped[FormType] = mapped_column(_db_enum(FormType, "form_type"), nullable=False)
+    # nature, scope, timing and impact, each {text, citations, sensitive_flags}.
+    elements: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[DraftStatus] = mapped_column(
+        _db_enum(DraftStatus, "draft_status"), nullable=False, default=DraftStatus.PROPOSED
+    )
+    # Null until the draft is accepted.
+    accepted_by: Mapped[str | None] = mapped_column(Text)
+    accepted_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+
+
+class IncidentGroup(Base):
+    """Related incidents; each member names it in incidents.group_id."""
+
+    __tablename__ = "incident_groups"
+
+    group_id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: new_id("grp"))
+    # Lookups find a group only in the session that created it.
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("test_sessions.session_id"), nullable=False, index=True
+    )
 
 
 class AuditEntry(Base):
