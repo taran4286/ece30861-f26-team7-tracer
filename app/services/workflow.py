@@ -240,10 +240,16 @@ def record_determination(
         if owned_refs != set(refs):
             raise invalid("evidence_refs", "Every evidence ID must belong to this incident")
         version = parse_integer(body.get("version"), "version")
-        if "voluntary_disclosure" in body:
-            if not isinstance(body["voluntary_disclosure"], bool):
-                raise invalid("voluntary_disclosure", "Expected a boolean")
-            raise TracerError(ErrorCode.NOT_IMPLEMENTED, "Voluntary disclosure is not implemented")
+        voluntary = body.get("voluntary_disclosure", False)
+        if not isinstance(voluntary, bool):
+            raise invalid("voluntary_disclosure", "Expected a boolean")
+        if voluntary and decision == Decision.MATERIAL:
+            raise invalid(
+                "voluntary_disclosure", "Voluntary disclosure applies only to a NotMaterial determination"
+            )
+        if voluntary:
+            # A voluntary 8-K Item 8.01 has no deadline, so due_date stays null (REQ-18).
+            required_form = FormType.FORM_8K_ITEM_801
         require_current_version(incident, version)
         if incident.state != State.UNDER_ASSESSMENT:
             raise TracerError(ErrorCode.INVALID_TRANSITION, "Determination requires UnderAssessment")
@@ -251,7 +257,7 @@ def record_determination(
         before = {"state": incident.state.value, "determination": None, "version": incident.version}
         determination = Determination(
             incident_id=incident_id, decision=decision, determination_date=determination_date,
-            rationale=rationale, evidence_refs=list(refs), voluntary_disclosure=False,
+            rationale=rationale, evidence_refs=list(refs), voluntary_disclosure=voluntary,
             recorded_by=user_id, recorded_at=clock.utcnow(),
         )
         if decision == Decision.MATERIAL:

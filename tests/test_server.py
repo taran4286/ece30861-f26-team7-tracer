@@ -277,7 +277,7 @@ def test_setup_coverage_and_snapshot_match_the_spec():
     assert response.json() == {
         "run": {"run_id": session_id, "test_now": "2026-10-05T15:00:00+00:00",
                 "registrant_type": "Domestic", "at_risk_threshold_days": 7,
-                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-21"]},
+                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-18", "REQ-21"]},
         "incidents": [], "groups": [], "audit": [],
     }
 
@@ -288,7 +288,7 @@ def test_setup_keeps_the_settings_sent():
     assert snapshot(session_id)["run"] == {
         "run_id": session_id, "test_now": "2026-10-09T12:00:00+00:00", "registrant_type": "FPI",
         "at_risk_threshold_days": 3, "llm_base_url": "http://llm.example/v1",
-        "implemented_optional": ["REQ-05", "REQ-09", "REQ-21"],
+        "implemented_optional": ["REQ-05", "REQ-09", "REQ-18", "REQ-21"],
     }
 
 
@@ -321,7 +321,7 @@ def test_a_settings_update_answers_with_the_run(session_id):
     assert response.json() == {
         "run_id": session_id, "test_now": "2026-10-08T15:00:00+00:00",
         "registrant_type": "Domestic", "at_risk_threshold_days": 3,
-        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-21"],
+        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-18", "REQ-21"],
     }
     assert snapshot(session_id)["run"] == response.json()
 
@@ -593,6 +593,30 @@ def test_filing_body_validation_precedes_state_over_http(api_incident):
         headers=headers(session_id, "DisclosureApprover"), content="not json")
     project_error(response, 400, "VALIDATION_ERROR")
     assert snapshot(session_id) == before
+
+
+def test_voluntary_disclosure_over_http(api_incident):
+    session_id, incident_id = api_incident["session_id"], api_incident["incident_id"]
+    template = "/incidents/{incident_id}/determination"
+    approver = headers(session_id, "DisclosureApprover")
+    body = {"decision": "Material", "determination_date": "2026-10-02", "rationale": "Disclosed",
+            "evidence_refs": [api_incident["evidence_id"]], "version": 1,
+            "voluntary_disclosure": True}
+    before = snapshot(session_id)
+    rejected = client.post(url(template, incident_id), headers=approver, json=body)
+    project_error(rejected, 400, "VALIDATION_ERROR", "voluntary_disclosure")
+    matches_spec("POST", template, rejected)
+    assert snapshot(session_id) == before
+
+    determined = client.post(url(template, incident_id), headers=approver,
+                             json={**body, "decision": "NotMaterial"})
+    assert determined.status_code == 200
+    matches_spec("POST", template, determined)
+    result = determined.json()
+    assert (result["state"], result["required_form"], result["due_date"]) == (
+        "DeterminedNotMaterial", "8-K Item 8.01", None)
+    assert result["determination"]["voluntary_disclosure"] is True
+    assert snapshot(session_id)["audit"][-1]["after"]["required_form"] == "8-K Item 8.01"
 
 
 def test_tagging_over_http(api_incident):
