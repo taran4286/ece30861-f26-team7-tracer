@@ -111,7 +111,7 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 **Neon (database)**
 
 - The project was created on neon.com, not through Vercel's Neon integration. The integration sets its own `DATABASE_URL`, pooled and possibly logging in as the owner, and can give each preview deployment its own database branch.
-- It runs Postgres 18, matching the local image, in AWS US East (N. Virginia), next to Vercel's default function region `iad1`.
+- It runs Postgres 18, matching the local image, in AWS US East (Ohio), `us-east-2`.
 - The project's `neondb_owner` role is the owner: point `ADMIN_DATABASE_URL` at it. It can create roles but isn't a superuser, so `setup_db.py` can't clear forbidden attributes here and fails instead (see `scripts/AGENTS.md`). It belongs to `neon_superuser`, so it can delete rows in every table; the grants restrict only `tracer_app` and `tracer_tester`.
 - Let `setup_db.py` create `tracer_app` and `tracer_tester`; never create them in the Neon console. Roles made there join `neon_superuser`, which brings BYPASSRLS and write access, including DELETE, to every table, and `neondb_owner` can't alter them, so the run fails. Don't create helper roles there either.
 - Use the direct connection string (the host without `-pooler`). Neon's Connect dialog shows the pooled one by default, so turn off "Connection pooling" there. Change its scheme from `postgresql://` to `postgresql+psycopg://` and keep its query parameters, including `sslmode=require` and `channel_binding=require` when present; with the bare scheme, SQLAlchemy looks for psycopg2, which isn't installed. Our traffic is far below the direct connection limit, and Neon recommends direct connections for schema changes such as `setup_db.py`'s.
