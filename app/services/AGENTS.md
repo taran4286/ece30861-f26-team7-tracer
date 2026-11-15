@@ -5,10 +5,10 @@ One module per area, callable without any web framework. Each project operation 
 | Module | Functions and constants | Tests |
 | --- | --- | --- |
 | `incidents.py` | `create_incident(body, …)`, `get_incident(incident_id, …)`, and the shared `load_incident`, `require_current_version` and `*_to_dict` builders | `tests/test_incidents.py` |
-| `evidence.py` | `import_evidence(incident_id, body, …)`, `load_evidence`, `SHAPES` (where each source's fields come from) and `_FOREIGN_KEYS` | `tests/test_evidence.py` |
+| `evidence.py` | `import_evidence(incident_id, body, …)`, `tag_evidence(incident_id, evidence_id, body, …)`, `load_evidence`, `SHAPES` (where each source's fields come from) and `_FOREIGN_KEYS` | `tests/test_evidence.py` |
 | `workflow.py` | `record_determination(incident_id, body, …)`, `transition_incident(incident_id, body, …)`, `list_audit_entries(incident_id, …)`, `audit_entry_to_dict`, `ALLOWED_TRANSITIONS` and `DRAFT_ELEMENTS` | `tests/test_workflow.py` |
 | `control.py` | `setup_session(body)`, `coverage_report(session_id)`, `update_settings(session_id, body)`, `snapshot(run_id)`, `run_to_dict`, `DEFAULTS`, `MUTABLE_SETTINGS`, `INTEGER_MAX`, `CODE_COVERAGE_BASIS` and `IMPLEMENTED_OPTIONAL` | `tests/test_control.py` |
-| `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, evidence_id=None, …)` (501) | `tests/test_placeholders.py` |
+| `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
 | `filings.py` | `validate_filing_request` (pure validation), `record_filing` (storage, state and audit) | `tests/test_filings.py`, `tests/test_filing_storage.py` |
 | `drafts.py` | `load_draft_context` (eligibility and provider inputs), `validate_draft_elements` (pure output validation) | `tests/test_drafts.py` |
@@ -52,7 +52,7 @@ def record_determination(
 - Every lookup is scoped to the request's session: an incident belongs to the session that created it and is unknown (404) in any other. Evidence and determinations belong to their incident, and each audit entry records its request's session.
 - `roles.PERMISSIONS`: Responder may read, create incidents, import evidence, tag evidence and create groups; DisclosureApprover may do everything; Board may only read.
 - Today is `clock.today(session)`, the UTC date of the session's `test_now`. The registrant type is `session.registrant_type`. Neither comes from config or the real date.
-- New incidents start at `version: 1`. A determination, successful transition and recorded filing each add 1; import leaves it unchanged. Bodies that carry `version` must send an integer ≥ 1 (a 400 otherwise). After the rest of the body, a version older than the stored one is a 409 `STALE_VERSION` whose message says to reload (REQ-21); the current version, or a newer one, is accepted.
+- New incidents start at `version: 1`. A determination, successful transition and recorded filing each add 1; import and tagging leave it unchanged. Bodies that carry `version` must send an integer ≥ 1 (a 400 otherwise). After the rest of the body, a version older than the stored one is a 409 `STALE_VERSION` whose message says to reload (REQ-21); the current version, or a newer one, is accepted.
 
 **Validation**
 
@@ -66,7 +66,7 @@ def record_determination(
 
 - `incidents.load_incident(tx, incident_id, *, session_id, for_update=False)` loads the path incident or raises `NOT_FOUND`, treating another session's incident as unknown. `for_update=True` locks the row; determination, transition and filing operations use it, so two concurrent requests can't both pass the version and state checks or bump `version` from the same value: the second waits, then sees the first one's version.
 - `incidents.require_current_version(incident, version)` raises 409 `STALE_VERSION` when `version` is older than `incident.version`, with a message naming both versions and saying to reload; equal or newer passes. Only an older version is stale.
-- `evidence.load_evidence(tx, incident_id, evidence_id)` loads evidence named in the path, after its incident, or raises `NOT_FOUND`; evidence of another incident counts as unknown.
+- `evidence.load_evidence(tx, incident_id, evidence_id, *, for_update=False)` loads evidence named in the path, after its incident, or raises `NOT_FOUND`; evidence of another incident counts as unknown. `for_update=True` locks the row, which the app role's UPDATE grant on `impact_categories` allows; tagging uses it.
 - `incidents.incident_to_dict(tx, incident)` builds the full Incident (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values), and every operation that returns an Incident uses it. `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations, evidence and filings. `evidence_to_dict`, `determination_to_dict` and `filing_to_dict` build the parts; `raw_item` is never returned.
 - An Incident returns its stored `due_date` as YYYY-MM-DD or null, with `flags` computed on read (see Flags) and saved `filings` ordered oldest first by their internal `seq`. Its `evidence` is ordered by `imported_at`, then `evidence_id`; items from one import share an `imported_at` and their IDs are random, so they don't come back in the order they were sent.
 - `workflow.audit_entry_to_dict(entry)` builds an audit entry (without `seq` or `session_id`) for the audit list and the snapshot.
@@ -109,7 +109,7 @@ These take no identity headers or role and write no audit entries or project rec
   - A setting left out keeps its value, so `{}` changes nothing and returns the settings as stored.
   - In one transaction it loads the session with `load_session(..., for_update=True)` (unknown, or an ID with NUL, → 404), sets the changed attributes and returns `run_to_dict(session)` (200). The ORM's UPDATE names only the attributes set, which are the columns the app role may update (see `scripts/AGENTS.md`); `{}` issues no UPDATE. Any error leaves the session as it was.
   - Every later date rule in the session uses the new `test_now` through `clock.today(session)`.
-- `snapshot(run_id)` (`GET /test/report/{run_id}`) returns `{run, incidents, groups: [], audit}`: the session's TestRun from `run_to_dict` (`run_id` is the session ID, `implemented_optional` lists `IMPLEMENTED_OPTIONAL`: `["REQ-09", "REQ-21"]`, the at-risk flag under Flags and the stale-version check under "Sessions, roles, dates and versions"), its incidents as full Incidents ordered by `incident_id` (random, not creation order), and its audit entries ordered by `seq`. Unknown session → 404.
+- `snapshot(run_id)` (`GET /test/report/{run_id}`) returns `{run, incidents, groups: [], audit}`: the session's TestRun from `run_to_dict` (`run_id` is the session ID, `implemented_optional` lists `IMPLEMENTED_OPTIONAL`: `["REQ-05", "REQ-09", "REQ-21"]`, the tags under Evidence tags, the at-risk flag under Flags and the stale-version check under "Sessions, roles, dates and versions"), its incidents as full Incidents ordered by `incident_id` (random, not creation order), and its audit entries ordered by `seq`. Unknown session → 404.
 
 ## Incidents (`incidents.py`; REQ-01, REQ-22)
 
@@ -124,6 +124,14 @@ These take no identity headers or role and write no audit entries or project rec
 - It then rejects the other source's keys listed in `_FOREIGN_KEYS` (`items[i].<key>`): ticketing rejects `alert_id`, `rule_name`, `severity` and `detected_at`; SIEM rejects `ticket_id` and `created_at`. Other extra keys, including `summary` on a SIEM item, are kept in `raw_item`.
 - Each item becomes an evidence row: `source_ref` from `ticket_id`/`alert_id`, `summary` from `summary`/`rule_name`, `observed_at` from `created_at`/`detected_at`, `imported_by` from the user, `impact_categories: []`, `raw_item` as sent, and one `imported_at` (real server time) shared by the batch.
 - It writes one `import_evidence` audit entry per request (`target_id` = incident ID, `before: null`, `after: {source, evidence_ids}`) and returns `{"evidence": [...]}` in input order.
+
+## Evidence tags (`evidence.py`; REQ-05, REQ-22)
+
+`tag_evidence` (Responder, DisclosureApprover) replaces one evidence item's `impact_categories`. It works in every state, Closed included, never changes `version`, and takes no `version` in its body.
+
+- After the incident, it loads the path's evidence with `load_evidence(..., for_update=True)`, so a concurrent tag of the same item waits and each audit entry's `before` is what that request replaced.
+- It checks `impact_categories`: missing or not an array is a 400 on `impact_categories`; each entry must be an `ImpactCategory` value (operational, financial, legal_regulatory, reputational, data_compromised; case-sensitive) and not repeat an earlier one, else a 400 on `impact_categories[i]` (AC-05's "misc" included). An empty array clears the tags. Other body keys are ignored.
+- It stores the categories in the order sent, changes no other column, writes one `tag_evidence` audit entry (`target_id` = incident ID, `before: {evidence_id, impact_categories}`, `after: {evidence_id, impact_categories}`) and returns the EvidenceItem (200 over HTTP). Every successful request writes an entry, even one that sends the stored categories again.
 
 ## Materiality determination (`workflow.py`; REQ-07, REQ-08)
 
@@ -175,7 +183,7 @@ These take no identity headers or role and write no audit entries or project rec
 
 ## Audit trail (`workflow.py`; REQ-22)
 
-- Every successful create, import request, determination, transition and filing writes exactly one audit entry through `app/audit.py`, in the same transaction; rejected requests and GETs write none.
+- Every successful create, import request, tag, determination, transition and filing writes exactly one audit entry through `app/audit.py`, in the same transaction; rejected requests and GETs write none.
 - `list_audit_entries` (all roles) returns `{"entries": [...]}`: every entry whose `target_id` is the incident, import entries included, oldest first by `seq`.
 - Entries are never updated or deleted: no code path does, the audit routes' PUT, PATCH and DELETE return 405 (below), and the app role has only INSERT and SELECT on `audit_entries` (see `scripts/AGENTS.md`).
 
@@ -188,7 +196,6 @@ Each runs steps 1 to 3 (session, role, path IDs) in one transaction, then raises
 | `PUT`, `DELETE /incidents/{id}` | `refuse_change`, `REPLACE_OR_DELETE` | DisclosureApprover | incident | 405 |
 | `DELETE /incidents/{id}/evidence/{evidence_id}` | `refuse_change`, `REPLACE_OR_DELETE` | DisclosureApprover | incident, evidence | 405 |
 | `PUT`, `PATCH`, `DELETE /incidents/{id}/audit` | `refuse_change`, `REPLACE_OR_DELETE` | DisclosureApprover | incident | 405 |
-| `PATCH /incidents/{id}/evidence/{evidence_id}` (REQ-05) | `not_built`, `TAG_EVIDENCE` | Responder, DisclosureApprover | incident, evidence | 501 |
 | `POST /groups` (REQ-04) | `not_built`, `CREATE_GROUP` | Responder, DisclosureApprover | none | 501 |
 | `POST /incidents/{id}/drafts` | `not_built`, `REQUEST_DRAFT` | DisclosureApprover | incident | 501 |
 | `POST /drafts/{draft_id}/accept` | `not_built`, `ACCEPT_DRAFT` | DisclosureApprover | none | 501 |

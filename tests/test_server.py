@@ -277,7 +277,7 @@ def test_setup_coverage_and_snapshot_match_the_spec():
     assert response.json() == {
         "run": {"run_id": session_id, "test_now": "2026-10-05T15:00:00+00:00",
                 "registrant_type": "Domestic", "at_risk_threshold_days": 7,
-                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-09", "REQ-21"]},
+                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-21"]},
         "incidents": [], "groups": [], "audit": [],
     }
 
@@ -288,7 +288,7 @@ def test_setup_keeps_the_settings_sent():
     assert snapshot(session_id)["run"] == {
         "run_id": session_id, "test_now": "2026-10-09T12:00:00+00:00", "registrant_type": "FPI",
         "at_risk_threshold_days": 3, "llm_base_url": "http://llm.example/v1",
-        "implemented_optional": ["REQ-09", "REQ-21"],
+        "implemented_optional": ["REQ-05", "REQ-09", "REQ-21"],
     }
 
 
@@ -321,7 +321,7 @@ def test_a_settings_update_answers_with_the_run(session_id):
     assert response.json() == {
         "run_id": session_id, "test_now": "2026-10-08T15:00:00+00:00",
         "registrant_type": "Domestic", "at_risk_threshold_days": 3,
-        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-09", "REQ-21"],
+        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-21"],
     }
     assert snapshot(session_id)["run"] == response.json()
 
@@ -595,6 +595,32 @@ def test_filing_body_validation_precedes_state_over_http(api_incident):
     assert snapshot(session_id) == before
 
 
+def test_tagging_over_http(api_incident):
+    session_id, incident_id = api_incident["session_id"], api_incident["incident_id"]
+    template = "/incidents/{incident_id}/evidence/{evidence_id}"
+    path = url(template, incident_id, api_incident["evidence_id"])
+    before = snapshot(session_id)
+    rejected = client.patch(path, headers=headers(session_id), json={"impact_categories": ["misc"]})
+    project_error(rejected, 400, "VALIDATION_ERROR", "impact_categories[0]")
+    matches_spec("PATCH", template, rejected)
+    assert snapshot(session_id) == before
+
+    tagged = client.patch(path, headers=headers(session_id),
+                          json={"impact_categories": ["operational", "data_compromised"]})
+    assert tagged.status_code == 200
+    matches_spec("PATCH", template, tagged)
+    assert tagged.json()["impact_categories"] == ["operational", "data_compromised"]
+    read = client.get(url("/incidents/{incident_id}", incident_id),
+                      headers=headers(session_id, "Board")).json()
+    assert read["evidence"] == [tagged.json()]
+    assert read["version"] == 1
+    trail = client.get(url("/incidents/{incident_id}/audit", incident_id),
+                       headers=headers(session_id, "Board"))
+    matches_spec("GET", "/incidents/{incident_id}/audit", trail)
+    assert trail.json()["entries"][-1]["action"] == "tag_evidence"
+    assert snapshot(session_id)["audit"][-1] == trail.json()["entries"][-1]
+
+
 # --- 405 and 501 ----------------------------------------------------------------------------
 
 REFUSED = [
@@ -632,7 +658,6 @@ def test_evidence_routes_look_up_the_evidence(api_incident, method):
 
 
 NOT_BUILT = [
-    ("PATCH", "/incidents/{incident_id}/evidence/{evidence_id}", {"Responder", "DisclosureApprover"}),
     ("POST", "/groups", {"Responder", "DisclosureApprover"}),
     ("POST", "/incidents/{incident_id}/drafts", {"DisclosureApprover"}),
     ("POST", "/drafts/{draft_id}/accept", {"DisclosureApprover"}),

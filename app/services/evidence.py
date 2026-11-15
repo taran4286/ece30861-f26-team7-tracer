@@ -1,4 +1,5 @@
-"""Import simulated ticketing and SIEM items as normalized evidence (REQ-02, REQ-03)."""
+"""Import simulated ticketing and SIEM items as normalized evidence (REQ-02, REQ-03), and tag
+an item's impact categories (REQ-05)."""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,7 +11,14 @@ from app.audit import audit
 from app.clock import utcnow
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
-from app.models import AuditAction, Evidence, EvidenceSource, SiemSeverity, new_id
+from app.models import (
+    AuditAction,
+    Evidence,
+    EvidenceSource,
+    ImpactCategory,
+    SiemSeverity,
+    new_id,
+)
 from app.roles import Operation, Role, require_role
 from app.services.incidents import evidence_to_dict, load_incident
 from app.services.validation import (
@@ -88,14 +96,70 @@ def import_evidence(
         return {"evidence": [evidence_to_dict(row) for row in rows]}
 
 
-def load_evidence(tx: Session, incident_id: str, evidence_id: str) -> Evidence:
+def tag_evidence(
+    incident_id: str,
+    evidence_id: str,
+    body: Any,
+    *,
+    user_id: str,
+    role: Role | str,
+    session_id: str,
+) -> dict[str, Any]:
+    """PATCH /incidents/{incident_id}/evidence/{evidence_id}: replace the item's impact categories.
+
+    Works in every state and never changes the incident's version, like import.
+    """
+    with transaction() as tx:
+        load_session(tx, session_id)
+        require_role(role, Operation.TAG_EVIDENCE)
+        load_incident(tx, incident_id, session_id=session_id)
+        # Locked, so a concurrent tag waits and the audit entry's before is what this one replaced.
+        evidence = load_evidence(tx, incident_id, evidence_id, for_update=True)
+        categories = _validate_tags(body)
+
+        before = {"evidence_id": evidence_id, "impact_categories": list(evidence.impact_categories)}
+        evidence.impact_categories = categories
+        tx.flush()
+        after = {"evidence_id": evidence_id, "impact_categories": list(categories)}
+        audit(
+            tx, AuditAction.TAG_EVIDENCE, incident_id, before, after,
+            user_id=user_id, session_id=session_id,
+        )
+        return evidence_to_dict(evidence)
+
+
+def load_evidence(
+    tx: Session, incident_id: str, evidence_id: str, *, for_update: bool = False
+) -> Evidence:
     """The evidence item named in the path, or NOT_FOUND. Load its incident first with
-    load_incident, which checks the session; an item of another incident counts as unknown."""
+    load_incident, which checks the session; an item of another incident counts as unknown.
+
+    for_update locks the row, which the app role's UPDATE grant on impact_categories allows.
+    """
     # PostgreSQL text can't hold NUL, so no stored ID has one, and querying for it would fail.
-    evidence = None if "\x00" in evidence_id else tx.get(Evidence, evidence_id)
+    evidence = (
+        None if "\x00" in evidence_id
+        else tx.get(Evidence, evidence_id, with_for_update=for_update)
+    )
     if evidence is None or evidence.incident_id != incident_id:
         raise TracerError(ErrorCode.NOT_FOUND, f"Evidence {evidence_id!r} not found")
     return evidence
+
+
+def _validate_tags(body: Any) -> list[str]:
+    """Validate a TagRequest: an array of unique ImpactCategory values, which may be empty."""
+    body = require_object(body)
+    categories = body.get("impact_categories")
+    if not isinstance(categories, list):
+        raise invalid("impact_categories", "impact_categories must be an array")
+    allowed = [category.value for category in ImpactCategory]
+    for i, category in enumerate(categories):
+        field = f"impact_categories[{i}]"
+        if not isinstance(category, str) or category not in allowed:
+            raise invalid(field, f"{field} must be one of: {', '.join(allowed)}")
+        if category in categories[:i]:
+            raise invalid(field, f"{field} repeats {category!r}")
+    return list(categories)
 
 
 def _validate(body: Any) -> tuple[EvidenceSource, list[_NormalizedItem]]:
