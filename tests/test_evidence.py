@@ -1,12 +1,14 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 
 import pytest
 
 from app.clock import utcnow
 from app.errors import ErrorCode, TracerError
-from app.models import AuditAction, State
-from app.services.evidence import import_evidence
-from app.services.incidents import get_incident
+from app.models import AuditAction, ImpactCategory, State
+from app.services.evidence import import_evidence, tag_evidence
+from app.services.incidents import create_incident, get_incident
 from tests.helpers import (
     APPROVER,
     BOARD,
@@ -190,3 +192,164 @@ def test_each_import_writes_one_audit_entry(incident):
             {"source": "siem", "evidence_ids": [e["evidence_id"] for e in second]},
         ),
     ]
+
+
+# --- Tagging (REQ-05) ----------------------------------------------------------------------
+
+ALL_CATEGORIES = [category.value for category in ImpactCategory]
+
+
+@pytest.fixture
+def evidence_id(incident) -> str:
+    imported = import_evidence(
+        incident["incident_id"], {"source": "siem", "items": [alert()]}, **RESPONDER
+    )
+    return imported["evidence"][0]["evidence_id"]
+
+
+def _item(incident_id, evidence_id):
+    [item] = [e for e in get_incident(incident_id, **BOARD)["evidence"]
+              if e["evidence_id"] == evidence_id]
+    return item
+
+
+def _tag_rejected(incident_id, evidence_id, body, code=ErrorCode.VALIDATION_ERROR, field=None,
+                  who=RESPONDER):
+    """A rejected tag stores nothing and leaves a known incident and its evidence as they were."""
+    previous = None if incident_id == "inc_missing" else get_incident(incident_id, **BOARD)
+    before = table_counts()
+    with pytest.raises(TracerError) as err:
+        tag_evidence(incident_id, evidence_id, body, **who)
+    assert err.value.code == code
+    assert err.value.field == field
+    assert table_counts() == before
+    if previous is not None:
+        assert get_incident(incident_id, **BOARD) == previous
+
+
+@pytest.mark.parametrize("who", [RESPONDER, APPROVER])
+def test_tagging_stores_all_five_categories(incident, evidence_id, who):
+    incident_id = incident["incident_id"]
+    untagged = _item(incident_id, evidence_id)
+    item = tag_evidence(incident_id, evidence_id, {"impact_categories": ALL_CATEGORIES}, **who)
+    assert item == {**untagged, "impact_categories": ALL_CATEGORIES}
+    assert _item(incident_id, evidence_id) == item
+
+
+def test_tagging_replaces_the_categories_in_the_order_sent(incident, evidence_id):
+    incident_id = incident["incident_id"]
+    body = {"impact_categories": ["legal_regulatory", "operational"]}
+    assert tag_evidence(incident_id, evidence_id, body, **RESPONDER)["impact_categories"] == [
+        "legal_regulatory", "operational"]
+    tag_evidence(incident_id, evidence_id, {"impact_categories": ["reputational"]}, **RESPONDER)
+    assert _item(incident_id, evidence_id)["impact_categories"] == ["reputational"]
+    # An empty array clears them.
+    tag_evidence(incident_id, evidence_id, {"impact_categories": []}, **RESPONDER)
+    assert _item(incident_id, evidence_id)["impact_categories"] == []
+
+
+def test_tagging_changes_only_that_item_and_ignores_other_fields(incident):
+    incident_id = incident["incident_id"]
+    first, second = import_evidence(
+        incident_id, {"source": "ticketing", "items": [ticket(1), ticket(2)]}, **RESPONDER
+    )["evidence"]
+    before = get_incident(incident_id, **BOARD)
+    tag_evidence(incident_id, second["evidence_id"],
+                 {"impact_categories": ["financial"], "summary": "ignored"}, **RESPONDER)
+    after = get_incident(incident_id, **BOARD)
+    assert _item(incident_id, first["evidence_id"]) == first
+    assert _item(incident_id, second["evidence_id"]) == {**second, "impact_categories": ["financial"]}
+    assert {k: v for k, v in after.items() if k != "evidence"} == {
+        k: v for k, v in before.items() if k != "evidence"}
+
+
+@pytest.mark.parametrize("state", list(State))
+def test_tagging_works_in_every_state_and_keeps_the_version(incident, evidence_id, state):
+    incident_id = incident["incident_id"]
+    set_state(incident_id, state)
+    tag_evidence(incident_id, evidence_id, {"impact_categories": ["operational"]}, **RESPONDER)
+    after = get_incident(incident_id, **BOARD)
+    assert after["state"] == state.value
+    assert after["version"] == 1
+    assert _item(incident_id, evidence_id)["impact_categories"] == ["operational"]
+
+
+@pytest.mark.parametrize("body,field", [
+    (None, None),
+    ([], None),
+    ({}, "impact_categories"),
+    ({"impact_categories": None}, "impact_categories"),
+    ({"impact_categories": "operational"}, "impact_categories"),
+    ({"impact_categories": {"operational": True}}, "impact_categories"),
+    # AC-05: a value outside the five categories.
+    ({"impact_categories": ["misc"]}, "impact_categories[0]"),
+    ({"impact_categories": ["operational", "misc"]}, "impact_categories[1]"),
+    ({"impact_categories": ["Operational"]}, "impact_categories[0]"),
+    ({"impact_categories": [1]}, "impact_categories[0]"),
+    ({"impact_categories": [None]}, "impact_categories[0]"),
+    ({"impact_categories": [["financial"]]}, "impact_categories[0]"),
+    ({"impact_categories": ["financial", "operational", "financial"]}, "impact_categories[2]"),
+])
+def test_bad_tag_body_is_rejected_and_keeps_the_categories(incident, evidence_id, body, field):
+    incident_id = incident["incident_id"]
+    tag_evidence(incident_id, evidence_id, {"impact_categories": ["operational"]}, **RESPONDER)
+    _tag_rejected(incident_id, evidence_id, body, field=field)
+    assert _item(incident_id, evidence_id)["impact_categories"] == ["operational"]
+
+
+def test_board_cannot_tag(incident, evidence_id):
+    _tag_rejected(incident["incident_id"], evidence_id, {"impact_categories": ["financial"]},
+                  code=ErrorCode.FORBIDDEN_ROLE, who=BOARD)
+
+
+def test_tagging_checks_the_session_then_the_role_then_the_path_then_the_body(incident, evidence_id):
+    incident_id = incident["incident_id"]
+    bad = {"impact_categories": ["misc"]}
+    _tag_rejected("inc_missing", "ev_missing", bad, code=ErrorCode.NOT_FOUND,
+                  who=in_session(BOARD, "pytest-missing"))
+    _tag_rejected("inc_missing", "ev_missing", bad, code=ErrorCode.FORBIDDEN_ROLE, who=BOARD)
+    _tag_rejected("inc_missing", evidence_id, bad, code=ErrorCode.NOT_FOUND)
+    _tag_rejected(incident_id, "ev_missing", bad, code=ErrorCode.NOT_FOUND)
+    _tag_rejected(incident_id, "ev_\x00", bad, code=ErrorCode.NOT_FOUND)
+
+
+def test_tagging_another_incidents_or_sessions_evidence_is_not_found(incident, evidence_id):
+    body = {"impact_categories": ["financial"]}
+    other = create_incident({"title": "Other", "discovery_date": "2026-10-01"}, **RESPONDER)
+    _tag_rejected(other["incident_id"], evidence_id, body, code=ErrorCode.NOT_FOUND)
+    _tag_rejected(incident["incident_id"], evidence_id, body, code=ErrorCode.NOT_FOUND,
+                  who=in_session(RESPONDER, new_session()))
+    assert _item(incident["incident_id"], evidence_id)["impact_categories"] == []
+
+
+def test_each_tag_writes_one_audit_entry(incident, evidence_id):
+    incident_id = incident["incident_id"]
+    tag_evidence(incident_id, evidence_id, {"impact_categories": ["operational"]}, **RESPONDER)
+    tag_evidence(incident_id, evidence_id, {"impact_categories": ["financial", "reputational"]},
+                 **APPROVER)
+    entries = [e for e in audit_entries(incident_id) if e.action == AuditAction.TAG_EVIDENCE]
+    assert [(e.session_id, e.user_id, e.target_id, e.before, e.after) for e in entries] == [
+        (SESSION_ID, RESPONDER["user_id"], incident_id,
+         {"evidence_id": evidence_id, "impact_categories": []},
+         {"evidence_id": evidence_id, "impact_categories": ["operational"]}),
+        (SESSION_ID, APPROVER["user_id"], incident_id,
+         {"evidence_id": evidence_id, "impact_categories": ["operational"]},
+         {"evidence_id": evidence_id, "impact_categories": ["financial", "reputational"]}),
+    ]
+
+
+def test_competing_tags_each_record_what_they_replaced(incident, evidence_id):
+    """The row lock makes the second tag wait, so its entry's before is the first one's after."""
+    incident_id = incident["incident_id"]
+    ready = Barrier(2)
+
+    def submit(category):
+        ready.wait(timeout=10)
+        tag_evidence(incident_id, evidence_id, {"impact_categories": [category]}, **RESPONDER)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(submit, ["operational", "financial"]))
+    first, second = [e for e in audit_entries(incident_id) if e.action == AuditAction.TAG_EVIDENCE]
+    assert first.before["impact_categories"] == []
+    assert second.before == first.after
+    assert _item(incident_id, evidence_id)["impact_categories"] == second.after["impact_categories"]
