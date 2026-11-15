@@ -611,11 +611,13 @@ def test_tagging_over_http(api_incident):
     matches_spec("PATCH", template, tagged)
     assert tagged.json()["impact_categories"] == ["operational", "data_compromised"]
     read = client.get(url("/incidents/{incident_id}", incident_id),
-                      headers=headers(session_id, "Board")).json()
-    assert read["evidence"] == [tagged.json()]
-    assert read["version"] == 1
+                      headers=headers(session_id, "Board"))
+    assert read.status_code == 200
+    assert read.json()["evidence"] == [tagged.json()]
+    assert read.json()["version"] == 1
     trail = client.get(url("/incidents/{incident_id}/audit", incident_id),
                        headers=headers(session_id, "Board"))
+    assert trail.status_code == 200
     matches_spec("GET", "/incidents/{incident_id}/audit", trail)
     assert trail.json()["entries"][-1]["action"] == "tag_evidence"
     assert snapshot(session_id)["audit"][-1] == trail.json()["entries"][-1]
