@@ -109,7 +109,7 @@ These take no identity headers or role and write no audit entries or project rec
   - A setting left out keeps its value, so `{}` changes nothing and returns the settings as stored.
   - In one transaction it loads the session with `load_session(..., for_update=True)` (unknown, or an ID with NUL, → 404), sets the changed attributes and returns `run_to_dict(session)` (200). The ORM's UPDATE names only the attributes set, which are the columns the app role may update (see `scripts/AGENTS.md`); `{}` issues no UPDATE. Any error leaves the session as it was.
   - Every later date rule in the session uses the new `test_now` through `clock.today(session)`.
-- `snapshot(run_id)` (`GET /test/report/{run_id}`) returns `{run, incidents, groups: [], audit}`: the session's TestRun from `run_to_dict` (`run_id` is the session ID, `implemented_optional` lists `IMPLEMENTED_OPTIONAL`: `["REQ-05", "REQ-09", "REQ-21"]`, the tags under Evidence tags, the at-risk flag under Flags and the stale-version check under "Sessions, roles, dates and versions"), its incidents as full Incidents ordered by `incident_id` (random, not creation order), and its audit entries ordered by `seq`. Unknown session → 404.
+- `snapshot(run_id)` (`GET /test/report/{run_id}`) returns `{run, incidents, groups: [], audit}`: the session's TestRun from `run_to_dict` (`run_id` is the session ID, `implemented_optional` lists `IMPLEMENTED_OPTIONAL`: `["REQ-05", "REQ-09", "REQ-18", "REQ-21"]`, the tags under Evidence tags, the at-risk flag under Flags, voluntary Item 8.01 under Materiality determination and the stale-version check under "Sessions, roles, dates and versions"), its incidents as full Incidents ordered by `incident_id` (random, not creation order), and its audit entries ordered by `seq`. Unknown session → 404.
 
 ## Incidents (`incidents.py`; REQ-01, REQ-22)
 
@@ -133,15 +133,15 @@ These take no identity headers or role and write no audit entries or project rec
 - It checks `impact_categories`: missing or not an array is a 400 on `impact_categories`; each entry must be an `ImpactCategory` value (operational, financial, legal_regulatory, reputational, data_compromised; case-sensitive) and not repeat an earlier one, else a 400 on `impact_categories[i]` (AC-05's "misc" included). An empty array clears the tags. Other body keys are ignored.
 - It stores the categories in the order sent, changes no other column, writes one `tag_evidence` audit entry (`target_id` = incident ID, `before: {evidence_id, impact_categories}`, `after: {evidence_id, impact_categories}`) and returns the EvidenceItem (200 over HTTP). Every successful request writes an entry, even one that sends the stored categories again.
 
-## Materiality determination (`workflow.py`; REQ-07, REQ-08)
+## Materiality determination (`workflow.py`; REQ-07, REQ-08, REQ-18)
 
 `record_determination` (DisclosureApprover only) is the only code that writes a materiality value.
 
-- It checks, in order: `decision` (Material or NotMaterial); `determination_date` (a date, then on or after `discovery_date` and not after today, both ends included, then, for a Domestic Material determination, a due date the holiday calendar can compute; see Deadline calendar); `rationale` (`require_string`); `evidence_refs` (a non-empty array of unique, non-blank strings without NUL, then every ID must belong to this incident, both on `evidence_refs`); `version`; then `voluntary_disclosure` if sent: a non-boolean is a 400, and `true` or `false` is a 501 `NOT_IMPLEMENTED`.
+- It checks, in order: `decision` (Material or NotMaterial); `determination_date` (a date, then on or after `discovery_date` and not after today, both ends included, then, for a Domestic Material determination, a due date the holiday calendar can compute; see Deadline calendar); `rationale` (`require_string`); `evidence_refs` (a non-empty array of unique, non-blank strings without NUL, then every ID must belong to this incident, both on `evidence_refs`); `version`; then `voluntary_disclosure`, false when omitted: a non-boolean (`null` included) is a 400, and `true` with Material is a 400, since it's valid only with NotMaterial.
 - After those, a stale `version` is 409 `STALE_VERSION`, then a state other than UnderAssessment is 409 `INVALID_TRANSITION`. A second determination is a 409 either way: `STALE_VERSION` with the version the first one replaced, `INVALID_TRANSITION` with the current one.
-- Material sets `DeterminedMaterial` and `required_form` from the session: `8-K Item 1.05` for Domestic, `6-K` for FPI. NotMaterial sets `DeterminedNotMaterial` and `required_form: null`.
-- Domestic Material sets `due_date` to four business days after `determination_date`; FPI and NotMaterial set it to null.
-- It stores the determination with `voluntary_disclosure: false`, `recorded_by` = the user and `recorded_at` = server time, adds 1 to `version`, writes a `record_determination` audit entry (`before: {state, determination: null, version}`, `after: {state, determination: {decision, determination_date}, required_form, due_date, version}`) and returns the full Incident.
+- Material sets `DeterminedMaterial` and `required_form` from the session: `8-K Item 1.05` for Domestic, `6-K` for FPI. NotMaterial sets `DeterminedNotMaterial` and `required_form: null`, or `8-K Item 8.01` with `voluntary_disclosure: true` for either registrant type (REQ-18).
+- Domestic Material sets `due_date` to four business days after `determination_date`; FPI and NotMaterial, voluntary or not, set it to null.
+- It stores the determination with `voluntary_disclosure` as sent (false when omitted), `recorded_by` = the user and `recorded_at` = server time, adds 1 to `version`, writes a `record_determination` audit entry (`before: {state, determination: null, version}`, `after: {state, determination: {decision, determination_date}, required_form, due_date, version}`) and returns the full Incident.
 
 ## Flags (`flags.py`; REQ-09)
 
@@ -159,7 +159,7 @@ These take no identity headers or role and write no audit entries or project rec
 
 - Business days are Monday through Friday excluding U.S. federal holidays from the `holidays` library's `UnitedStates` calendar with `observed=True` and no state subdivision. Each cached year includes the following year's holidays before filtering, so New Year's Day observed in December is retained. Holiday dates and historical rules come from the library.
 - `add_business_days(start, days=4)` excludes the start date, including a weekend or holiday start. Zero days returns the start unchanged. Calendar calculations do not depend on real time or session settings.
-- Calendar years must be within the library's `start_year` and `end_year` (`MIN_CALENDAR_YEAR` and `MAX_CALENDAR_YEAR`). Unsupported starts, direct calendar queries and deadlines crossing the range raise `OverflowError`, which determination turns into a 400 on `determination_date` and amendment transition turns into a 400 on `info_available_date`. Both precede the version and state checks; the determination error also precedes its `voluntary_disclosure` 501. The final supported year's calendar retains next New Year's observed holiday without requesting an unsupported year.
+- Calendar years must be within the library's `start_year` and `end_year` (`MIN_CALENDAR_YEAR` and `MAX_CALENDAR_YEAR`). Unsupported starts, direct calendar queries and deadlines crossing the range raise `OverflowError`, which determination turns into a 400 on `determination_date` and amendment transition turns into a 400 on `info_available_date`. Both precede the version and state checks; the determination error also precedes its `voluntary_disclosure` check. The final supported year's calendar retains next New Year's observed holiday without requesting an unsupported year.
 - `disclosure_due_date(required_form, start)` returns four business days after start for `8-K Item 1.05` and `8-K/A`, and null for other forms.
 
 ## State transitions (`workflow.py`; REQ-06)
@@ -199,8 +199,6 @@ Each runs steps 1 to 3 (session, role, path IDs) in one transaction, then raises
 | `POST /groups` (REQ-04) | `not_built`, `CREATE_GROUP` | Responder, DisclosureApprover | none | 501 |
 | `POST /incidents/{id}/drafts` | `not_built`, `REQUEST_DRAFT` | DisclosureApprover | incident | 501 |
 | `POST /drafts/{draft_id}/accept` | `not_built`, `ACCEPT_DRAFT` | DisclosureApprover | none | 501 |
-
-`voluntary_disclosure` on a determination is the other 501 (see Materiality determination).
 
 ## Rules
 

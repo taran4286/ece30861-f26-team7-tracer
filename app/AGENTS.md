@@ -53,7 +53,7 @@ Eight tables hold the system's data; the tester keeps its own in `tester_session
 | determination_date | date, not null | |
 | rationale | text, not null | |
 | evidence_refs | JSONB array of evidence IDs, not null | |
-| voluntary_disclosure | boolean, not null | always false |
+| voluntary_disclosure | boolean, not null | as sent; false when omitted |
 | recorded_by | text, not null | the acting user |
 | recorded_at | timestamp, not null | real server time |
 

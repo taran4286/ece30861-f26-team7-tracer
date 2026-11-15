@@ -60,13 +60,18 @@ def rejected(case, code=ErrorCode.VALIDATION_ERROR, field=None, who=APPROVER):
         assert get_incident(incident_id, **BOARD) == previous
 
 
-@pytest.mark.parametrize('registrant,decision,state,form', [
-    ('Domestic', 'Material', 'DeterminedMaterial', '8-K Item 1.05'),
-    ('FPI', 'Material', 'DeterminedMaterial', '6-K'),
-    ('Domestic', 'NotMaterial', 'DeterminedNotMaterial', None),
-    ('FPI', 'NotMaterial', 'DeterminedNotMaterial', None),
+@pytest.mark.parametrize('registrant,decision,voluntary,state,form', [
+    ('Domestic', 'Material', None, 'DeterminedMaterial', '8-K Item 1.05'),
+    ('FPI', 'Material', None, 'DeterminedMaterial', '6-K'),
+    ('Domestic', 'Material', False, 'DeterminedMaterial', '8-K Item 1.05'),
+    ('Domestic', 'NotMaterial', None, 'DeterminedNotMaterial', None),
+    ('FPI', 'NotMaterial', None, 'DeterminedNotMaterial', None),
+    ('Domestic', 'NotMaterial', False, 'DeterminedNotMaterial', None),
+    # REQ-18, AC-19: a voluntary disclosure of a NotMaterial incident is an 8-K Item 8.01.
+    ('Domestic', 'NotMaterial', True, 'DeterminedNotMaterial', '8-K Item 8.01'),
+    ('FPI', 'NotMaterial', True, 'DeterminedNotMaterial', '8-K Item 8.01'),
 ])
-def test_success(registrant, decision, state, form):
+def test_success(registrant, decision, voluntary, state, form):
     """Persist the decision, form, registrant-specific deadline and audit entry together."""
     # The registrant type is fixed per session, so each case gets its own.
     session_id = new_session(registrant_type=RegistrantType(registrant))
@@ -74,10 +79,13 @@ def test_success(registrant, decision, state, form):
     incident = create_incident({"title": "Ransomware", "discovery_date": "2026-10-01"}, **responder)
     incident_id, body = new_case(incident, responder)
     body['decision'] = decision
+    if voluntary is not None:
+        body['voluntary_disclosure'] = voluntary
     start = clock.utcnow()
     result = workflow.record_determination(incident_id, body, **approver)
     assert result == get_incident(incident_id, **board)
     assert (result['state'], result['required_form'], result['version']) == (state, form, 2)
+    assert result['determination']['voluntary_disclosure'] is bool(voluntary)
     expected_due = '2026-10-07' if registrant == 'Domestic' and decision == 'Material' else None
     assert result['due_date'] == expected_due and result['flags'] == []
     with db.transaction() as tx:
@@ -87,7 +95,8 @@ def test_success(registrant, decision, state, form):
         assert stored.decision.value == decision
         assert stored.determination_date.isoformat() == body['determination_date']
         assert stored.rationale == body['rationale'] and stored.evidence_refs == body['evidence_refs']
-        assert stored.voluntary_disclosure is False and stored.recorded_by == APPROVER['user_id']
+        assert stored.voluntary_disclosure is bool(voluntary)
+        assert stored.recorded_by == APPROVER['user_id']
         assert start <= stored.recorded_at <= clock.utcnow()
     entries = audit_entries(incident_id)
     assert len(entries) == 3
@@ -134,7 +143,8 @@ def test_unknown_incident_before_body():
 def test_unsupported_deadline_rejects_without_writes(start, also):
     """Reject unsupported determination years and deadlines crossing the calendar limit.
 
-    The deadline is part of the body check, so it comes before the 501 and the state 409.
+    The deadline is part of the body check, so it comes before the voluntary_disclosure check
+    and the state 409.
     """
     session_id = new_session(test_now=datetime(MAX_CALENDAR_YEAR + 2, 1, 1, tzinfo=UTC))
     responder, approver, board = (in_session(who, session_id) for who in (RESPONDER, APPROVER, BOARD))
@@ -226,10 +236,20 @@ def test_second_determination(case):
     rejected(case, ErrorCode.INVALID_TRANSITION)
 
 
-@pytest.mark.parametrize('value', [True, False])
-def test_voluntary_disclosure_boolean(case, value):
-    case[1]['voluntary_disclosure'] = value
-    rejected(case, ErrorCode.NOT_IMPLEMENTED)
+def test_voluntary_disclosure_is_only_for_not_material(case):
+    """REQ-18: Item 8.01 is for NotMaterial; a Material incident keeps its Item 1.05 (AC-19)."""
+    case[1]['voluntary_disclosure'] = True
+    rejected(case, field='voluntary_disclosure')
+
+
+def test_voluntary_disclosure_keeps_its_form_through_closure(case):
+    incident_id, body = case
+    body |= {'decision': 'NotMaterial', 'voluntary_disclosure': True}
+    workflow.record_determination(incident_id, body, **APPROVER)
+    closed = workflow.transition_incident(incident_id, {'to': 'Closed', 'version': 2}, **APPROVER)
+    assert (closed['state'], closed['required_form'], closed['due_date'], closed['flags']) == (
+        'Closed', '8-K Item 8.01', None, [])
+    assert closed['determination']['voluntary_disclosure'] is True
 
 
 def stored_version(incident_id, version):
@@ -268,10 +288,12 @@ def test_body_errors_precede_a_stale_version(case):
     rejected(case, field='rationale')
 
 
-def test_voluntary_disclosure_precedes_a_stale_version(case):
+def test_a_voluntary_disclosure_error_precedes_a_stale_version_and_the_state(case):
     stored_version(case[0], 5)
-    case[1]['voluntary_disclosure'] = False
-    rejected(case, ErrorCode.NOT_IMPLEMENTED)
+    case[1]['voluntary_disclosure'] = True
+    rejected(case, field='voluntary_disclosure')
+    set_state(case[0], State.CLOSED)
+    rejected(case, field='voluntary_disclosure')
 
 
 @pytest.mark.parametrize('state', [s for s in State if s != State.UNDER_ASSESSMENT])
