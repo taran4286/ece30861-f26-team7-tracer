@@ -43,14 +43,6 @@ async def audit_not_allowed(request: Request, incident_id: str) -> JSONResponse:
     return await _refuse(request, "GET", incident_id)
 
 
-@router.patch("/incidents/{incident_id}/evidence/{evidence_id}")
-async def tag_evidence(request: Request, incident_id: str, evidence_id: str) -> JSONResponse:
-    """Tagging evidence (REQ-05) isn't built."""
-    return await call(
-        request, placeholders.not_built, Operation.TAG_EVIDENCE, incident_id, evidence_id
-    )
-
-
 @router.post("/groups")
 async def create_group(request: Request) -> JSONResponse:
     """Incident groups (REQ-04) aren't built."""

@@ -85,7 +85,7 @@ Eight tables hold the system's data; the tester keeps its own in `tester_session
 | observed_at | timestamp, not null | from `created_at` or `detected_at` |
 | imported_by | text, not null | the importing user |
 | imported_at | timestamp, not null | real server time |
-| impact_categories | JSONB array, not null | always empty |
+| impact_categories | JSONB array, not null | empty on import; replaced by tagging, in the order sent |
 | raw_item | JSONB, not null | the item as sent; never returned by the API |
 
 **drafts** (`Draft`)
@@ -131,7 +131,7 @@ No operation writes it. Members aren't listed here: a member incident's `group_i
 - `FormType`: `8-K Item 1.05`, `8-K Item 8.01`, `6-K`, `8-K/A`.
 - `Decision`: Material, NotMaterial.
 - `EvidenceSource`: ticketing, siem.
-- `AuditAction`: create_incident, import_evidence, tag_evidence, record_determination, transition, record_filing, accept_draft, create_group. No operation writes tag_evidence, accept_draft or create_group.
+- `AuditAction`: create_incident, import_evidence, tag_evidence, record_determination, transition, record_filing, accept_draft, create_group. No operation writes accept_draft or create_group.
 - `DraftStatus`: Proposed, Accepted.
 - `RegistrantType`: Domestic, FPI.
 - Not stored as a type: `ImpactCategory` (operational, financial, legal_regulatory, reputational, data_compromised) `SiemSeverity` (low, medium, high, critical, checked on import) and `Flag` (at_risk, warning, overdue, computed on read).

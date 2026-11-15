@@ -59,7 +59,6 @@ def test_refusal_looks_up_the_incident_and_evidence(incident, evidence_id):
 
 
 ROLES_ALLOWED = {
-    Operation.TAG_EVIDENCE: {Role.RESPONDER, Role.DISCLOSURE_APPROVER},
     Operation.CREATE_GROUP: {Role.RESPONDER, Role.DISCLOSURE_APPROVER},
     Operation.REQUEST_DRAFT: {Role.DISCLOSURE_APPROVER},
     Operation.ACCEPT_DRAFT: {Role.DISCLOSURE_APPROVER},
@@ -80,5 +79,3 @@ def test_unbuilt_operations_check_the_session_and_path_first(incident):
              ErrorCode.NOT_FOUND)
     rejected(lambda: not_built(Operation.REQUEST_DRAFT, "inc_missing", **APPROVER),
              ErrorCode.NOT_FOUND)
-    rejected(lambda: not_built(Operation.TAG_EVIDENCE, incident_id, "ev_missing", **RESPONDER),
-             ErrorCode.NOT_FOUND, incident_id)

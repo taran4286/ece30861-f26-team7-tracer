@@ -25,6 +25,12 @@ async def import_evidence(request: Request, incident_id: str) -> JSONResponse:
     return await call(request, evidence.import_evidence, incident_id, body, status=201)
 
 
+@router.patch("/incidents/{incident_id}/evidence/{evidence_id}")
+async def tag_evidence(request: Request, incident_id: str, evidence_id: str) -> JSONResponse:
+    body = await read_body(request)
+    return await call(request, evidence.tag_evidence, incident_id, evidence_id, body)
+
+
 @router.post("/incidents/{incident_id}/determination")
 async def record_determination(request: Request, incident_id: str) -> JSONResponse:
     body = await read_body(request)
