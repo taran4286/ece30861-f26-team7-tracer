@@ -34,7 +34,11 @@ def create_group(
         found = {member.incident_id for member in members}
         for index, incident_id in enumerate(incident_ids):
             if incident_id not in found:
-                raise invalid(f"incident_ids[{index}]", f"Incident {incident_id!r} not found")
+                # A 404, as the spec's NOT_FOUND covers unknown incidents; the field names the ID.
+                raise TracerError(
+                    ErrorCode.NOT_FOUND, f"Incident {incident_id!r} not found",
+                    f"incident_ids[{index}]",
+                )
         for member in members:
             if member.group_id is not None:
                 raise TracerError(

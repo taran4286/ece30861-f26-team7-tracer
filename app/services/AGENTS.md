@@ -56,7 +56,7 @@ def record_filing(
 
 **Validation**
 
-- Errors name a path-style `field`: `title`, `items[3].detected_at`, `setup.test_now`, `elements[1]`. Unknown IDs inside a body, like `evidence_refs`, are 400s on that field; only IDs in the path are 404s.
+- Errors name a path-style `field`: `title`, `items[3].detected_at`, `setup.test_now`, `elements[1]`. Unknown IDs inside a body, like `evidence_refs`, are 400s on that field; only IDs in the path are 404s, except a group's `incident_ids` (see Groups).
 - `require_object` rejects a body that isn't a JSON object (a body that isn't JSON arrives as `None`).
 - `require_string` rejects missing, non-string and blank (whitespace-only) values, and NUL characters because PostgreSQL text cannot store them.
 - `parse_date` accepts only a real `YYYY-MM-DD`; `parse_date_time` accepts only RFC 3339 with seconds and a `Z` or `±HH:MM` offset (lowercase `t` and `z` included), returned in UTC.
@@ -138,7 +138,7 @@ These take no identity headers or role and write no audit entries or project rec
 `create_group` (Responder, DisclosureApprover) links incidents of the request's session into a new group. It has no path IDs and no `version` in its body.
 
 - It checks `incident_ids`: missing, not an array, or fewer than two entries is a 400 on `incident_ids`; each entry must be a non-blank string without NUL and not repeat an earlier one (so an incident can't be linked to itself), else a 400 on `incident_ids[i]`. Other body keys are ignored.
-- It then locks the named incidents in `incident_id` order. An ID that isn't an incident of this session is a 400 on `incident_ids[i]`, the first in body order; after that, a member already in a group or not UnderAssessment is a 409 `CONFLICT` with nothing changed, so linking grouped incidents again changes nothing.
+- It then locks the named incidents in `incident_id` order. An ID that isn't an incident of this session is a 404 `NOT_FOUND` with `field` set to `incident_ids[i]`, the first in body order, since the spec's NOT_FOUND covers unknown incidents. Every entry's shape is checked before any ID is looked up. After that, a member already in a group or not UnderAssessment is a 409 `CONFLICT` with nothing changed, so linking grouped incidents again changes nothing.
 - It inserts an `IncidentGroup`, sets each member's `group_id`, adds 1 to its `version`, and writes one `create_group` audit entry per member (`target_id` = that member, `before: {group_id: null, version}`, `after: {group_id, incident_ids, version}`).
 - It returns the Group, `{group_id, incident_ids}`, with members ordered by `incident_id` (201 over HTTP). No operation changes a group's members after that.
 - `lock_with_group(tx, incident)` locks an incident loaded without a lock, and every member of its group, in `incident_id` order, the order `create_group` locks in, so two requests on members of one group wait for each other instead of deadlocking. It returns the members in that order, or the incident alone when it isn't grouped. If the incident was grouped between the load and the lock, it is locked first and the other members after it.

@@ -657,6 +657,10 @@ def test_groups_over_http(api_incident):
     rejected = client.post("/system/groups", headers=responder, json={"incident_ids": [first]})
     project_error(rejected, 400, "VALIDATION_ERROR", "incident_ids")
     matches_spec("POST", "/groups", rejected)
+    unknown = client.post("/system/groups", headers=responder,
+                          json={"incident_ids": [first, "inc_missing"]})
+    project_error(unknown, 404, "NOT_FOUND", "incident_ids[1]")
+    matches_spec("POST", "/groups", unknown)
     assert snapshot(session_id) == before
 
     grouped = client.post("/system/groups", headers=responder, json={"incident_ids": ids})

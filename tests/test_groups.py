@@ -115,8 +115,8 @@ def test_the_session_comes_before_the_role_and_the_role_before_the_body():
     ({"incident_ids": ["MEMBER", None]}, "incident_ids[1]"),
     ({"incident_ids": ["MEMBER", " "]}, "incident_ids[1]"),
     ({"incident_ids": ["MEMBER", "inc\x00x"]}, "incident_ids[1]"),
-    ({"incident_ids": ["MEMBER", "inc_missing"]}, "incident_ids[1]"),
-    ({"incident_ids": ["inc_missing", "MEMBER"]}, "incident_ids[0]"),
+    # Every entry's shape is checked before any ID is looked up.
+    ({"incident_ids": ["inc_missing", 5]}, "incident_ids[1]"),
 ])
 def test_an_invalid_body_is_rejected(body, field):
     member = new_incident()
@@ -126,11 +126,23 @@ def test_an_invalid_body_is_rejected(body, field):
              incident_ids=[member])
 
 
+@pytest.mark.parametrize("ids,field", [
+    (["MEMBER", "inc_missing"], "incident_ids[1]"),
+    (["inc_missing", "MEMBER"], "incident_ids[0]"),
+    (["inc_missing", "inc_other"], "incident_ids[0]"),
+])
+def test_an_unknown_incident_is_not_found(ids, field):
+    member = new_incident()
+    ids = [member if i == "MEMBER" else i for i in ids]
+    rejected(lambda: create_group({"incident_ids": ids}, **RESPONDER), ErrorCode.NOT_FOUND,
+             field, incident_ids=[member])
+
+
 def test_another_sessions_incident_is_unknown():
     mine = new_incident()
     theirs = new_incident(who=in_session(RESPONDER, new_session()))
     rejected(lambda: create_group({"incident_ids": [mine, theirs]}, **RESPONDER),
-             ErrorCode.VALIDATION_ERROR, "incident_ids[1]", incident_ids=[mine])
+             ErrorCode.NOT_FOUND, "incident_ids[1]", incident_ids=[mine])
 
 
 def test_linking_grouped_incidents_again_changes_nothing():
@@ -156,7 +168,7 @@ def test_an_unknown_incident_comes_before_the_conflict():
     grouped = [new_incident(), new_incident()]
     create_group({"incident_ids": grouped}, **RESPONDER)
     rejected(lambda: create_group({"incident_ids": [grouped[0], "inc_missing"]}, **RESPONDER),
-             ErrorCode.VALIDATION_ERROR, "incident_ids[1]", incident_ids=grouped)
+             ErrorCode.NOT_FOUND, "incident_ids[1]", incident_ids=grouped)
 
 
 def test_competing_groups_over_one_incident_link_it_once():
