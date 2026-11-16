@@ -12,13 +12,16 @@ from app.models import (
     AuditEntry,
     Determination,
     Draft,
+    DraftStatus,
     Evidence,
     Filing,
+    FormType,
     Incident,
     IncidentGroup,
     RegistrantType,
     State,
     TestSession,
+    new_id,
 )
 from app.roles import Role
 
@@ -91,6 +94,20 @@ def table_counts() -> dict[str, int]:
                 AuditEntry,
             )
         }
+
+
+def add_draft(incident_id: str) -> str:
+    """Store a Proposed 8-K Item 1.05 draft of the incident directly, without the drafting
+    route, with every element "Not yet determined"; returns its ID."""
+    undetermined = {"text": "Not yet determined", "citations": [], "sensitive_flags": []}
+    draft_id = new_id("drf")
+    with transaction() as tx:
+        tx.add(Draft(
+            draft_id=draft_id, incident_id=incident_id, form_type=FormType.FORM_8K_ITEM_105,
+            elements={name: dict(undetermined) for name in ("nature", "scope", "timing", "impact")},
+            status=DraftStatus.PROPOSED,
+        ))
+    return draft_id
 
 
 def audit_entries(target_id: str) -> list[AuditEntry]:

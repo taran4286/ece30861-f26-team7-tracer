@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.api.calls import call, read_body
-from app.services import evidence, filings, incidents, workflow
+from app.services import drafts, evidence, filings, incidents, workflow
 
 router = APIRouter()
 
@@ -53,3 +53,8 @@ async def record_filing(request: Request, incident_id: str) -> JSONResponse:
     """Record an external filing and return the updated incident with status 201."""
     body = await read_body(request)
     return await call(request, filings.record_filing, incident_id, body, status=201)
+
+
+@router.post("/drafts/{draft_id}/accept")
+async def accept_draft(request: Request, draft_id: str) -> JSONResponse:
+    return await call(request, drafts.accept_draft, draft_id)

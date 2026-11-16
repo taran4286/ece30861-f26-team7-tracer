@@ -33,7 +33,7 @@ STATUS: dict[tuple[str, str], str] = {
     ("POST", "/incidents/{incident_id}/transitions"): BUILT,
     ("POST", "/incidents/{incident_id}/filings"): BUILT,
     ("POST", "/incidents/{incident_id}/drafts"): NOT_BUILT,
-    ("POST", "/drafts/{draft_id}/accept"): NOT_BUILT,
+    ("POST", "/drafts/{draft_id}/accept"): BUILT,
     ("GET", "/incidents/{incident_id}/audit"): BUILT,
     ("PUT", "/incidents/{incident_id}/audit"): REFUSED,
     ("PATCH", "/incidents/{incident_id}/audit"): REFUSED,
