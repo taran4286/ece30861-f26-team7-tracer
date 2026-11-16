@@ -68,17 +68,25 @@ def create_group(
         return {"group_id": group.group_id, "incident_ids": member_ids}
 
 
+class GroupedMeanwhile(Exception):
+    """The incident joined a group between its first read and its lock. Nothing was written;
+    the caller runs its whole transaction again, which then locks the group."""
+
+
 def lock_with_group(tx: Session, incident: Incident) -> list[Incident]:
     """Lock the incident and, when it's grouped, every other member, in incident_id order.
 
     Returns the members in that order, or the incident alone when it isn't grouped. Load the
-    incident first with load_incident, without locking it.
+    incident first with load_incident, without locking it. Raises GroupedMeanwhile when the
+    incident was grouped after that load.
     """
     if incident.group_id is None:
         tx.refresh(incident, with_for_update=True)
         if incident.group_id is None:
             return [incident]
-        # Grouped by a request that finished after the first read; lock the other members too.
+        # Waiting for the other members while holding this one's lock could deadlock with a
+        # request that locked them in order, so roll back and let the caller start again.
+        raise GroupedMeanwhile(incident.incident_id)
     # A group's members are fixed when it's created, so this finds every one of them.
     return list(tx.scalars(
         select(Incident)
@@ -91,19 +99,18 @@ def lock_with_group(tx: Session, incident: Incident) -> list[Incident]:
 
 def groups_to_dicts(tx: Session, session_id: str) -> list[dict[str, Any]]:
     """The session's groups as the Group schema, ordered by group_id, members by incident_id."""
-    members: dict[str, list[str]] = {
-        group_id: [] for group_id in tx.scalars(
-            select(IncidentGroup.group_id)
-            .where(IncidentGroup.session_id == session_id)
-            .order_by(IncidentGroup.group_id)
-        )
-    }
-    for incident_id, group_id in tx.execute(
-        select(Incident.incident_id, Incident.group_id)
-        .where(Incident.session_id == session_id, Incident.group_id.is_not(None))
-        .order_by(Incident.incident_id)
-    ):
-        members[group_id].append(incident_id)
+    # One statement, so a group created while this runs is either wholly in it or not at all.
+    rows = tx.execute(
+        select(IncidentGroup.group_id, Incident.incident_id)
+        .outerjoin(Incident, Incident.group_id == IncidentGroup.group_id)
+        .where(IncidentGroup.session_id == session_id)
+        .order_by(IncidentGroup.group_id, Incident.incident_id)
+    )
+    members: dict[str, list[str]] = {}
+    for group_id, incident_id in rows:
+        members.setdefault(group_id, [])
+        if incident_id is not None:
+            members[group_id].append(incident_id)
     return [{"group_id": group_id, "incident_ids": ids} for group_id, ids in members.items()]
 
 

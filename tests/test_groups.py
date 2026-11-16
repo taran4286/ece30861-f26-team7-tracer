@@ -6,8 +6,9 @@ from typing import Any
 
 import pytest
 
+from app.db import transaction
 from app.errors import ErrorCode, TracerError
-from app.models import AuditAction, State
+from app.models import AuditAction, IncidentGroup, State, new_id
 from app.services import control, workflow
 from app.services.evidence import import_evidence
 from app.services.groups import create_group
@@ -88,6 +89,15 @@ def test_the_snapshot_lists_the_sessions_groups():
 
     groups = control.snapshot(session_id)["groups"]
     assert groups == sorted([first, second], key=lambda group: group["group_id"])
+
+
+def test_the_snapshot_keeps_a_group_without_members():
+    # No operation stores one; the snapshot's single query still lists it.
+    session_id = new_session()
+    group_id = new_id("grp")
+    with transaction() as tx:
+        tx.add(IncidentGroup(group_id=group_id, session_id=session_id))
+    assert control.snapshot(session_id)["groups"] == [{"group_id": group_id, "incident_ids": []}]
 
 
 def test_board_cannot_create_a_group():
@@ -234,6 +244,34 @@ def test_no_member_is_determined_before_its_discovery():
     # The latest discovery date itself is allowed.
     workflow.record_determination(ids[0], {**body, "determination_date": "2026-10-04"}, **APPROVER)
     assert get_incident(ids[1], **BOARD)["determination"]["determination_date"] == "2026-10-04"
+
+
+def test_a_group_created_after_the_first_read_is_determined_whole(monkeypatch):
+    """Grouped between the determination's first read and its lock, the incident isn't held
+    while the other members are locked: the attempt rolls back and runs again."""
+    ids = [new_incident(), new_incident()]
+    # Version 2 is the incident's version once the group below exists.
+    body = determination_body(ids[1], 2)
+    load_incident = workflow.load_incident
+    loads = []
+
+    def load_then_group(tx, incident_id, **kwargs):
+        incident = load_incident(tx, incident_id, **kwargs)
+        if not loads:
+            # Its own transaction, which commits before the determination locks anything.
+            create_group({"incident_ids": ids}, **RESPONDER)
+        loads.append(incident_id)
+        return incident
+
+    monkeypatch.setattr(workflow, "load_incident", load_then_group)
+    workflow.record_determination(ids[1], body, **APPROVER)
+
+    assert loads == [ids[1], ids[1]]
+    for incident_id in ids:
+        incident = get_incident(incident_id, **BOARD)
+        assert (incident["state"], incident["version"]) == ("DeterminedMaterial", 3)
+        actions = [entry.action for entry in audit_entries(incident_id)]
+        assert actions.count(AuditAction.RECORD_DETERMINATION) == 1
 
 
 def test_a_stale_group_determination_changes_no_member():

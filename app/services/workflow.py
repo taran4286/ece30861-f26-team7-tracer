@@ -22,7 +22,7 @@ from app.models import (
 )
 from app.roles import Operation, Role, require_role
 from app.services.deadlines import disclosure_due_date
-from app.services.groups import lock_with_group
+from app.services.groups import GroupedMeanwhile, lock_with_group
 from app.services.incidents import incident_to_dict, load_incident, require_current_version
 from app.services.validation import (
     invalid,
@@ -205,6 +205,22 @@ def record_determination(
     role, incident existence, body validation, stale version, then state. A grouped
     incident's determination is applied to every member of its group (REQ-04).
     """
+    try:
+        return _record_determination(
+            incident_id, body, user_id=user_id, role=role, session_id=session_id
+        )
+    except GroupedMeanwhile:
+        # Grouped after the first read: run again, now locking the whole group. A group_id is
+        # set only once, so the second run can't be interrupted the same way.
+        return _record_determination(
+            incident_id, body, user_id=user_id, role=role, session_id=session_id
+        )
+
+
+def _record_determination(
+    incident_id: str, body: Any, *, user_id: str, role: Role | str, session_id: str
+) -> dict[str, Any]:
+    """One attempt at record_determination, in one transaction."""
     with transaction() as tx:
         session = load_session(tx, session_id)
         require_role(role, Operation.RECORD_DETERMINATION)
