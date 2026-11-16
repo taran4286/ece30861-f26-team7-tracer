@@ -38,7 +38,7 @@ STATUS: dict[tuple[str, str], str] = {
     ("PUT", "/incidents/{incident_id}/audit"): REFUSED,
     ("PATCH", "/incidents/{incident_id}/audit"): REFUSED,
     ("DELETE", "/incidents/{incident_id}/audit"): REFUSED,
-    ("POST", "/groups"): NOT_BUILT,
+    ("POST", "/groups"): BUILT,
 }
 STATUS_CLASS = {BUILT: "ok", REFUSED: "muted", NOT_BUILT: "warn"}
 

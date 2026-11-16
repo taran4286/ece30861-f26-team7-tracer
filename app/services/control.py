@@ -19,6 +19,7 @@ from app.clock import utcnow
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
 from app.models import AuditEntry, Incident, RegistrantType, TestSession
+from app.services.groups import groups_to_dicts
 from app.services.incidents import incidents_to_dicts
 from app.services.validation import (
     invalid,
@@ -54,7 +55,7 @@ _URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:\S+")
 CODE_COVERAGE_BASIS = "Source lines; this system doesn't measure code coverage per session"
 
 # The nice-to-have requirements this deployment built, as TestRun's implemented_optional lists them.
-IMPLEMENTED_OPTIONAL = ("REQ-05", "REQ-09", "REQ-18", "REQ-21")
+IMPLEMENTED_OPTIONAL = ("REQ-04", "REQ-05", "REQ-09", "REQ-18", "REQ-21")
 
 
 def setup_session(body: Any) -> dict[str, str]:
@@ -174,8 +175,7 @@ def snapshot(run_id: str) -> dict[str, Any]:
         return {
             "run": run_to_dict(session),
             "incidents": incidents_to_dicts(tx, incidents),
-            # Groups (REQ-04) aren't built.
-            "groups": [],
+            "groups": groups_to_dicts(tx, run_id),
             "audit": [audit_entry_to_dict(entry) for entry in entries],
         }
 
