@@ -259,11 +259,17 @@ def _record_determination(
             or len(set(refs)) != len(refs)
         ):
             raise invalid("evidence_refs", "Expected at least one unique evidence ID")
+        # The determination covers every member, so it may cite any member's evidence.
         owned_refs = set(tx.scalars(select(Evidence.evidence_id).where(
-            Evidence.incident_id == incident_id, Evidence.evidence_id.in_(refs)
+            Evidence.incident_id.in_([member.incident_id for member in members]),
+            Evidence.evidence_id.in_(refs),
         )))
         if owned_refs != set(refs):
-            raise invalid("evidence_refs", "Every evidence ID must belong to this incident")
+            raise invalid(
+                "evidence_refs",
+                "Every evidence ID must belong to this incident" if len(members) == 1
+                else "Every evidence ID must belong to an incident in this group",
+            )
         version = parse_integer(body.get("version"), "version")
         voluntary = body.get("voluntary_disclosure", False)
         if not isinstance(voluntary, bool):

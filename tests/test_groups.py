@@ -229,6 +229,33 @@ def test_a_determination_applies_to_every_member(decision, state, form, due):
         assert entry.after["version"] == 3
 
 
+def test_a_determination_may_cite_any_members_evidence():
+    ids = [new_incident() for _ in range(3)]
+    create_group({"incident_ids": ids}, **RESPONDER)
+    [other] = import_evidence(ids[2], {"source": "ticketing", "items": [ticket()]},
+                              **RESPONDER)["evidence"]
+    body = determination_body(ids[0], 2)
+    body["evidence_refs"].append(other["evidence_id"])
+
+    workflow.record_determination(ids[0], body, **APPROVER)
+
+    for incident_id in ids:
+        determination = get_incident(incident_id, **BOARD)["determination"]
+        assert determination["evidence_refs"] == body["evidence_refs"]
+
+
+def test_evidence_outside_the_group_is_rejected():
+    ids = [new_incident(), new_incident()]
+    create_group({"incident_ids": ids}, **RESPONDER)
+    outsider = new_incident()
+    [item] = import_evidence(outsider, {"source": "ticketing", "items": [ticket()]},
+                             **RESPONDER)["evidence"]
+    body = determination_body(ids[0], 2)
+    body["evidence_refs"].append(item["evidence_id"])
+    rejected(lambda: workflow.record_determination(ids[0], body, **APPROVER),
+             ErrorCode.VALIDATION_ERROR, "evidence_refs", incident_ids=[*ids, outsider])
+
+
 def test_an_ungrouped_incident_is_determined_alone():
     ids = [new_incident(), new_incident()]
     workflow.record_determination(ids[0], determination_body(ids[0], 1), **APPROVER)
