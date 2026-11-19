@@ -59,7 +59,6 @@ def test_refusal_looks_up_the_incident_and_evidence(incident, evidence_id):
 
 
 ROLES_ALLOWED = {
-    Operation.CREATE_GROUP: {Role.RESPONDER, Role.DISCLOSURE_APPROVER},
     Operation.REQUEST_DRAFT: {Role.DISCLOSURE_APPROVER},
 }
 
