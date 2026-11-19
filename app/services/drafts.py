@@ -1,5 +1,8 @@
-"""Read the inputs for a draft, validate its evidence citations, and accept a stored draft."""
+"""Generate an advisory draft with the session's LLM, validate it, and accept a stored draft."""
 
+import ipaddress
+import logging
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -11,6 +14,7 @@ from app.db import transaction
 from app.errors import ErrorCode, TracerError
 from app.models import AuditAction, Draft, DraftStatus, Evidence, Incident, State
 from app.roles import Operation, Role, require_role
+from app.services import llm
 from app.services.incidents import evidence_to_dict, load_incident
 from app.services.validation import invalid, require_object, require_string
 from app.services.workflow import DRAFT_ELEMENTS
@@ -22,6 +26,132 @@ _DRAFT_STATES = frozenset({
 })
 _UNDETERMINED = "Not yet determined"
 
+logger = logging.getLogger(__name__)
+
+
+def request_draft(
+    incident_id: str, *, user_id: str, role: Role | str, session_id: str
+) -> dict[str, Any]:
+    """POST /incidents/{incident_id}/drafts: store a Proposed advisory draft (REQ-15 to REQ-17,
+    REQ-20). The request has no body; user_id keeps the common service signature.
+
+    The LLM call sits between two short transactions, so no connection or lock is held while
+    it runs. Any provider failure, or output that fails validation, is a 503 with nothing
+    written; every client error comes before the call. No audit entry, and the incident's
+    state and version are unchanged.
+    """
+    context = load_draft_context(incident_id, role=role, session_id=session_id)
+    evidence_ids = {item["evidence_id"] for item in context["evidence"]}
+    if evidence_ids:
+        elements = _generate(context, evidence_ids)
+    else:
+        elements = {name: _undetermined() for name in DRAFT_ELEMENTS}
+
+    with transaction() as tx:
+        incident = load_incident(tx, incident_id, session_id=session_id, for_update=True)
+        # The incident may have moved during the call; the text was written for its old form.
+        _require_draftable(incident)
+        if incident.required_form.value != context["form_type"]:
+            raise TracerError(
+                ErrorCode.INVALID_TRANSITION,
+                "The incident's required form changed while the draft was generated; request a new draft",
+            )
+        draft = Draft(
+            incident_id=incident_id, form_type=incident.required_form, elements=elements,
+            status=DraftStatus.PROPOSED,
+        )
+        tx.add(draft)
+        tx.flush()
+        return draft_to_dict(draft)
+
+
+def _generate(context: dict[str, Any], evidence_ids: set[str]) -> dict[str, Any]:
+    """The provider's elements, validated, with sensitive flags checked and added (REQ-17)."""
+    try:
+        elements = llm.draft_elements(context)
+        validate_draft_elements(elements, evidence_ids=evidence_ids)
+    except (llm.ProviderError, TracerError) as error:
+        # The cause goes to the log, never the response.
+        logger.warning("drafting unavailable for %s: %r", context["incident_id"], error)
+        raise TracerError(ErrorCode.DRAFTING_UNAVAILABLE, "Drafting unavailable") from None
+    return {
+        name: {
+            "text": elements[name]["text"],
+            "citations": list(elements[name]["citations"]),
+            "sensitive_flags": scan_sensitive(
+                elements[name]["text"], elements[name]["sensitive_flags"]
+            ),
+        }
+        for name in DRAFT_ELEMENTS
+    }
+
+
+def _undetermined() -> dict[str, Any]:
+    return {"text": _UNDETERMINED, "citations": [], "sensitive_flags": []}
+
+
+# Deterministic REQ-17 patterns, each with its SensitiveFlag reason.
+_SENSITIVE = [
+    (re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE), "CVE"),
+    (re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}"
+                r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?![\d.]*\d)"), "IP address"),
+    (re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b", re.IGNORECASE),
+     "hostname"),
+    (re.compile(r"\bunpatched\b[\w -]{0,40}?\b(?:system|server|host|device|software)s?\b|"
+                r"\bunpatched\b", re.IGNORECASE), "unpatched system"),
+    (re.compile(r"\bfirewall rules?\b", re.IGNORECASE), "firewall rule"),
+]
+# A "hostname" ending in one of these is a file name, as evidence often names files (ransomware
+# appends .locked or .encrypted). A few, such as zip and mov, are also real top-level domains;
+# a file name is the likelier reading in incident text.
+_FILE_EXTENSIONS = frozenset({
+    "bak", "bat", "cfg", "conf", "crt", "csv", "dat", "db", "dll", "doc", "docx", "eml",
+    "encrypted", "exe", "gif", "gz", "htm", "html", "ini", "iso", "jar", "jpeg", "jpg", "js",
+    "json", "key", "locked", "log", "mov", "mp4", "msg", "msi", "pdf", "pem", "png", "ppt",
+    "pptx", "py", "rar", "sh", "sql", "tar", "tmp", "txt", "vbs", "xls", "xlsx", "xml", "yaml",
+    "yml", "zip",
+})
+# IPv6 candidates: hex groups with at least two colons, confirmed by ipaddress.
+_IPV6_CANDIDATE = re.compile(r"(?<![\w:])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![\w:])")
+
+
+def scan_sensitive(text: str, model_flags: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Sensitive flags for one element's text (REQ-17): the model's flags whose excerpt really
+    appears in the text, then every pattern match not already flagged, in text order.
+
+    The placeholder "Not yet determined" has none."""
+    if text == _UNDETERMINED:
+        return []
+    flags: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(excerpt: str, reason: str) -> None:
+        if excerpt and excerpt in text and excerpt not in seen:
+            seen.add(excerpt)
+            flags.append({"excerpt": excerpt, "reason": reason})
+
+    for flag in model_flags:
+        add(flag["excerpt"], flag["reason"])
+    found: list[tuple[int, str, str]] = []
+    for pattern, reason in _SENSITIVE:
+        found += [
+            (match.start(), match.group(), reason) for match in pattern.finditer(text)
+            if not (reason == "hostname" and _is_file_name(match.group()))
+        ]
+    for match in _IPV6_CANDIDATE.finditer(text):
+        try:
+            ipaddress.IPv6Address(match.group())
+        except ValueError:
+            continue
+        found.append((match.start(), match.group(), "IP address"))
+    for _, excerpt, reason in sorted(found):
+        add(excerpt, reason)
+    return flags
+
+
+def _is_file_name(match: str) -> bool:
+    return match.rsplit(".", 1)[-1].lower() in _FILE_EXTENSIONS
+
 
 def load_draft_context(
     incident_id: str, *, role: Role | str, session_id: str,
@@ -31,10 +161,7 @@ def load_draft_context(
         session = load_session(tx, session_id)
         require_role(role, Operation.REQUEST_DRAFT)
         incident = load_incident(tx, incident_id, session_id=session_id)
-        if incident.state in {State.UNDER_ASSESSMENT, State.DETERMINED_NOT_MATERIAL}:
-            raise TracerError(ErrorCode.NOT_MATERIAL, "A draft requires a material incident")
-        if incident.state not in _DRAFT_STATES:
-            raise TracerError(ErrorCode.INVALID_TRANSITION, "The incident state does not allow drafting")
+        _require_draftable(incident)
         evidence = tx.scalars(
             select(Evidence)
             .where(Evidence.incident_id == incident_id)
@@ -48,6 +175,15 @@ def load_draft_context(
             "llm_base_url": session.llm_base_url,
             "evidence": [evidence_to_dict(item) for item in evidence],
         }
+
+
+def _require_draftable(incident: Incident) -> None:
+    """409 unless the state allows drafting: NOT_MATERIAL before a Material determination,
+    INVALID_TRANSITION for any other ineligible state."""
+    if incident.state in {State.UNDER_ASSESSMENT, State.DETERMINED_NOT_MATERIAL}:
+        raise TracerError(ErrorCode.NOT_MATERIAL, "A draft requires a material incident")
+    if incident.state not in _DRAFT_STATES:
+        raise TracerError(ErrorCode.INVALID_TRANSITION, "The incident state does not allow drafting")
 
 
 def validate_draft_elements(elements: Any, *, evidence_ids: set[str]) -> None:

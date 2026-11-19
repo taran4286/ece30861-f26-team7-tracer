@@ -8,10 +8,11 @@ One module per area, callable without any web framework. Each project operation 
 | `evidence.py` | `import_evidence(incident_id, body, …)`, `tag_evidence(incident_id, evidence_id, body, …)`, `load_evidence`, `SHAPES` (where each source's fields come from) and `_FOREIGN_KEYS` | `tests/test_evidence.py` |
 | `workflow.py` | `record_determination(incident_id, body, …)`, `transition_incident(incident_id, body, …)`, `list_audit_entries(incident_id, …)`, `audit_entry_to_dict`, `ALLOWED_TRANSITIONS` and `DRAFT_ELEMENTS` | `tests/test_workflow.py` |
 | `control.py` | `setup_session(body)`, `coverage_report(session_id)`, `update_settings(session_id, body)`, `snapshot(run_id)`, `run_to_dict`, `DEFAULTS`, `MUTABLE_SETTINGS`, `INTEGER_MAX`, `CODE_COVERAGE_BASIS` and `IMPLEMENTED_OPTIONAL` | `tests/test_control.py` |
-| `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, …)` (501) | `tests/test_placeholders.py` |
+| `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
 | `filings.py` | `validate_filing_request` (pure validation), `record_filing` (storage, state and audit) | `tests/test_filings.py`, `tests/test_filing_storage.py` |
-| `drafts.py` | `load_draft_context` (eligibility and provider inputs), `validate_draft_elements` (pure output validation), `accept_draft(draft_id, …)`, `load_draft` and `draft_to_dict` | `tests/test_drafts.py`, `tests/test_draft_acceptance.py` |
+| `drafts.py` | `request_draft(incident_id, …)`, `load_draft_context` (eligibility and provider inputs), `validate_draft_elements` (pure output validation), `scan_sensitive`, `accept_draft(draft_id, …)`, `load_draft` and `draft_to_dict` | `tests/test_drafts.py`, `tests/test_draft_request.py`, `tests/test_draft_acceptance.py` |
+| `llm.py` | `draft_elements(context, *, timeout=None)`, `ProviderError`, `TIMEOUT_SECONDS`, `MAX_RESPONSE_BYTES`, `TRANSPORT` and `SYSTEM_PROMPT` | `tests/test_draft_request.py` |
 | `flags.py` | `incident_flags(incident, filings, session)` | `tests/test_flags.py` |
 | `deadlines.py` | `federal_holidays`, `is_business_day`, `add_business_days`, `disclosure_due_date`, `MIN_CALENDAR_YEAR` and `MAX_CALENDAR_YEAR` | `tests/test_deadlines.py` |
 
@@ -76,7 +77,26 @@ def record_determination(
 
 - `load_draft_context(incident_id, *, role, session_id)` checks session, role, scoped incident, then state. UnderAssessment and DeterminedNotMaterial return `NOT_MATERIAL`; other ineligible states return `INVALID_TRANSITION`. Eligible states are DeterminedMaterial, DisclosureDelayed and AmendmentPending.
 - The loader returns the incident ID, title, discovery date, stored form type, session LLM URL and the incident's normalized evidence. The transaction closes before the caller uses those inputs. No incident, filing or audit record changes.
-- Pass the provider's normalized `elements` object and the set of evidence IDs from that context to `validate_draft_elements`. It checks all four elements, requires citations on drafted text, and accepts the exact placeholder `Not yet determined` with empty citations and flags. Invalid output raises a field-specific `TracerError` without mutating the response. The provider caller handles that error internally, since it describes generated output rather than a bad API request. The validator checks citation ownership, while reviewers check whether the prose is supported.
+- `validate_draft_elements(elements, *, evidence_ids)` checks the provider's output against the context's evidence IDs: exactly the four elements, each exactly `text`, `citations` and `sensitive_flags`; drafted text with at least one citation, each one of this incident's evidence IDs; the exact placeholder `Not yet determined` with empty citations and flags; each flag an object with string `excerpt` and `reason`. Invalid output raises a field-specific `TracerError` without mutating the input, which `request_draft` turns into a 503. The validator checks citation ownership, while reviewers check whether the prose is supported.
+
+## Draft requests (`drafts.py`, `llm.py`; REQ-15, REQ-16, REQ-17, REQ-20)
+
+`request_draft` (DisclosureApprover only) stores a Proposed advisory draft of the incident's required form. The request has no body. It writes no audit entry, and the incident's state and version are unchanged. Unlike other operations, it runs in two transactions with the LLM call between them, so no connection or lock is held while the model runs.
+
+1. `load_draft_context`: session 404, role 403, incident 404, state 409, all before any LLM call, so a 503 never hides a client error.
+2. With no evidence, every element is `Not yet determined` and the LLM isn't called. Otherwise `llm.draft_elements(context)` asks the session's `llm_base_url`, then `validate_draft_elements` checks the reply.
+3. A `ProviderError` or a validation `TracerError` becomes 503 `DRAFTING_UNAVAILABLE`, message `Drafting unavailable`, with nothing written. The cause is logged as a warning and never put in the response.
+4. `scan_sensitive(text, model_flags)` sets each element's `sensitive_flags` (REQ-17): first the model's flags whose excerpt appears verbatim in the text, then every match of the deterministic patterns in text order, skipping an excerpt already flagged. The patterns and their reasons: CVE IDs (`CVE`), IPv4 and IPv6 addresses (`IP address`; IPv6 confirmed by `ipaddress`), dotted hostnames (`hostname`) except names whose last label is a common file extension in `_FILE_EXTENSIONS` (`README.txt`, `payroll.xlsx.locked`), "unpatched", optionally followed within 40 characters by system, server, host, device or software (`unpatched system`), and "firewall rule(s)" (`firewall rule`). The placeholder gets none.
+5. A new transaction locks the incident with `load_incident(..., for_update=True)` and checks the state again (the same 409s as step 1). If its `required_form` changed since step 1, it's a 409 `INVALID_TRANSITION` saying to request a new draft. Then it inserts the `Draft` (`form_type` = `required_form`, status Proposed) and returns `draft_to_dict` (201 over HTTP).
+
+`llm.draft_elements` makes one OpenAI-compatible call:
+
+- It POSTs to `{llm_base_url}/chat/completions` (a trailing slash on the base URL is dropped) with `SYSTEM_PROMPT`, a user message holding the incident's title and form type and each evidence item's `evidence_id`, `source`, `summary`, `observed_at` and `impact_categories` as JSON, `response_format: {"type": "json_object"}` and `temperature: 0`. `model` is sent only when `LLM_MODEL` is set.
+- `Authorization: Bearer <LLM_API_KEY>` is sent only when the key is set and the URL has the same origin (scheme, case-insensitive host, port with 80/443 defaults) as `LLM_TRUSTED_BASE_URL`. Any tester can set `llm_base_url`, so the key goes nowhere else.
+- A host that is or ends in `.invalid` (the session default `https://llm.invalid/v1`) raises `ProviderError` without any request (RFC 6761).
+- The call runs in a daemon thread joined for `TIMEOUT_SECONDS` (55 s, inside the spec's 60 s), which bounds the whole call; httpx2's own timeouts bound each operation. A thread still running at the deadline is abandoned.
+- `ProviderError` covers any httpx2 error, a non-2xx status (redirects aren't followed), a body over `MAX_RESPONSE_BYTES` (1,000,000), a body without a string `choices[0].message.content`, and content that isn't a JSON object. Content wrapped in one Markdown code fence is unwrapped. The shape of the parsed object is left to `validate_draft_elements`.
+- Tests set `TRANSPORT` to an `httpx2.MockTransport`; `None` uses the network.
 
 ## Draft acceptance (`drafts.py`; REQ-22)
 
@@ -119,7 +139,7 @@ These take no identity headers or role and write no audit entries or project rec
   - A setting left out keeps its value, so `{}` changes nothing and returns the settings as stored.
   - In one transaction it loads the session with `load_session(..., for_update=True)` (unknown, or an ID with NUL, → 404), sets the changed attributes and returns `run_to_dict(session)` (200). The ORM's UPDATE names only the attributes set, which are the columns the app role may update (see `scripts/AGENTS.md`); `{}` issues no UPDATE. Any error leaves the session as it was.
   - Every later date rule in the session uses the new `test_now` through `clock.today(session)`.
-- `snapshot(run_id)` (`GET /test/report/{run_id}`) returns `{run, incidents, groups: [], audit}`: the session's TestRun from `run_to_dict` (`run_id` is the session ID, `implemented_optional` lists `IMPLEMENTED_OPTIONAL`: `["REQ-05", "REQ-09", "REQ-18", "REQ-21"]`, the tags under Evidence tags, the at-risk flag under Flags, voluntary Item 8.01 under Materiality determination and the stale-version check under "Sessions, roles, dates and versions"), its incidents as full Incidents ordered by `incident_id` (random, not creation order), and its audit entries ordered by `seq`. Unknown session → 404.
+- `snapshot(run_id)` (`GET /test/report/{run_id}`) returns `{run, incidents, groups: [], audit}`: the session's TestRun from `run_to_dict` (`run_id` is the session ID, `implemented_optional` lists `IMPLEMENTED_OPTIONAL`: `["REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"]`, the tags under Evidence tags, the at-risk flag under Flags, sensitive flags and the drafting 503 under Draft requests, voluntary Item 8.01 under Materiality determination and the stale-version check under "Sessions, roles, dates and versions"), its incidents as full Incidents ordered by `incident_id` (random, not creation order), and its audit entries ordered by `seq`. Unknown session → 404.
 
 ## Incidents (`incidents.py`; REQ-01, REQ-22)
 
@@ -193,7 +213,7 @@ These take no identity headers or role and write no audit entries or project rec
 
 ## Audit trail (`workflow.py`; REQ-22)
 
-- Every successful create, import request, tag, determination, transition, filing and draft acceptance writes exactly one audit entry through `app/audit.py`, in the same transaction; rejected requests and GETs write none.
+- Every successful create, import request, tag, determination, transition, filing and draft acceptance writes exactly one audit entry through `app/audit.py`, in the same transaction; draft requests, rejected requests and GETs write none.
 - `list_audit_entries` (all roles) returns `{"entries": [...]}`: every entry whose `target_id` is the incident, import entries included, oldest first by `seq`.
 - Entries are never updated or deleted: no code path does, the audit routes' PUT, PATCH and DELETE return 405 (below), and the app role has only INSERT and SELECT on `audit_entries` (see `scripts/AGENTS.md`).
 
@@ -207,7 +227,6 @@ Each runs steps 1 to 3 (session, role, path IDs) in one transaction, then raises
 | `DELETE /incidents/{id}/evidence/{evidence_id}` | `refuse_change`, `REPLACE_OR_DELETE` | DisclosureApprover | incident, evidence | 405 |
 | `PUT`, `PATCH`, `DELETE /incidents/{id}/audit` | `refuse_change`, `REPLACE_OR_DELETE` | DisclosureApprover | incident | 405 |
 | `POST /groups` (REQ-04) | `not_built`, `CREATE_GROUP` | Responder, DisclosureApprover | none | 501 |
-| `POST /incidents/{id}/drafts` | `not_built`, `REQUEST_DRAFT` | DisclosureApprover | incident | 501 |
 
 ## Rules
 

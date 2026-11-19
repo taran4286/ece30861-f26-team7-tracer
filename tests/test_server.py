@@ -2,12 +2,14 @@
 check, test control, project operations, 405s and 501s, with statuses, error shapes and error
 order."""
 
+import json
 import re
 import socket
 import time
 import uuid
 from pathlib import Path
 
+import httpx2
 import pytest
 import yaml
 from fastapi.testclient import TestClient
@@ -16,6 +18,7 @@ from sqlalchemy.exc import ArgumentError, OperationalError
 import app.api as system_api
 import app.db as db
 import app.services.control as control_service
+import app.services.llm as llm
 from app.api import pages
 from app.config import get_settings
 from server import app as server_app
@@ -278,7 +281,7 @@ def test_setup_coverage_and_snapshot_match_the_spec():
     assert response.json() == {
         "run": {"run_id": session_id, "test_now": "2026-10-05T15:00:00+00:00",
                 "registrant_type": "Domestic", "at_risk_threshold_days": 7,
-                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-18", "REQ-21"]},
+                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"]},
         "incidents": [], "groups": [], "audit": [],
     }
 
@@ -289,7 +292,7 @@ def test_setup_keeps_the_settings_sent():
     assert snapshot(session_id)["run"] == {
         "run_id": session_id, "test_now": "2026-10-09T12:00:00+00:00", "registrant_type": "FPI",
         "at_risk_threshold_days": 3, "llm_base_url": "http://llm.example/v1",
-        "implemented_optional": ["REQ-05", "REQ-09", "REQ-18", "REQ-21"],
+        "implemented_optional": ["REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"],
     }
 
 
@@ -322,7 +325,7 @@ def test_a_settings_update_answers_with_the_run(session_id):
     assert response.json() == {
         "run_id": session_id, "test_now": "2026-10-08T15:00:00+00:00",
         "registrant_type": "Domestic", "at_risk_threshold_days": 3,
-        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-18", "REQ-21"],
+        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"],
     }
     assert snapshot(session_id)["run"] == response.json()
 
@@ -676,6 +679,69 @@ def test_draft_acceptance_over_http(api_incident):
     assert snapshot(session_id) == after
 
 
+def _material_over_http(session_id: str) -> str:
+    """An incident made Material through the API, with one evidence item; returns its ID."""
+    created = client.post("/system/incidents", headers=headers(session_id),
+                          json={"title": "Ransomware", "discovery_date": "2026-10-01"})
+    incident_id = created.json()["incident_id"]
+    item = {"ticket_id": "T-1", "summary": "Files locked on 10.0.0.5",
+            "created_at": "2026-10-01T09:00:00Z"}
+    imported = client.post(url("/incidents/{incident_id}/evidence/import", incident_id),
+                           headers=headers(session_id), json={"source": "ticketing", "items": [item]})
+    evidence_id = imported.json()["evidence"][0]["evidence_id"]
+    determined = client.post(url("/incidents/{incident_id}/determination", incident_id),
+                             headers=headers(session_id, "DisclosureApprover"), json={
+                                 "decision": "Material", "determination_date": "2026-10-05",
+                                 "rationale": "Encrypted", "evidence_refs": [evidence_id],
+                                 "version": 1})
+    assert determined.json()["state"] == "DeterminedMaterial"
+    return incident_id
+
+
+def test_draft_request_over_http(monkeypatch):
+    session_id = new_session(llm_base_url="https://llm.test/v1")
+    incident_id = _material_over_http(session_id)
+    evidence_id = snapshot(session_id)["incidents"][0]["evidence"][0]["evidence_id"]
+    undetermined = {"text": "Not yet determined", "citations": [], "sensitive_flags": []}
+    content = json.dumps({
+        "nature": {"text": "Ransomware locked files on 10.0.0.5.", "citations": [evidence_id],
+                   "sensitive_flags": []},
+        **{name: undetermined for name in ("scope", "timing", "impact")},
+    })
+    monkeypatch.setattr(llm, "TRANSPORT", httpx2.MockTransport(lambda request: httpx2.Response(
+        200, json={"choices": [{"message": {"content": content}}]})))
+    template = "/incidents/{incident_id}/drafts"
+    before = snapshot(session_id)
+
+    drafted = client.post(url(template, incident_id), headers=headers(session_id, "DisclosureApprover"))
+    assert drafted.status_code == 201
+    matches_spec("POST", template, drafted)
+    draft = drafted.json()
+    assert (draft["advisory"], draft["status"], draft["form_type"]) == (
+        True, "Proposed", "8-K Item 1.05")
+    assert draft["elements"]["nature"]["sensitive_flags"] == [
+        {"excerpt": "10.0.0.5", "reason": "IP address"}]
+    # No incident, version or audit change.
+    assert snapshot(session_id) == before
+
+    accepted = client.post(f"/system/drafts/{draft['draft_id']}/accept",
+                           headers=headers(session_id, "DisclosureApprover"))
+    assert accepted.status_code == 200
+    assert accepted.json()["elements"] == draft["elements"]
+
+
+def test_draft_request_without_a_working_llm_is_503():
+    session_id = new_session()  # the default https://llm.invalid/v1
+    incident_id = _material_over_http(session_id)
+    template = "/incidents/{incident_id}/drafts"
+    before = snapshot(session_id)
+    response = client.post(url(template, incident_id), headers=headers(session_id, "DisclosureApprover"))
+    project_error(response, 503, "DRAFTING_UNAVAILABLE")
+    assert response.json()["message"] == "Drafting unavailable"
+    matches_spec("POST", template, response)
+    assert snapshot(session_id) == before
+
+
 # --- 405 and 501 ----------------------------------------------------------------------------
 
 REFUSED = [
@@ -714,7 +780,6 @@ def test_evidence_routes_look_up_the_evidence(api_incident, method):
 
 NOT_BUILT = [
     ("POST", "/groups", {"Responder", "DisclosureApprover"}),
-    ("POST", "/incidents/{incident_id}/drafts", {"DisclosureApprover"}),
 ]
 
 

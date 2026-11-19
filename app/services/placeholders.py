@@ -35,15 +35,10 @@ def refuse_change(
 
 
 def not_built(
-    operation: Operation,
-    incident_id: str | None = None,
-    *,
-    user_id: str,
-    role: Role | str,
-    session_id: str,
+    operation: Operation, *, user_id: str, role: Role | str, session_id: str
 ) -> NoReturn:
-    """An operation this team doesn't build: groups and draft requests."""
-    _check(operation, incident_id, None, role=role, session_id=session_id)
+    """An operation this team doesn't build: groups. Its path has no IDs to look up."""
+    _check(operation, None, None, role=role, session_id=session_id)
     raise TracerError(ErrorCode.NOT_IMPLEMENTED, f"{operation.value} is not implemented")
 
 

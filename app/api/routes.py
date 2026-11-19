@@ -55,6 +55,12 @@ async def record_filing(request: Request, incident_id: str) -> JSONResponse:
     return await call(request, filings.record_filing, incident_id, body, status=201)
 
 
+@router.post("/incidents/{incident_id}/drafts")
+async def request_draft(request: Request, incident_id: str) -> JSONResponse:
+    """Generate an advisory draft with the session's LLM; the route reads no body."""
+    return await call(request, drafts.request_draft, incident_id, status=201)
+
+
 @router.post("/drafts/{draft_id}/accept")
 async def accept_draft(request: Request, draft_id: str) -> JSONResponse:
     return await call(request, drafts.accept_draft, draft_id)

@@ -47,10 +47,3 @@ async def audit_not_allowed(request: Request, incident_id: str) -> JSONResponse:
 async def create_group(request: Request) -> JSONResponse:
     """Incident groups (REQ-04) aren't built."""
     return await call(request, placeholders.not_built, Operation.CREATE_GROUP)
-
-
-@router.post("/incidents/{incident_id}/drafts")
-async def request_draft(request: Request, incident_id: str) -> JSONResponse:
-    """Drafts aren't built."""
-    return await call(request, placeholders.not_built, Operation.REQUEST_DRAFT, incident_id)
-
