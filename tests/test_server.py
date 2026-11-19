@@ -277,7 +277,7 @@ def test_setup_coverage_and_snapshot_match_the_spec():
     assert response.json() == {
         "run": {"run_id": session_id, "test_now": "2026-10-05T15:00:00+00:00",
                 "registrant_type": "Domestic", "at_risk_threshold_days": 7,
-                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-18", "REQ-21"]},
+                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-18", "REQ-21"]},
         "incidents": [], "groups": [], "audit": [],
     }
 
@@ -288,7 +288,7 @@ def test_setup_keeps_the_settings_sent():
     assert snapshot(session_id)["run"] == {
         "run_id": session_id, "test_now": "2026-10-09T12:00:00+00:00", "registrant_type": "FPI",
         "at_risk_threshold_days": 3, "llm_base_url": "http://llm.example/v1",
-        "implemented_optional": ["REQ-05", "REQ-09", "REQ-18", "REQ-21"],
+        "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-18", "REQ-21"],
     }
 
 
@@ -321,7 +321,7 @@ def test_a_settings_update_answers_with_the_run(session_id):
     assert response.json() == {
         "run_id": session_id, "test_now": "2026-10-08T15:00:00+00:00",
         "registrant_type": "Domestic", "at_risk_threshold_days": 3,
-        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-18", "REQ-21"],
+        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-18", "REQ-21"],
     }
     assert snapshot(session_id)["run"] == response.json()
 
@@ -647,6 +647,52 @@ def test_tagging_over_http(api_incident):
     assert snapshot(session_id)["audit"][-1] == trail.json()["entries"][-1]
 
 
+def test_groups_over_http(api_incident):
+    session_id, first = api_incident["session_id"], api_incident["incident_id"]
+    responder, approver = headers(session_id), headers(session_id, "DisclosureApprover")
+    second = client.post("/system/incidents", headers=responder,
+                         json={"title": "Phishing", "discovery_date": "2026-10-02"}).json()
+    ids = [first, second["incident_id"]]
+    before = snapshot(session_id)
+    rejected = client.post("/system/groups", headers=responder, json={"incident_ids": [first]})
+    project_error(rejected, 400, "VALIDATION_ERROR", "incident_ids")
+    matches_spec("POST", "/groups", rejected)
+    unknown = client.post("/system/groups", headers=responder,
+                          json={"incident_ids": [first, "inc_missing"]})
+    project_error(unknown, 404, "NOT_FOUND", "incident_ids[1]")
+    matches_spec("POST", "/groups", unknown)
+    assert snapshot(session_id) == before
+
+    grouped = client.post("/system/groups", headers=responder, json={"incident_ids": ids})
+    assert grouped.status_code == 201
+    matches_spec("POST", "/groups", grouped)
+    group = grouped.json()
+    assert group["incident_ids"] == sorted(ids)
+    report = client.get(f"/system/test/report/{session_id}")
+    assert report.status_code == 200
+    matches_spec("GET", "/test/report/{run_id}", report)
+    assert report.json()["groups"] == [group]
+    assert [incident["group_id"] for incident in report.json()["incidents"]] == [group["group_id"]] * 2
+    assert [entry["action"] for entry in report.json()["audit"][-2:]] == ["create_group"] * 2
+
+    again = client.post("/system/groups", headers=responder, json={"incident_ids": ids})
+    project_error(again, 409, "CONFLICT")
+    matches_spec("POST", "/groups", again)
+    assert snapshot(session_id) == report.json()
+
+    # The determination on one member is applied to both.
+    determined = client.post(url("/incidents/{incident_id}/determination", first), headers=approver,
+                             json={"decision": "Material", "determination_date": "2026-10-05",
+                                   "rationale": "Shared intrusion",
+                                   "evidence_refs": [api_incident["evidence_id"]], "version": 2})
+    assert determined.status_code == 200
+    matches_spec("POST", "/incidents/{incident_id}/determination", determined)
+    other = client.get(url("/incidents/{incident_id}", ids[1]), headers=headers(session_id, "Board"))
+    assert other.status_code == 200
+    assert (other.json()["state"], other.json()["version"]) == ("DeterminedMaterial", 3)
+    assert other.json()["determination"] == determined.json()["determination"]
+
+
 # --- 405 and 501 ----------------------------------------------------------------------------
 
 REFUSED = [
@@ -684,7 +730,6 @@ def test_evidence_routes_look_up_the_evidence(api_incident, method):
 
 
 NOT_BUILT = [
-    ("POST", "/groups", {"Responder", "DisclosureApprover"}),
     ("POST", "/incidents/{incident_id}/drafts", {"DisclosureApprover"}),
     ("POST", "/drafts/{draft_id}/accept", {"DisclosureApprover"}),
 ]

@@ -7,6 +7,7 @@ One module per area, callable without any web framework. Each project operation 
 | `incidents.py` | `create_incident(body, …)`, `get_incident(incident_id, …)`, and the shared `load_incident`, `require_current_version` and `*_to_dict` builders | `tests/test_incidents.py` |
 | `evidence.py` | `import_evidence(incident_id, body, …)`, `tag_evidence(incident_id, evidence_id, body, …)`, `load_evidence`, `SHAPES` (where each source's fields come from) and `_FOREIGN_KEYS` | `tests/test_evidence.py` |
 | `workflow.py` | `record_determination(incident_id, body, …)`, `transition_incident(incident_id, body, …)`, `list_audit_entries(incident_id, …)`, `audit_entry_to_dict`, `ALLOWED_TRANSITIONS` and `DRAFT_ELEMENTS` | `tests/test_workflow.py` |
+| `groups.py` | `create_group(body, …)`, `lock_with_group(tx, incident)`, `GroupedMeanwhile` and `groups_to_dicts(tx, session_id)` | `tests/test_groups.py` |
 | `control.py` | `setup_session(body)`, `coverage_report(session_id)`, `update_settings(session_id, body)`, `snapshot(run_id)`, `run_to_dict`, `DEFAULTS`, `MUTABLE_SETTINGS`, `INTEGER_MAX`, `CODE_COVERAGE_BASIS` and `IMPLEMENTED_OPTIONAL` | `tests/test_control.py` |
 | `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
@@ -29,20 +30,19 @@ Each project operation takes one keyword-only argument per identity header, `*, 
 6. Write the change and call `audit(..., session_id=session_id)`. Any error raised inside the transaction rolls back everything, including the audit entry, so a rejected request leaves stored data as it was (REQ-19).
 
 ```python
-def record_determination(
+def record_filing(
     incident_id: str, body: Any, *, user_id: str, role: Role | str, session_id: str
 ) -> dict[str, Any]:
     with transaction() as tx:
         session = load_session(tx, session_id)
-        require_role(role, Operation.RECORD_DETERMINATION)
+        require_role(role, Operation.RECORD_FILING)
         incident = load_incident(tx, incident_id, session_id=session_id, for_update=True)
-        body = require_object(body)
-        ...  # validate every field; raise invalid(field, message)
-        require_current_version(incident, version)
-        if incident.state != State.UNDER_ASSESSMENT:
+        fields = validate_filing_request(body, ...)  # raises invalid(field, message)
+        require_current_version(incident, fields["version"])
+        if incident.state not in {...}:
             raise TracerError(ErrorCode.INVALID_TRANSITION, ...)
         ...  # write
-        audit(tx, AuditAction.RECORD_DETERMINATION, incident_id, before, after,
+        audit(tx, AuditAction.RECORD_FILING, incident_id, before, after,
               user_id=user_id, session_id=session_id)
         return incident_to_dict(tx, incident)
 ```
@@ -52,11 +52,11 @@ def record_determination(
 - Every lookup is scoped to the request's session: an incident belongs to the session that created it and is unknown (404) in any other. Evidence and determinations belong to their incident, and each audit entry records its request's session.
 - `roles.PERMISSIONS`: Responder may read, create incidents, import evidence, tag evidence and create groups; DisclosureApprover may do everything; Board may only read.
 - Today is `clock.today(session)`, the UTC date of the session's `test_now`. The registrant type is `session.registrant_type`. Neither comes from config or the real date.
-- New incidents start at `version: 1`. A determination, successful transition and recorded filing each add 1; import and tagging leave it unchanged. Bodies that carry `version` must send an integer ≥ 1 (a 400 otherwise). After the rest of the body, a version older than the stored one is a 409 `STALE_VERSION` whose message says to reload (REQ-21); the current version, or a newer one, is accepted.
+- New incidents start at `version: 1`. A determination, successful transition, recorded filing and joining a group each add 1; import and tagging leave it unchanged. Bodies that carry `version` must send an integer ≥ 1 (a 400 otherwise). After the rest of the body, a version older than the stored one is a 409 `STALE_VERSION` whose message says to reload (REQ-21); the current version, or a newer one, is accepted.
 
 **Validation**
 
-- Errors name a path-style `field`: `title`, `items[3].detected_at`, `setup.test_now`, `elements[1]`. Unknown IDs inside a body, like `evidence_refs`, are 400s on that field; only IDs in the path are 404s.
+- Errors name a path-style `field`: `title`, `items[3].detected_at`, `setup.test_now`, `elements[1]`. Unknown IDs inside a body, like `evidence_refs`, are 400s on that field; only IDs in the path are 404s, except a group's `incident_ids` (see Groups).
 - `require_object` rejects a body that isn't a JSON object (a body that isn't JSON arrives as `None`).
 - `require_string` rejects missing, non-string and blank (whitespace-only) values, and NUL characters because PostgreSQL text cannot store them.
 - `parse_date` accepts only a real `YYYY-MM-DD`; `parse_date_time` accepts only RFC 3339 with seconds and a `Z` or `±HH:MM` offset (lowercase `t` and `z` included), returned in UTC.
@@ -64,7 +64,7 @@ def record_determination(
 
 ## Shared helpers
 
-- `incidents.load_incident(tx, incident_id, *, session_id, for_update=False)` loads the path incident or raises `NOT_FOUND`, treating another session's incident as unknown. `for_update=True` locks the row; determination, transition and filing operations use it, so two concurrent requests can't both pass the version and state checks or bump `version` from the same value: the second waits, then sees the first one's version.
+- `incidents.load_incident(tx, incident_id, *, session_id, for_update=False)` loads the path incident or raises `NOT_FOUND`, treating another session's incident as unknown. `for_update=True` locks the row; transition and filing operations use it, so two concurrent requests can't both pass the version and state checks or bump `version` from the same value: the second waits, then sees the first one's version. Determination loads the incident without the lock, then locks it and any group members through `groups.lock_with_group` (see Groups).
 - `incidents.require_current_version(incident, version)` raises 409 `STALE_VERSION` when `version` is older than `incident.version`, with a message naming both versions and saying to reload; equal or newer passes. Only an older version is stale.
 - `evidence.load_evidence(tx, incident_id, evidence_id, *, for_update=False)` loads evidence named in the path, after its incident, or raises `NOT_FOUND`; evidence of another incident counts as unknown. `for_update=True` locks the row, which the app role's UPDATE grant on `impact_categories` allows; tagging uses it.
 - `incidents.incident_to_dict(tx, incident)` builds the full Incident (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values), and every operation that returns an Incident uses it. `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations, evidence and filings. `evidence_to_dict`, `determination_to_dict` and `filing_to_dict` build the parts; `raw_item` is never returned.
@@ -109,7 +109,7 @@ These take no identity headers or role and write no audit entries or project rec
   - A setting left out keeps its value, so `{}` changes nothing and returns the settings as stored.
   - In one transaction it loads the session with `load_session(..., for_update=True)` (unknown, or an ID with NUL, → 404), sets the changed attributes and returns `run_to_dict(session)` (200). The ORM's UPDATE names only the attributes set, which are the columns the app role may update (see `scripts/AGENTS.md`); `{}` issues no UPDATE. Any error leaves the session as it was.
   - Every later date rule in the session uses the new `test_now` through `clock.today(session)`.
-- `snapshot(run_id)` (`GET /test/report/{run_id}`) returns `{run, incidents, groups: [], audit}`: the session's TestRun from `run_to_dict` (`run_id` is the session ID, `implemented_optional` lists `IMPLEMENTED_OPTIONAL`: `["REQ-05", "REQ-09", "REQ-18", "REQ-21"]`, the tags under Evidence tags, the at-risk flag under Flags, voluntary Item 8.01 under Materiality determination and the stale-version check under "Sessions, roles, dates and versions"), its incidents as full Incidents ordered by `incident_id` (random, not creation order), and its audit entries ordered by `seq`. Unknown session → 404.
+- `snapshot(run_id)` (`GET /test/report/{run_id}`) returns `{run, incidents, groups, audit}`: the session's TestRun from `run_to_dict` (`run_id` is the session ID, `implemented_optional` lists `IMPLEMENTED_OPTIONAL`: `["REQ-04", "REQ-05", "REQ-09", "REQ-18", "REQ-21"]`, groups under Groups, the tags under Evidence tags, the at-risk flag under Flags, voluntary Item 8.01 under Materiality determination and the stale-version check under "Sessions, roles, dates and versions"), its incidents as full Incidents ordered by `incident_id` (random, not creation order), its groups from `groups.groups_to_dicts`, and its audit entries ordered by `seq`. Unknown session → 404. It runs as a read-only REPEATABLE READ transaction, the only one that isn't READ COMMITTED, so all its reads see one committed state: a request committing meanwhile shows in all of the report or none of it.
 
 ## Incidents (`incidents.py`; REQ-01, REQ-22)
 
@@ -133,15 +133,26 @@ These take no identity headers or role and write no audit entries or project rec
 - It checks `impact_categories`: missing or not an array is a 400 on `impact_categories`; each entry must be an `ImpactCategory` value (operational, financial, legal_regulatory, reputational, data_compromised; case-sensitive) and not repeat an earlier one, else a 400 on `impact_categories[i]` (AC-05's "misc" included). An empty array clears the tags. Other body keys are ignored.
 - It stores the categories in the order sent, changes no other column, writes one `tag_evidence` audit entry (`target_id` = incident ID, `before: {evidence_id, impact_categories}`, `after: {evidence_id, impact_categories}`) and returns the EvidenceItem (200 over HTTP). Every successful request writes an entry, even one that sends the stored categories again.
 
-## Materiality determination (`workflow.py`; REQ-07, REQ-08, REQ-18)
+## Groups (`groups.py`; REQ-04, REQ-22)
 
-`record_determination` (DisclosureApprover only) is the only code that writes a materiality value.
+`create_group` (Responder, DisclosureApprover) links incidents of the request's session into a new group. It has no path IDs and no `version` in its body.
 
-- It checks, in order: `decision` (Material or NotMaterial); `determination_date` (a date, then on or after `discovery_date` and not after today, both ends included, then, for a Domestic Material determination, a due date the holiday calendar can compute; see Deadline calendar); `rationale` (`require_string`); `evidence_refs` (a non-empty array of unique, non-blank strings without NUL, then every ID must belong to this incident, both on `evidence_refs`); `version`; then `voluntary_disclosure`, false when omitted: a non-boolean (`null` included) is a 400, and `true` with Material is a 400, since it's valid only with NotMaterial.
-- After those, a stale `version` is 409 `STALE_VERSION`, then a state other than UnderAssessment is 409 `INVALID_TRANSITION`. A second determination is a 409 either way: `STALE_VERSION` with the version the first one replaced, `INVALID_TRANSITION` with the current one.
+- It checks `incident_ids`: missing, not an array, or fewer than two entries is a 400 on `incident_ids`; each entry must be a non-blank string without NUL and not repeat an earlier one (so an incident can't be linked to itself), else a 400 on `incident_ids[i]`. Other body keys are ignored.
+- It then locks the named incidents in `incident_id` order. An ID that isn't an incident of this session is a 404 `NOT_FOUND` with `field` set to `incident_ids[i]`, the first in body order, since the spec's NOT_FOUND covers unknown incidents. Every entry's shape is checked before any ID is looked up. After that, a member already in a group or not UnderAssessment is a 409 `CONFLICT` with nothing changed, so linking grouped incidents again changes nothing.
+- It inserts an `IncidentGroup`, sets each member's `group_id`, adds 1 to its `version`, and writes one `create_group` audit entry per member (`target_id` = that member, `before: {group_id: null, version}`, `after: {group_id, incident_ids, version}`).
+- It returns the Group, `{group_id, incident_ids}`, with members ordered by `incident_id` (201 over HTTP). No operation changes a group's members after that.
+- `lock_with_group(tx, incident)` locks an incident loaded without a lock, and every member of its group, in `incident_id` order, the order `create_group` locks in, so two requests on members of one group wait for each other instead of deadlocking. It returns the members in that order, or the incident alone when it isn't grouped. An incident grouped between the load and the lock raises `GroupedMeanwhile` instead, before anything is written: waiting for the other members while holding its lock could deadlock, so the caller rolls back and runs again, and the second run finds the group on its first read. A `group_id` is set only once, so that can't happen twice.
+- `groups_to_dicts(tx, session_id)` returns the session's groups for the snapshot, ordered by `group_id`, with members by `incident_id`. It reads groups and members in one statement, so a group created meanwhile is either listed with all its members or not at all, and a group with no members is still listed.
+
+## Materiality determination (`workflow.py`; REQ-04, REQ-07, REQ-08, REQ-18)
+
+`record_determination` (DisclosureApprover only) is the only code that writes a materiality value. On a grouped incident it applies the same determination to every member of the group, which it locks through `groups.lock_with_group` before reading the body. On `GroupedMeanwhile` it runs its whole transaction once more.
+
+- It checks, in order: `decision` (Material or NotMaterial); `determination_date` (a date, then on or after `discovery_date`, the latest member's for a group, and not after today, both ends included, then, for a Domestic Material determination, a due date the holiday calendar can compute; see Deadline calendar); `rationale` (`require_string`); `evidence_refs` (a non-empty array of unique, non-blank strings without NUL, then every ID must belong to this incident, or, for a grouped incident, to any member of its group, both on `evidence_refs`); `version`; then `voluntary_disclosure`, false when omitted: a non-boolean (`null` included) is a 400, and `true` with Material is a 400, since it's valid only with NotMaterial.
+- After those, a stale `version` of the path incident is 409 `STALE_VERSION`, then a state other than UnderAssessment on any member is 409 `INVALID_TRANSITION`. A second determination is a 409 either way: `STALE_VERSION` with the version the first one replaced, `INVALID_TRANSITION` with the current one. The same holds for a request on another member of the same group, since the first one changed every member.
 - Material sets `DeterminedMaterial` and `required_form` from the session: `8-K Item 1.05` for Domestic, `6-K` for FPI. NotMaterial sets `DeterminedNotMaterial` and `required_form: null`, or `8-K Item 8.01` with `voluntary_disclosure: true` for either registrant type (REQ-18).
 - Domestic Material sets `due_date` to four business days after `determination_date`; FPI and NotMaterial, voluntary or not, set it to null.
-- It stores the determination with `voluntary_disclosure` as sent (false when omitted), `recorded_by` = the user and `recorded_at` = server time, adds 1 to `version`, writes a `record_determination` audit entry (`before: {state, determination: null, version}`, `after: {state, determination: {decision, determination_date}, required_form, due_date, version}`) and returns the full Incident.
+- For each member (the incident alone when it isn't grouped) it stores the determination with `voluntary_disclosure` as sent (false when omitted), `recorded_by` = the user and `recorded_at` = server time, sets the state, form and due date above, adds 1 to its `version` and writes a `record_determination` audit entry (`target_id` = that member, `before: {state, determination: null, version}`, `after: {state, determination: {decision, determination_date}, required_form, due_date, version}`). Every member stores the same determination, including `evidence_refs`, which may name any member's evidence. It returns the path incident's full Incident.
 
 ## Flags (`flags.py`; REQ-09)
 
@@ -183,7 +194,7 @@ These take no identity headers or role and write no audit entries or project rec
 
 ## Audit trail (`workflow.py`; REQ-22)
 
-- Every successful create, import request, tag, determination, transition and filing writes exactly one audit entry through `app/audit.py`, in the same transaction; rejected requests and GETs write none.
+- Every successful create, import request, tag, transition and filing writes exactly one audit entry through `app/audit.py`, in the same transaction; a determination writes one per incident it determines, and a new group one per member. Rejected requests and GETs write none.
 - `list_audit_entries` (all roles) returns `{"entries": [...]}`: every entry whose `target_id` is the incident, import entries included, oldest first by `seq`.
 - Entries are never updated or deleted: no code path does, the audit routes' PUT, PATCH and DELETE return 405 (below), and the app role has only INSERT and SELECT on `audit_entries` (see `scripts/AGENTS.md`).
 
@@ -196,7 +207,6 @@ Each runs steps 1 to 3 (session, role, path IDs) in one transaction, then raises
 | `PUT`, `DELETE /incidents/{id}` | `refuse_change`, `REPLACE_OR_DELETE` | DisclosureApprover | incident | 405 |
 | `DELETE /incidents/{id}/evidence/{evidence_id}` | `refuse_change`, `REPLACE_OR_DELETE` | DisclosureApprover | incident, evidence | 405 |
 | `PUT`, `PATCH`, `DELETE /incidents/{id}/audit` | `refuse_change`, `REPLACE_OR_DELETE` | DisclosureApprover | incident | 405 |
-| `POST /groups` (REQ-04) | `not_built`, `CREATE_GROUP` | Responder, DisclosureApprover | none | 501 |
 | `POST /incidents/{id}/drafts` | `not_built`, `REQUEST_DRAFT` | DisclosureApprover | incident | 501 |
 | `POST /drafts/{draft_id}/accept` | `not_built`, `ACCEPT_DRAFT` | DisclosureApprover | none | 501 |
 

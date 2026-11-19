@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.roles import Operation, Role, require_role
 from app.services.deadlines import disclosure_due_date
+from app.services.groups import GroupedMeanwhile, lock_with_group
 from app.services.incidents import incident_to_dict, load_incident, require_current_version
 from app.services.validation import (
     invalid,
@@ -201,20 +202,44 @@ def record_determination(
     """Record one determination and return the full incident as JSON-ready data.
 
     The API layer checks the identity headers first. Service error order is session,
-    role, incident existence, body validation, stale version, then state.
+    role, incident existence, body validation, stale version, then state. A grouped
+    incident's determination is applied to every member of its group (REQ-04).
     """
+    try:
+        return _record_determination(
+            incident_id, body, user_id=user_id, role=role, session_id=session_id
+        )
+    except GroupedMeanwhile:
+        # Grouped after the first read: run again, now locking the whole group. A group_id is
+        # set only once, so the second run can't be interrupted the same way.
+        return _record_determination(
+            incident_id, body, user_id=user_id, role=role, session_id=session_id
+        )
+
+
+def _record_determination(
+    incident_id: str, body: Any, *, user_id: str, role: Role | str, session_id: str
+) -> dict[str, Any]:
+    """One attempt at record_determination, in one transaction."""
     with transaction() as tx:
         session = load_session(tx, session_id)
         require_role(role, Operation.RECORD_DETERMINATION)
-        incident = load_incident(tx, incident_id, session_id=session_id, for_update=True)
+        incident = load_incident(tx, incident_id, session_id=session_id)
+        members = lock_with_group(tx, incident)
         body = require_object(body)
         value = body.get("decision")
         if not isinstance(value, str) or value not in {d.value for d in Decision}:
             raise invalid("decision", "Expected Material or NotMaterial")
         decision = Decision(value)
         determination_date = parse_date(body.get("determination_date"), "determination_date")
-        if not incident.discovery_date <= determination_date <= clock.today(session):
-            raise invalid("determination_date", "Date must be between discovery and today")
+        # Every member gets this date, so none may be determined before its own discovery.
+        discovered = max(member.discovery_date for member in members)
+        if not discovered <= determination_date <= clock.today(session):
+            raise invalid(
+                "determination_date",
+                "Date must be between discovery and today" if len(members) == 1
+                else "Date must be between the group's latest discovery date and today",
+            )
         required_form = None
         if decision == Decision.MATERIAL:
             required_form = (
@@ -234,11 +259,17 @@ def record_determination(
             or len(set(refs)) != len(refs)
         ):
             raise invalid("evidence_refs", "Expected at least one unique evidence ID")
+        # The determination covers every member, so it may cite any member's evidence.
         owned_refs = set(tx.scalars(select(Evidence.evidence_id).where(
-            Evidence.incident_id == incident_id, Evidence.evidence_id.in_(refs)
+            Evidence.incident_id.in_([member.incident_id for member in members]),
+            Evidence.evidence_id.in_(refs),
         )))
         if owned_refs != set(refs):
-            raise invalid("evidence_refs", "Every evidence ID must belong to this incident")
+            raise invalid(
+                "evidence_refs",
+                "Every evidence ID must belong to this incident" if len(members) == 1
+                else "Every evidence ID must belong to an incident in this group",
+            )
         version = parse_integer(body.get("version"), "version")
         voluntary = body.get("voluntary_disclosure", False)
         if not isinstance(voluntary, bool):
@@ -251,28 +282,33 @@ def record_determination(
             # A voluntary 8-K Item 8.01 has no deadline, so due_date stays null (REQ-18).
             required_form = FormType.FORM_8K_ITEM_801
         require_current_version(incident, version)
-        if incident.state != State.UNDER_ASSESSMENT:
+        # Members are grouped only while UnderAssessment and are determined together, so they
+        # share a state; every member is checked anyway, since each gets a determination.
+        if any(member.state != State.UNDER_ASSESSMENT for member in members):
             raise TracerError(ErrorCode.INVALID_TRANSITION, "Determination requires UnderAssessment")
 
-        before = {"state": incident.state.value, "determination": None, "version": incident.version}
-        determination = Determination(
-            incident_id=incident_id, decision=decision, determination_date=determination_date,
-            rationale=rationale, evidence_refs=list(refs), voluntary_disclosure=voluntary,
-            recorded_by=user_id, recorded_at=clock.utcnow(),
+        recorded_at = clock.utcnow()
+        state = (
+            State.DETERMINED_MATERIAL if decision == Decision.MATERIAL
+            else State.DETERMINED_NOT_MATERIAL
         )
-        if decision == Decision.MATERIAL:
-            incident.state = State.DETERMINED_MATERIAL
-        else:
-            incident.state = State.DETERMINED_NOT_MATERIAL
-        incident.required_form = required_form
-        incident.due_date = due_date
-        incident.version += 1
-        tx.add(determination)
-        audit(tx, AuditAction.RECORD_DETERMINATION, incident_id, before, {
-            "state": incident.state.value,
-            "determination": {"decision": decision.value, "determination_date": determination_date.isoformat()},
-            "required_form": incident.required_form.value if incident.required_form else None,
-            "due_date": due_date.isoformat() if due_date else None,
-            "version": incident.version,
-        }, user_id=user_id, session_id=session_id)
+        for member in members:
+            before = {"state": member.state.value, "determination": None, "version": member.version}
+            tx.add(Determination(
+                incident_id=member.incident_id, decision=decision,
+                determination_date=determination_date, rationale=rationale,
+                evidence_refs=list(refs), voluntary_disclosure=voluntary,
+                recorded_by=user_id, recorded_at=recorded_at,
+            ))
+            member.state = state
+            member.required_form = required_form
+            member.due_date = due_date
+            member.version += 1
+            audit(tx, AuditAction.RECORD_DETERMINATION, member.incident_id, before, {
+                "state": member.state.value,
+                "determination": {"decision": decision.value, "determination_date": determination_date.isoformat()},
+                "required_form": member.required_form.value if member.required_form else None,
+                "due_date": due_date.isoformat() if due_date else None,
+                "version": member.version,
+            }, user_id=user_id, session_id=session_id)
         return incident_to_dict(tx, incident)
