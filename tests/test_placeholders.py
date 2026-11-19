@@ -60,7 +60,6 @@ def test_refusal_looks_up_the_incident_and_evidence(incident, evidence_id):
 
 ROLES_ALLOWED = {
     Operation.REQUEST_DRAFT: {Role.DISCLOSURE_APPROVER},
-    Operation.ACCEPT_DRAFT: {Role.DISCLOSURE_APPROVER},
 }
 
 

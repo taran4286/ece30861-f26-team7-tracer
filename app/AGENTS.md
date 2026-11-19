@@ -90,7 +90,7 @@ Eight tables hold the system's data; the tester keeps its own in `tester_session
 
 **drafts** (`Draft`)
 
-No operation writes it. A draft reaches its session through its incident.
+No operation inserts a draft; accepting one (`services/drafts.py`) changes only `status`, `accepted_by` and `accepted_at`. A draft reaches its session through its incident.
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -131,7 +131,7 @@ No operation writes it. A draft reaches its session through its incident.
 - `FormType`: `8-K Item 1.05`, `8-K Item 8.01`, `6-K`, `8-K/A`.
 - `Decision`: Material, NotMaterial.
 - `EvidenceSource`: ticketing, siem.
-- `AuditAction`: create_incident, import_evidence, tag_evidence, record_determination, transition, record_filing, accept_draft, create_group. No operation writes accept_draft.
+- `AuditAction`: create_incident, import_evidence, tag_evidence, record_determination, transition, record_filing, accept_draft, create_group.
 - `DraftStatus`: Proposed, Accepted.
 - `RegistrantType`: Domestic, FPI.
 - Not stored as a type: `ImpactCategory` (operational, financial, legal_regulatory, reputational, data_compromised) `SiemSeverity` (low, medium, high, critical, checked on import) and `Flag` (at_risk, warning, overdue, computed on read).
@@ -141,7 +141,7 @@ No operation writes it. A draft reaches its session through its incident.
 - Keep `app/` free of web framework imports, apart from `app/api/`; services must stay callable without one.
 - Never call `datetime.now()` or `date.today()` outside `clock.py`; use `clock`. Date rules use `today(session)`, never the real date.
 - Raise only `TracerError`, with a path-style `field` on validation errors. A new `ErrorCode` needs its status in `HTTP_STATUS`.
-- Loaders (`load_session`, `load_incident`, `load_evidence`) treat an ID containing NUL as unknown without querying: PostgreSQL text can't hold NUL, so the query would fail instead of returning nothing.
+- Loaders (`load_session`, `load_incident`, `load_evidence`, `load_draft`) treat an ID containing NUL as unknown without querying: PostgreSQL text can't hold NUL, so the query would fail instead of returning nothing.
 - Make IDs with `new_id()`. Prefixes in use: `inc`, `ev`, `aud`, `drf`, `grp`. Session IDs are the exception: the caller supplies them.
 - `TestSession` sets `__test__ = False`, so pytest doesn't collect it as a test class when a test file imports it.
 - `get_settings()`, `get_engine()` and the session factory behind `transaction()` (`_session_factory()`) are cached. A test that changes a setting, `DATABASE_URL` included, clears all three before and after; otherwise later code keeps the old settings or database.

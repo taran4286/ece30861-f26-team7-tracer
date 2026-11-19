@@ -20,6 +20,7 @@ from app.api import pages
 from app.config import get_settings
 from server import app as server_app
 from tester.spec import response_errors
+from tests.helpers import add_draft
 
 client = TestClient(server_app)
 
@@ -647,6 +648,34 @@ def test_tagging_over_http(api_incident):
     assert snapshot(session_id)["audit"][-1] == trail.json()["entries"][-1]
 
 
+def test_draft_acceptance_over_http(api_incident):
+    session_id, incident_id = api_incident["session_id"], api_incident["incident_id"]
+    template = "/drafts/{draft_id}/accept"
+    path = f"/system/drafts/{add_draft(incident_id)}/accept"
+    before = snapshot(session_id)
+    forbidden = client.post(path, headers=headers(session_id))
+    project_error(forbidden, 403, "FORBIDDEN_ROLE")
+    matches_spec("POST", template, forbidden)
+    assert snapshot(session_id) == before
+
+    accepted = client.post(path, headers=headers(session_id, "DisclosureApprover"))
+    assert accepted.status_code == 200
+    matches_spec("POST", template, accepted)
+    assert (accepted.json()["status"], accepted.json()["accepted_by"]) == (
+        "Accepted", "u-DisclosureApprover")
+    trail = client.get(url("/incidents/{incident_id}/audit", incident_id),
+                       headers=headers(session_id, "Board"))
+    assert trail.status_code == 200
+    matches_spec("GET", "/incidents/{incident_id}/audit", trail)
+    assert trail.json()["entries"][-1]["action"] == "accept_draft"
+
+    after = snapshot(session_id)
+    again = client.post(path, headers=headers(session_id, "DisclosureApprover"))
+    project_error(again, 409, "CONFLICT")
+    matches_spec("POST", template, again)
+    assert snapshot(session_id) == after
+
+
 def test_groups_over_http(api_incident):
     session_id, first = api_incident["session_id"], api_incident["incident_id"]
     responder, approver = headers(session_id), headers(session_id, "DisclosureApprover")
@@ -731,7 +760,6 @@ def test_evidence_routes_look_up_the_evidence(api_incident, method):
 
 NOT_BUILT = [
     ("POST", "/incidents/{incident_id}/drafts", {"DisclosureApprover"}),
-    ("POST", "/drafts/{draft_id}/accept", {"DisclosureApprover"}),
 ]
 
 

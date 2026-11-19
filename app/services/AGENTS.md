@@ -12,7 +12,7 @@ One module per area, callable without any web framework. Each project operation 
 | `placeholders.py` | `refuse_change(incident_id, evidence_id=None, …)` (405) and `not_built(operation, incident_id=None, …)` (501) | `tests/test_placeholders.py` |
 | `validation.py` | Shared body checks: `require_object`, `require_string`, `parse_integer`, `parse_date`, `parse_date_time`, `invalid` | Covered through the service tests |
 | `filings.py` | `validate_filing_request` (pure validation), `record_filing` (storage, state and audit) | `tests/test_filings.py`, `tests/test_filing_storage.py` |
-| `drafts.py` | `load_draft_context` (eligibility and provider inputs), `validate_draft_elements` (pure output validation) | `tests/test_drafts.py` |
+| `drafts.py` | `load_draft_context` (eligibility and provider inputs), `validate_draft_elements` (pure output validation), `accept_draft(draft_id, …)`, `load_draft` and `draft_to_dict` | `tests/test_drafts.py`, `tests/test_draft_acceptance.py` |
 | `flags.py` | `incident_flags(incident, filings, session)` | `tests/test_flags.py` |
 | `deadlines.py` | `federal_holidays`, `is_business_day`, `add_business_days`, `disclosure_due_date`, `MIN_CALENDAR_YEAR` and `MAX_CALENDAR_YEAR` | `tests/test_deadlines.py` |
 
@@ -24,7 +24,7 @@ Each project operation takes one keyword-only argument per identity header, `*, 
 
 1. `load_session(tx, session_id)`: 404 `NOT_FOUND` for an unknown session.
 2. `require_role(role, Operation.X)`: 403 `FORBIDDEN_ROLE`.
-3. Load the incident with `load_incident(tx, incident_id, session_id=session_id)`, and any evidence named in the path: 404 if unknown or in another session.
+3. Load the incident with `load_incident(tx, incident_id, session_id=session_id)`, and any evidence named in the path, or the draft with `load_draft`: 404 if unknown or in another session.
 4. Validate the whole body: 400 `VALIDATION_ERROR` on the first bad field, before anything is written. Date rules compare against `clock.today(session)`.
 5. For a body that carries `version` (determination, transition, filing), `require_current_version(incident, version)`: 409 `STALE_VERSION` when it's older than the stored version (REQ-21). Then check the state: 409 `INVALID_TRANSITION`. The version comes first because the state may be what changed since the client read the incident.
 6. Write the change and call `audit(..., session_id=session_id)`. Any error raised inside the transaction rolls back everything, including the audit entry, so a rejected request leaves stored data as it was (REQ-19).
@@ -67,6 +67,7 @@ def record_filing(
 - `incidents.load_incident(tx, incident_id, *, session_id, for_update=False)` loads the path incident or raises `NOT_FOUND`, treating another session's incident as unknown. `for_update=True` locks the row; transition and filing operations use it, so two concurrent requests can't both pass the version and state checks or bump `version` from the same value: the second waits, then sees the first one's version. Determination loads the incident without the lock, then locks it and any group members through `groups.lock_with_group` (see Groups).
 - `incidents.require_current_version(incident, version)` raises 409 `STALE_VERSION` when `version` is older than `incident.version`, with a message naming both versions and saying to reload; equal or newer passes. Only an older version is stale.
 - `evidence.load_evidence(tx, incident_id, evidence_id, *, for_update=False)` loads evidence named in the path, after its incident, or raises `NOT_FOUND`; evidence of another incident counts as unknown. `for_update=True` locks the row, which the app role's UPDATE grant on `impact_categories` allows; tagging uses it.
+- `drafts.load_draft(tx, draft_id, *, session_id, for_update=False)` loads the draft named in the path, joined to its incident, or raises `NOT_FOUND`; a draft of another session's incident counts as unknown. `for_update=True` locks only the draft row, which the app role's UPDATE grant on the acceptance columns allows; acceptance uses it.
 - `incidents.incident_to_dict(tx, incident)` builds the full Incident (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values), and every operation that returns an Incident uses it. `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations, evidence and filings. `evidence_to_dict`, `determination_to_dict` and `filing_to_dict` build the parts; `raw_item` is never returned.
 - An Incident returns its stored `due_date` as YYYY-MM-DD or null, with `flags` computed on read (see Flags) and saved `filings` ordered oldest first by their internal `seq`. Its `evidence` is ordered by `imported_at`, then `evidence_id`; items from one import share an `imported_at` and their IDs are random, so they don't come back in the order they were sent.
 - `workflow.audit_entry_to_dict(entry)` builds an audit entry (without `seq` or `session_id`) for the audit list and the snapshot.
@@ -76,6 +77,15 @@ def record_filing(
 - `load_draft_context(incident_id, *, role, session_id)` checks session, role, scoped incident, then state. UnderAssessment and DeterminedNotMaterial return `NOT_MATERIAL`; other ineligible states return `INVALID_TRANSITION`. Eligible states are DeterminedMaterial, DisclosureDelayed and AmendmentPending.
 - The loader returns the incident ID, title, discovery date, stored form type, session LLM URL and the incident's normalized evidence. The transaction closes before the caller uses those inputs. No incident, filing or audit record changes.
 - Pass the provider's normalized `elements` object and the set of evidence IDs from that context to `validate_draft_elements`. It checks all four elements, requires citations on drafted text, and accepts the exact placeholder `Not yet determined` with empty citations and flags. Invalid output raises a field-specific `TracerError` without mutating the response. The provider caller handles that error internally, since it describes generated output rather than a bad API request. The validator checks citation ownership, while reviewers check whether the prose is supported.
+
+## Draft acceptance (`drafts.py`; REQ-22)
+
+`accept_draft` (DisclosureApprover only) marks a stored draft Accepted. The request has no body, and the incident, its `version` and the draft's text are left as they are.
+
+- After the session and role, it loads the path's draft with `load_draft(..., for_update=True)`, so of two concurrent acceptances the second waits, then finds the draft accepted.
+- An Accepted draft is a 409 `CONFLICT` with nothing changed. The incident's state isn't checked.
+- It sets `status` to Accepted, `accepted_by` to the user and `accepted_at` to server time, and writes one `accept_draft` audit entry (`target_id` = the draft's incident, `before: {draft_id, status, accepted_by, accepted_at}` with the last two null, `after` the same fields as stored).
+- It returns the Draft from `draft_to_dict` (200 over HTTP): `{draft_id, incident_id, form_type, elements, advisory: true, status, accepted_by, accepted_at}`.
 
 ## Filing request validation (`filings.py`; REQ-12, REQ-13, REQ-19)
 
@@ -194,7 +204,7 @@ These take no identity headers or role and write no audit entries or project rec
 
 ## Audit trail (`workflow.py`; REQ-22)
 
-- Every successful create, import request, tag, transition and filing writes exactly one audit entry through `app/audit.py`, in the same transaction; a determination writes one per incident it determines, and a new group one per member. Rejected requests and GETs write none.
+- Every successful create, import request, tag, transition, filing and draft acceptance writes exactly one audit entry through `app/audit.py`, in the same transaction; a determination writes one per incident it determines, and a new group one per member. Rejected requests and GETs write none.
 - `list_audit_entries` (all roles) returns `{"entries": [...]}`: every entry whose `target_id` is the incident, import entries included, oldest first by `seq`.
 - Entries are never updated or deleted: no code path does, the audit routes' PUT, PATCH and DELETE return 405 (below), and the app role has only INSERT and SELECT on `audit_entries` (see `scripts/AGENTS.md`).
 
@@ -208,7 +218,6 @@ Each runs steps 1 to 3 (session, role, path IDs) in one transaction, then raises
 | `DELETE /incidents/{id}/evidence/{evidence_id}` | `refuse_change`, `REPLACE_OR_DELETE` | DisclosureApprover | incident, evidence | 405 |
 | `PUT`, `PATCH`, `DELETE /incidents/{id}/audit` | `refuse_change`, `REPLACE_OR_DELETE` | DisclosureApprover | incident | 405 |
 | `POST /incidents/{id}/drafts` | `not_built`, `REQUEST_DRAFT` | DisclosureApprover | incident | 501 |
-| `POST /drafts/{draft_id}/accept` | `not_built`, `ACCEPT_DRAFT` | DisclosureApprover | none | 501 |
 
 ## Rules
 

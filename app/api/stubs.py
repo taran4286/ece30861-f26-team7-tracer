@@ -48,8 +48,3 @@ async def request_draft(request: Request, incident_id: str) -> JSONResponse:
     """Drafts aren't built."""
     return await call(request, placeholders.not_built, Operation.REQUEST_DRAFT, incident_id)
 
-
-@router.post("/drafts/{draft_id}/accept")
-async def accept_draft(request: Request, draft_id: str) -> JSONResponse:
-    """Drafts aren't built, so no draft exists to look up."""
-    return await call(request, placeholders.not_built, Operation.ACCEPT_DRAFT)
