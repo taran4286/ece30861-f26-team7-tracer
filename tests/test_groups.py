@@ -100,6 +100,28 @@ def test_the_snapshot_keeps_a_group_without_members():
     assert control.snapshot(session_id)["groups"] == [{"group_id": group_id, "incident_ids": []}]
 
 
+def test_the_snapshot_reads_one_database_state(monkeypatch):
+    """A group committed while the snapshot is being read shows on neither its incidents nor
+    its groups, so the report never links incidents that it lists as ungrouped."""
+    session_id = new_session()
+    responder = in_session(RESPONDER, session_id)
+    ids = [new_incident(who=responder) for _ in range(2)]
+    incidents_to_dicts = control.incidents_to_dicts
+
+    def read_then_group(tx, incidents):
+        result = incidents_to_dicts(tx, incidents)
+        # Its own transaction, which commits before the snapshot reads its groups.
+        create_group({"incident_ids": ids}, **responder)
+        return result
+
+    monkeypatch.setattr(control, "incidents_to_dicts", read_then_group)
+    report = control.snapshot(session_id)
+
+    assert [incident["group_id"] for incident in report["incidents"]] == [None, None]
+    assert report["groups"] == []
+    assert get_incident(ids[0], **responder)["group_id"] is not None
+
+
 def test_board_cannot_create_a_group():
     ids = [new_incident(), new_incident()]
     rejected(lambda: create_group({"incident_ids": ids}, **BOARD), ErrorCode.FORBIDDEN_ROLE,

@@ -12,7 +12,7 @@ from functools import partial
 from typing import Any
 
 from rfc3986_validator import validate_rfc3986
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.clock import utcnow
@@ -165,6 +165,11 @@ def snapshot(run_id: str) -> dict[str, Any]:
     Testers compare it before and after a rejected call to check that nothing was stored.
     """
     with transaction() as tx:
+        # Every read below sees the database as of the first one. Under READ COMMITTED, the
+        # default, each statement sees the latest commits, so a request committing between two
+        # reads would leave the report half-updated. Being read-only, this transaction can't
+        # fail to serialize, so it needs no retry. Must run before any other statement.
+        tx.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
         session = load_session(tx, run_id)
         incidents = tx.scalars(
             select(Incident).where(Incident.session_id == run_id).order_by(Incident.incident_id)
