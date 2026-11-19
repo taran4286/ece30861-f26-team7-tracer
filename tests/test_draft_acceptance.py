@@ -41,18 +41,22 @@ def stored(draft_id: str) -> dict[str, Any]:
         return draft_to_dict(tx.get(Draft, draft_id))
 
 
-def rejected(draft_id: str, who: dict[str, Any], code: ErrorCode, incident_id: str | None = None):
-    """Accepting must fail with `code` and change nothing: no rows, the draft or the incident."""
+def rejected(draft_id: str, who: dict[str, Any], code: ErrorCode, incident_id: str | None = None,
+             reader: dict[str, Any] = BOARD):
+    """Accepting must fail with `code` and change nothing: no rows, the draft or the incident.
+
+    Pass the incident of a draft that exists, and a `reader` in its session when that isn't
+    the default one."""
     before = table_counts()
     previous_draft = stored(draft_id) if incident_id else None
-    previous_incident = get_incident(incident_id, **BOARD) if incident_id else None
+    previous_incident = get_incident(incident_id, **reader) if incident_id else None
     with pytest.raises(TracerError) as error:
         accept_draft(draft_id, **who)
     assert (error.value.code, error.value.field) == (code, None)
     assert table_counts() == before
     if incident_id:
         assert stored(draft_id) == previous_draft
-        assert get_incident(incident_id, **BOARD) == previous_incident
+        assert get_incident(incident_id, **reader) == previous_incident
 
 
 def test_accepting_marks_the_draft_accepted(draft):
@@ -95,8 +99,8 @@ def test_a_draft_is_accepted_once(draft):
 
 
 def test_the_session_comes_before_the_role_and_the_role_before_the_draft(draft):
-    _, draft_id = draft
-    rejected(draft_id, in_session(BOARD, "pytest-missing"), ErrorCode.NOT_FOUND)
+    incident_id, draft_id = draft
+    rejected(draft_id, in_session(BOARD, "pytest-missing"), ErrorCode.NOT_FOUND, incident_id)
     rejected("drf_missing", BOARD, ErrorCode.FORBIDDEN_ROLE)
 
 
@@ -110,7 +114,8 @@ def test_another_sessions_draft_is_unknown():
     theirs = create_incident({"title": "Theirs", "discovery_date": "2026-10-01"},
                              **in_session(RESPONDER, session_id))
     draft_id = add_draft(theirs["incident_id"])
-    rejected(draft_id, APPROVER, ErrorCode.NOT_FOUND)
+    rejected(draft_id, APPROVER, ErrorCode.NOT_FOUND, theirs["incident_id"],
+             reader=in_session(BOARD, session_id))
     # In its own session it can be accepted.
     assert accept_draft(draft_id, **in_session(APPROVER, session_id))["status"] == "Accepted"
 
