@@ -4,9 +4,9 @@ draft_elements() returns the model's four elements as parsed JSON, unvalidated, 
 ProviderError. drafts.request_draft validates the result and turns any failure into a 503.
 """
 
+import asyncio
 import json
 import re
-import threading
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -19,7 +19,7 @@ TIMEOUT_SECONDS = 55.0
 # A reply larger than this isn't a draft of four short elements.
 MAX_RESPONSE_BYTES = 1_000_000
 # Tests replace this with an httpx2.MockTransport; None uses the network.
-TRANSPORT: httpx2.BaseTransport | None = None
+TRANSPORT: httpx2.AsyncBaseTransport | None = None
 
 SYSTEM_PROMPT = """You draft the four disclosure elements of a cybersecurity incident's \
 SEC form from the evidence given. The draft is advisory; a person reviews it.
@@ -47,7 +47,8 @@ class ProviderError(Exception):
 def draft_elements(context: dict[str, Any], *, timeout: float | None = None) -> Any:
     """Ask the session's provider for the draft's elements, given load_draft_context's result.
 
-    timeout defaults to TIMEOUT_SECONDS."""
+    timeout defaults to TIMEOUT_SECONDS. The call runs on its own event loop, so call this from
+    a thread without one, as every service runs."""
     timeout = TIMEOUT_SECONDS if timeout is None else timeout
     base_url = context["llm_base_url"].rstrip("/")
     host = urlsplit(base_url).hostname or ""
@@ -55,30 +56,18 @@ def draft_elements(context: dict[str, Any], *, timeout: float | None = None) -> 
     if host == "invalid" or host.endswith(".invalid"):
         raise ProviderError(f"{host} is a reserved .invalid host")
 
-    result: dict[str, Any] = {}
-
-    def run() -> None:
-        try:
-            result["body"] = _post(f"{base_url}/chat/completions", context, timeout)
-        except Exception as error:  # handed to the caller's thread
-            result["error"] = error
-
-    # The worker bounds the whole call; httpx2's timeouts bound each operation, not the total.
-    # A worker still running at the deadline ends at its own read timeout and is ignored.
-    worker = threading.Thread(target=run, daemon=True)
-    worker.start()
-    worker.join(timeout)
-    if worker.is_alive():
-        raise ProviderError(f"no response within {timeout} s")
-    if "error" in result:
-        error = result["error"]
-        if isinstance(error, ProviderError):
-            raise error
+    try:
+        body = asyncio.run(_post(f"{base_url}/chat/completions", context, timeout))
+    except ProviderError:
+        raise
+    except TimeoutError as error:
+        raise ProviderError(f"no response within {timeout} s") from error
+    except Exception as error:
         raise ProviderError(f"{type(error).__name__}: {error}") from error
-    return _parse(result["body"])
+    return _parse(body)
 
 
-def _post(url: str, context: dict[str, Any], timeout: float) -> bytes:
+async def _post(url: str, context: dict[str, Any], timeout: float) -> bytes:
     settings = get_settings()
     headers = {}
     if settings.llm_api_key is not None and _trusted(url, settings.llm_trusted_base_url):
@@ -94,17 +83,23 @@ def _post(url: str, context: dict[str, Any], timeout: float) -> bytes:
     if settings.llm_model:
         payload["model"] = settings.llm_model
 
-    # Redirects aren't followed: a 3xx is a provider error like any other non-2xx.
-    with httpx2.Client(transport=TRANSPORT, timeout=timeout, follow_redirects=False) as client:
-        with client.stream("POST", url, json=payload, headers=headers) as response:
-            if not response.is_success:
-                raise ProviderError(f"HTTP {response.status_code}")
-            body = bytearray()
-            for chunk in response.iter_bytes():
-                body += chunk
-                if len(body) > MAX_RESPONSE_BYTES:
-                    raise ProviderError(f"reply over {MAX_RESPONSE_BYTES} bytes")
-            return bytes(body)
+    # One deadline for the whole call, connection to last byte. httpx2's own timeouts bound each
+    # read, which a provider sending a byte now and then never trips; at the deadline the task is
+    # cancelled instead, which stops the read and closes the response and its connection.
+    async with asyncio.timeout(timeout):
+        # Redirects aren't followed: a 3xx is a provider error like any other non-2xx.
+        async with httpx2.AsyncClient(
+            transport=TRANSPORT, timeout=timeout, follow_redirects=False,
+        ) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                if not response.is_success:
+                    raise ProviderError(f"HTTP {response.status_code}")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body += chunk
+                    if len(body) > MAX_RESPONSE_BYTES:
+                        raise ProviderError(f"reply over {MAX_RESPONSE_BYTES} bytes")
+                return bytes(body)
 
 
 def _prompt_input(context: dict[str, Any]) -> dict[str, Any]:
@@ -131,10 +126,11 @@ def _parse(body: bytes) -> Any:
     """The elements from a chat completion: choices[0].message.content, parsed as JSON.
 
     A reply wrapped in one Markdown code fence is unwrapped. The shape isn't checked here;
-    validate_draft_elements does that."""
+    validate_draft_elements does that. JSON nested too deeply to parse raises RecursionError,
+    which counts as a malformed reply like any other."""
     try:
         content = json.loads(body)["choices"][0]["message"]["content"]
-    except (ValueError, LookupError, TypeError) as error:
+    except (ValueError, LookupError, TypeError, RecursionError) as error:
         raise ProviderError(f"not a chat completion: {type(error).__name__}") from error
     if not isinstance(content, str):
         raise ProviderError("message content is not a string")
@@ -144,8 +140,8 @@ def _parse(body: bytes) -> Any:
         content = fenced.group(1)
     try:
         elements = json.loads(content)
-    except ValueError as error:
-        raise ProviderError("message content is not JSON") from error
+    except (ValueError, RecursionError) as error:
+        raise ProviderError(f"message content is not JSON: {type(error).__name__}") from error
     return elements
 
 

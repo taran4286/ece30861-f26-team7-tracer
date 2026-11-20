@@ -1,5 +1,6 @@
 """app/services/drafts.py's request_draft and app/services/llm.py, with a fake LLM and no network."""
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -14,7 +15,7 @@ from app.config import get_settings
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
 from app.models import Draft, FormType, Incident, State
-from app.services.drafts import request_draft, scan_sensitive
+from app.services.drafts import MAX_TEXT_LENGTH, request_draft, scan_sensitive
 from app.services.evidence import import_evidence
 from app.services.incidents import create_incident, get_incident
 from tests.helpers import (
@@ -189,6 +190,11 @@ FAILURES = {
     "flag without a reason": lambda request: reply(elements(nature={
         "text": "Host 10.0.0.1", "citations": ["EVIDENCE"],
         "sensitive_flags": [{"excerpt": "10.0.0.1"}]})),
+    "text too long": lambda request: reply(elements("EVIDENCE", nature="x" * (MAX_TEXT_LENGTH + 1))),
+    # Nested too deeply for json.loads, which raises RecursionError rather than ValueError.
+    "deeply nested content": lambda request: reply("[" * 100_000 + "]" * 100_000),
+    "deeply nested reply": lambda request: httpx2.Response(
+        200, content=b'{"choices": ' + b"[" * 100_000 + b"]" * 100_000 + b"}"),
 }
 
 
@@ -220,8 +226,8 @@ def test_provider_failures_are_503_and_store_nothing(material, fake_llm, failure
 def test_no_answer_within_the_deadline_is_503(material, fake_llm, monkeypatch):
     monkeypatch.setattr(llm, "TIMEOUT_SECONDS", 0.2)
 
-    def slow(request):
-        time.sleep(1)
+    async def slow(request):
+        await asyncio.sleep(5)
         return reply(elements(material["evidence_ids"][0]))
 
     fake_llm(slow)
@@ -231,6 +237,31 @@ def test_no_answer_within_the_deadline_is_503(material, fake_llm, monkeypatch):
         request(material)
     assert raised.value.code == ErrorCode.DRAFTING_UNAVAILABLE
     assert time.monotonic() - started < 0.9
+    assert table_counts() == counts
+
+
+def test_a_reply_trickling_past_the_deadline_is_cut_off(material, fake_llm, monkeypatch):
+    """A byte at a time never trips httpx2's per-read timeout. The deadline cancels the read
+    and closes the response, rather than leaving it running after the 503."""
+    monkeypatch.setattr(llm, "TIMEOUT_SECONDS", 0.3)
+    closed = []
+
+    async def trickle():
+        try:
+            while True:
+                yield b" "
+                await asyncio.sleep(0.02)
+        finally:
+            closed.append(True)
+
+    fake_llm(lambda request: httpx2.Response(200, content=trickle()))
+    counts = table_counts()
+    started = time.monotonic()
+    with pytest.raises(TracerError) as raised:
+        request(material)
+    assert raised.value.code == ErrorCode.DRAFTING_UNAVAILABLE
+    assert time.monotonic() - started < 2
+    assert closed == [True]
     assert table_counts() == counts
 
 
@@ -277,15 +308,19 @@ def test_unknown_session_and_incident_come_before_the_llm(material, fake_llm):
     assert sent == []
 
 
-def test_a_state_change_during_the_call_is_409(material, fake_llm):
-    def filed_meanwhile(request):
-        set_state(material["incident_id"], State.DISCLOSURE_RECORDED)
+@pytest.mark.parametrize("moved_to", [State.DISCLOSURE_RECORDED, State.DISCLOSURE_DELAYED])
+def test_a_state_change_during_the_call_is_409(material, fake_llm, moved_to):
+    """Whether or not the new state allows drafting, the text was written for the old one."""
+    def moved_meanwhile(request):
+        set_state(material["incident_id"], moved_to)
         return reply(elements(material["evidence_ids"][0]))
 
-    fake_llm(filed_meanwhile)
+    fake_llm(moved_meanwhile)
+    counts = table_counts()
     with pytest.raises(TracerError) as raised:
         request(material)
-    assert raised.value.code == ErrorCode.INVALID_TRANSITION
+    assert (raised.value.code, raised.value.field) == (ErrorCode.INVALID_TRANSITION, None)
+    assert table_counts() == counts
     assert draft_rows(material["incident_id"]) == []
 
 
@@ -341,6 +376,16 @@ def test_sensitive_details_are_flagged(material, fake_llm):
 ])
 def test_scan_sensitive(text, expected):
     assert [(flag["excerpt"], flag["reason"]) for flag in scan_sensitive(text, [])] == expected
+
+
+@pytest.mark.parametrize("unit", ["a.", "1.", "a1-b."])
+def test_scanning_the_longest_text_is_quick(unit):
+    """Dotted runs that never end in a valid last label once took time growing with the square
+    of their length: about 1.5 s for this length, and minutes for a 1 MB reply."""
+    text = (unit * MAX_TEXT_LENGTH)[:MAX_TEXT_LENGTH]
+    started = time.monotonic()
+    scan_sensitive(text, [])
+    assert time.monotonic() - started < 1
 
 
 @pytest.mark.parametrize("trusted,sent", [

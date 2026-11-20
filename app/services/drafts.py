@@ -25,6 +25,9 @@ _DRAFT_STATES = frozenset({
     State.DETERMINED_MATERIAL, State.DISCLOSURE_DELAYED, State.AMENDMENT_PENDING,
 })
 _UNDETERMINED = "Not yet determined"
+# An element's text is a short paragraph. Longer text fails validation, which also bounds the
+# time scan_sensitive can take.
+MAX_TEXT_LENGTH = 10_000
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +52,16 @@ def request_draft(
 
     with transaction() as tx:
         incident = load_incident(tx, incident_id, session_id=session_id, for_update=True)
-        # The incident may have moved during the call; the text was written for its old form.
+        # The incident may have moved during the call, even to another state that allows
+        # drafting; the text was written for its old state and form.
         _require_draftable(incident)
-        if incident.required_form.value != context["form_type"]:
+        if (incident.state.value, incident.required_form.value) != (
+            context["state"], context["form_type"],
+        ):
             raise TracerError(
                 ErrorCode.INVALID_TRANSITION,
-                "The incident's required form changed while the draft was generated; request a new draft",
+                "The incident's state or required form changed while the draft was generated; "
+                "request a new draft",
             )
         draft = Draft(
             incident_id=incident_id, form_type=incident.required_form, elements=elements,
@@ -95,8 +102,11 @@ _SENSITIVE = [
     (re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE), "CVE"),
     (re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}"
                 r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?![\d.]*\d)"), "IP address"),
-    (re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b", re.IGNORECASE),
-     "hostname"),
+    # At most 126 labels before the last one, more than a DNS name's 253 characters can hold.
+    # Unbounded, a long dotted run that never ends in a valid last label was rescanned from
+    # every label, so the time grew with the square of its length.
+    (re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,126}[a-z]{2,63}\b",
+                re.IGNORECASE), "hostname"),
     (re.compile(r"\bunpatched\b[\w -]{0,40}?\b(?:system|server|host|device|software)s?\b|"
                 r"\bunpatched\b", re.IGNORECASE), "unpatched system"),
     (re.compile(r"\bfirewall rules?\b", re.IGNORECASE), "firewall rule"),
@@ -171,6 +181,7 @@ def load_draft_context(
             "incident_id": incident.incident_id,
             "title": incident.title,
             "discovery_date": incident.discovery_date.isoformat(),
+            "state": incident.state.value,
             "form_type": incident.required_form.value,
             "llm_base_url": session.llm_base_url,
             "evidence": [evidence_to_dict(item) for item in evidence],
@@ -202,6 +213,8 @@ def validate_draft_elements(elements: Any, *, evidence_ids: set[str]) -> None:
         if element.keys() != {"text", "citations", "sensitive_flags"}:
             raise invalid(field, "Expected exactly text, citations and sensitive_flags")
         text = require_string(element, "text", f"{field}.text")
+        if len(text) > MAX_TEXT_LENGTH:
+            raise invalid(f"{field}.text", f"Expected at most {MAX_TEXT_LENGTH} characters")
         citations = element["citations"]
         flags = element["sensitive_flags"]
         if not isinstance(citations, list):
