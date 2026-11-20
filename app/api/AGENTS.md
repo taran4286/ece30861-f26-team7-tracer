@@ -7,18 +7,18 @@ The system's web layer. `server.py` mounts `system_app` at `/system`, so every p
 | Module | Provides |
 | --- | --- |
 | `__init__.py` | `system_app`: the status page, `/health` and the `database_ok()` check both use, the `TracerError` handler, the four routers below, then the 501 catch-all |
-| `pages.py` | The status page: `render()`, `operations()` read from `system-openapi.yaml`, `STATUS` (how each operation in that file is answered, the 501s included) and `shown_operations()`, the ones the page lists. `SPEC_LINK` points at the file on GitHub's `main`, not the deployed copy |
+| `pages.py` | The status page: `render()`, `operations()` read from `system-openapi.yaml` and `STATUS` (how each operation in that file is answered: built, or 405 by design). `SPEC_LINK` points at the file on GitHub's `main`, not the deployed copy |
 | `dashboard.py` | The dashboard: its route, `NOTICES` (each flag's text and color, most urgent first) and the HTML, built from `control.snapshot` |
 | `calls.py` | `identity()` (the header checks), `read_body()`, `call()` (headers, then the service in the thread pool) and `error_response()` (the Error body) |
 | `control.py` | The test-control routes, answering errors as `{message, source}` |
 | `routes.py` | The project operations, one route per service operation |
-| `stubs.py` | The 405 and 501 routes, through `services/placeholders.py` |
+| `stubs.py` | The 405 routes, through `services/placeholders.py` |
 
 ## What it serves
 
 | Route | Response |
 | --- | --- |
-| `GET /` | 200 HTML status page: the title "Team 7 — Tracer system", whether the database is reachable, the system API's title and version linked to `SPEC_LINK`, and a link to the dashboard, and the operations this system answers, marked built or 405 by design (the 501s aren't listed); `/system` without the slash redirects here with a 307 |
+| `GET /` | 200 HTML status page: the title "Team 7 — Tracer system", whether the database is reachable, the system API's title and version linked to `SPEC_LINK`, and a link to the dashboard, and the operations this system answers, marked built or 405 by design; `/system` without the slash redirects here with a 307 |
 | `GET /dashboard?session_id=` | 200 HTML dashboard: the session's test date with a form to change it, its registrant type and at-risk threshold, and its incidents, most urgent first, with state, required form, due date, notices, filings and version. No `session_id` gives only the session form; an unknown session is a 404 page and an unreachable database a 503 page |
 | `GET /health` | 200 `{"status": "ok", "database": "ok"}` after a `SELECT 1` through `get_engine()`; 503 `{"status": "unavailable", "database": "unavailable"}` when a setting is missing or invalid (such as no `DATABASE_URL` on a preview), the URL names a driver we don't install (a bare `postgresql://` scheme), or the database can't be reached |
 | `POST /test/setup` | 201 `{session_id}` from `control.setup_session` |
@@ -29,7 +29,8 @@ The system's web layer. `server.py` mounts `system_app` at `/system`, so every p
 | `POST /incidents/{incident_id}/filings` | 201 full Incident from `filings.record_filing`, through the same header and body handling as other project routes |
 | `POST /incidents/{incident_id}/drafts` | 201 Draft from `drafts.request_draft`, or its 503 `DRAFTING_UNAVAILABLE`; the route reads no body |
 | `POST /drafts/{draft_id}/accept` | 200 Draft from `drafts.accept_draft`; the route reads no body |
-| The 405 and 501 operations (`services/AGENTS.md`, "405 and 501 operations") | The service's error; each 405 carries `Allow`: `GET` for the incident and audit paths, `PATCH` for the evidence path |
+| `POST /groups` | 201 Group from `groups.create_group` |
+| The 405 operations (`services/AGENTS.md`, "405 operations") | The service's error; each 405 carries `Allow`: `GET` for the incident and audit paths, `PATCH` for the evidence path |
 | Any other path and method pair, with GET, POST, PUT, PATCH or DELETE (such as `GET /incidents` or `POST /health`) | 501 `{"error": "NOT_IMPLEMENTED", "message": "/<path> is not implemented"}`, with no header or role checks |
 | GET or HEAD on `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json` | FastAPI's generated docs for `system_app` |
 

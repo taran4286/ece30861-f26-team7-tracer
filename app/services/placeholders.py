@@ -1,8 +1,8 @@
-"""Operations that end in 405 or 501, after the same checks as a real operation (root "Stubs").
+"""Operations that end in 405, after the same checks as a real operation (root "Stubs").
 
-Incidents, evidence and audit entries are never replaced, edited or deleted (REQ-22), and the
-operations this team doesn't build return 501. Each first checks the session, the role and the
-path IDs in the root error order, so a 405 or 501 never hides a 403 or 404.
+Incidents, evidence and audit entries are never replaced, edited or deleted (REQ-22). Each
+first checks the session, the role and the path IDs in the root error order, so a 405 never
+hides a 403 or 404.
 """
 
 from typing import NoReturn
@@ -32,14 +32,6 @@ def refuse_change(
         ErrorCode.METHOD_NOT_ALLOWED,
         "Incidents, evidence and audit entries are never replaced, edited or deleted",
     )
-
-
-def not_built(
-    operation: Operation, *, user_id: str, role: Role | str, session_id: str
-) -> NoReturn:
-    """An operation this team doesn't build: groups. Its path has no IDs to look up."""
-    _check(operation, None, None, role=role, session_id=session_id)
-    raise TracerError(ErrorCode.NOT_IMPLEMENTED, f"{operation.value} is not implemented")
 
 
 def _check(

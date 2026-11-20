@@ -1,6 +1,5 @@
 """server.py's landing page and mounts, and the system's API over HTTP: status page, health
-check, test control, project operations, 405s and 501s, with statuses, error shapes and error
-order."""
+check, test control, project operations and 405s, with statuses, error shapes and error order."""
 
 import json
 import re
@@ -104,15 +103,11 @@ def test_base_url_shows_the_status_page(path):
     assert "<img" not in response.text
     assert 'Database: <strong class="ok">reachable</strong>' in response.text
     assert "Tracer Shared System API 1.1.0-proposed" in response.text
-    # Built and 405 operations are listed; the 501s aren't.
+    # Every operation is listed, built or 405 by design.
     for method, path, _ in pages.operations():
         status = pages.STATUS[(method, path)]
         row = f"<td><code>{method}</code></td><td><code>{path}</code></td>"
-        if status == pages.NOT_BUILT:
-            assert row not in response.text
-        else:
-            assert f'{row}<td class="{pages.STATUS_CLASS[status]}">{status}</td>' in response.text
-    assert pages.NOT_BUILT not in response.text
+        assert f'{row}<td class="{pages.STATUS_CLASS[status]}">{status}</td>' in response.text
 
 
 def test_status_page_matches_how_each_operation_is_answered():
@@ -120,13 +115,10 @@ def test_status_page_matches_how_each_operation_is_answered():
     operations = {(method.upper(), path) for path, item in spec["paths"].items()
                   for method in item if method in METHODS}
     assert set(pages.STATUS) == operations
-    # REFUSED and NOT_BUILT are the route tests' lists below, so the page can't drift from them.
+    # REFUSED is the 405 route test's list below, so the page can't drift from it.
     refused = {(method, template) for method, template, _ in REFUSED}
-    not_built = {(method, template) for method, template, _ in NOT_BUILT}
     for operation, status in pages.STATUS.items():
-        expected = (pages.REFUSED if operation in refused
-                    else pages.NOT_BUILT if operation in not_built else pages.BUILT)
-        assert status == expected, operation
+        assert status == (pages.REFUSED if operation in refused else pages.BUILT), operation
 
 
 def test_a_malformed_database_url_reads_as_unavailable(monkeypatch, fresh_settings):
@@ -281,7 +273,7 @@ def test_setup_coverage_and_snapshot_match_the_spec():
     assert response.json() == {
         "run": {"run_id": session_id, "test_now": "2026-10-05T15:00:00+00:00",
                 "registrant_type": "Domestic", "at_risk_threshold_days": 7,
-                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"]},
+                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"]},
         "incidents": [], "groups": [], "audit": [],
     }
 
@@ -292,7 +284,7 @@ def test_setup_keeps_the_settings_sent():
     assert snapshot(session_id)["run"] == {
         "run_id": session_id, "test_now": "2026-10-09T12:00:00+00:00", "registrant_type": "FPI",
         "at_risk_threshold_days": 3, "llm_base_url": "http://llm.example/v1",
-        "implemented_optional": ["REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"],
+        "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"],
     }
 
 
@@ -325,7 +317,7 @@ def test_a_settings_update_answers_with_the_run(session_id):
     assert response.json() == {
         "run_id": session_id, "test_now": "2026-10-08T15:00:00+00:00",
         "registrant_type": "Domestic", "at_risk_threshold_days": 3,
-        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"],
+        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"],
     }
     assert snapshot(session_id)["run"] == response.json()
 
@@ -742,7 +734,53 @@ def test_draft_request_without_a_working_llm_is_503():
     assert snapshot(session_id) == before
 
 
-# --- 405 and 501 ----------------------------------------------------------------------------
+def test_groups_over_http(api_incident):
+    session_id, first = api_incident["session_id"], api_incident["incident_id"]
+    responder, approver = headers(session_id), headers(session_id, "DisclosureApprover")
+    second = client.post("/system/incidents", headers=responder,
+                         json={"title": "Phishing", "discovery_date": "2026-10-02"}).json()
+    ids = [first, second["incident_id"]]
+    before = snapshot(session_id)
+    rejected = client.post("/system/groups", headers=responder, json={"incident_ids": [first]})
+    project_error(rejected, 400, "VALIDATION_ERROR", "incident_ids")
+    matches_spec("POST", "/groups", rejected)
+    unknown = client.post("/system/groups", headers=responder,
+                          json={"incident_ids": [first, "inc_missing"]})
+    project_error(unknown, 404, "NOT_FOUND", "incident_ids[1]")
+    matches_spec("POST", "/groups", unknown)
+    assert snapshot(session_id) == before
+
+    grouped = client.post("/system/groups", headers=responder, json={"incident_ids": ids})
+    assert grouped.status_code == 201
+    matches_spec("POST", "/groups", grouped)
+    group = grouped.json()
+    assert group["incident_ids"] == sorted(ids)
+    report = client.get(f"/system/test/report/{session_id}")
+    assert report.status_code == 200
+    matches_spec("GET", "/test/report/{run_id}", report)
+    assert report.json()["groups"] == [group]
+    assert [incident["group_id"] for incident in report.json()["incidents"]] == [group["group_id"]] * 2
+    assert [entry["action"] for entry in report.json()["audit"][-2:]] == ["create_group"] * 2
+
+    again = client.post("/system/groups", headers=responder, json={"incident_ids": ids})
+    project_error(again, 409, "CONFLICT")
+    matches_spec("POST", "/groups", again)
+    assert snapshot(session_id) == report.json()
+
+    # The determination on one member is applied to both.
+    determined = client.post(url("/incidents/{incident_id}/determination", first), headers=approver,
+                             json={"decision": "Material", "determination_date": "2026-10-05",
+                                   "rationale": "Shared intrusion",
+                                   "evidence_refs": [api_incident["evidence_id"]], "version": 2})
+    assert determined.status_code == 200
+    matches_spec("POST", "/incidents/{incident_id}/determination", determined)
+    other = client.get(url("/incidents/{incident_id}", ids[1]), headers=headers(session_id, "Board"))
+    assert other.status_code == 200
+    assert (other.json()["state"], other.json()["version"]) == ("DeterminedMaterial", 3)
+    assert other.json()["determination"] == determined.json()["determination"]
+
+
+# --- 405 ------------------------------------------------------------------------------------
 
 REFUSED = [
     ("PUT", "/incidents/{incident_id}", "GET"),
@@ -776,24 +814,3 @@ def test_evidence_routes_look_up_the_evidence(api_incident, method):
                                           api_incident["incident_id"], "ev_missing"),
                               headers=headers(api_incident["session_id"], "DisclosureApprover"))
     project_error(response, 404, "NOT_FOUND")
-
-
-NOT_BUILT = [
-    ("POST", "/groups", {"Responder", "DisclosureApprover"}),
-]
-
-
-@pytest.mark.parametrize("method,template,allowed", NOT_BUILT)
-@pytest.mark.parametrize("role", ["Responder", "DisclosureApprover", "Board"])
-def test_unbuilt_operations_answer_501_after_the_role(api_incident, method, template, allowed, role):
-    session_id = api_incident["session_id"]
-    before = snapshot(session_id)
-    response = client.request(method, url(template, api_incident["incident_id"],
-                                          api_incident["evidence_id"]),
-                              headers=headers(session_id, role))
-    if role in allowed:
-        project_error(response, 501, "NOT_IMPLEMENTED")
-    else:
-        project_error(response, 403, "FORBIDDEN_ROLE")
-    matches_spec(method, template, response)
-    assert snapshot(session_id) == before

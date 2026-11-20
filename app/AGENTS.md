@@ -41,7 +41,7 @@ Eight tables hold the system's data; the tester keeps its own in `tester_session
 | state | `state` enum, not null | |
 | required_form | `form_type` enum, nullable | |
 | due_date | date, nullable | four business days after a Domestic Material determination or amendment availability date; null for FPI or NotMaterial |
-| group_id | text, nullable | always null |
+| group_id | text, nullable | the incident's group, set once by `POST /groups`; null when ungrouped |
 | version | integer, not null | |
 
 **determinations** (`Determination`)
@@ -104,7 +104,7 @@ A draft request inserts a draft, and accepting one changes only `status`, `accep
 
 **incident_groups** (`IncidentGroup`)
 
-No operation writes it. Members aren't listed here: a member incident's `group_id` names its group, with no foreign key to this table.
+`services/groups.py` inserts one row per group. Members aren't listed here: a member incident's `group_id` names its group, with no foreign key to this table.
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -131,7 +131,7 @@ No operation writes it. Members aren't listed here: a member incident's `group_i
 - `FormType`: `8-K Item 1.05`, `8-K Item 8.01`, `6-K`, `8-K/A`.
 - `Decision`: Material, NotMaterial.
 - `EvidenceSource`: ticketing, siem.
-- `AuditAction`: create_incident, import_evidence, tag_evidence, record_determination, transition, record_filing, accept_draft, create_group. No operation writes create_group.
+- `AuditAction`: create_incident, import_evidence, tag_evidence, record_determination, transition, record_filing, accept_draft, create_group.
 - `DraftStatus`: Proposed, Accepted.
 - `RegistrantType`: Domestic, FPI.
 - Not stored as a type: `ImpactCategory` (operational, financial, legal_regulatory, reputational, data_compromised) `SiemSeverity` (low, medium, high, critical, checked on import) and `Flag` (at_risk, warning, overdue, computed on read).

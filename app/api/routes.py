@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.api.calls import call, read_body
-from app.services import drafts, evidence, filings, incidents, workflow
+from app.services import drafts, evidence, filings, groups, incidents, workflow
 
 router = APIRouter()
 
@@ -64,3 +64,8 @@ async def request_draft(request: Request, incident_id: str) -> JSONResponse:
 @router.post("/drafts/{draft_id}/accept")
 async def accept_draft(request: Request, draft_id: str) -> JSONResponse:
     return await call(request, drafts.accept_draft, draft_id)
+
+
+@router.post("/groups")
+async def create_group(request: Request) -> JSONResponse:
+    return await call(request, groups.create_group, await read_body(request), status=201)
