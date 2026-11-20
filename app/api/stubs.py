@@ -1,7 +1,7 @@
-"""Routes that end in 405 or 501 (root "Stubs"), after the same checks as a real operation.
+"""Routes that end in 405 (root "Stubs"), after the same checks as a real operation.
 
 Each checks the identity headers, then its placeholder service checks the session, the role
-and the IDs in the path, so the 405 or 501 comes last in the error order.
+and the IDs in the path, so the 405 comes last in the error order.
 """
 
 from fastapi import APIRouter, Request
@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse
 
 from app.api.calls import call, error_response
 from app.errors import ErrorCode, TracerError
-from app.roles import Operation
 from app.services import placeholders
 
 router = APIRouter()
@@ -41,10 +40,3 @@ async def evidence_not_allowed(request: Request, incident_id: str, evidence_id: 
 async def audit_not_allowed(request: Request, incident_id: str) -> JSONResponse:
     """The audit trail is append-only (REQ-22)."""
     return await _refuse(request, "GET", incident_id)
-
-
-@router.post("/incidents/{incident_id}/drafts")
-async def request_draft(request: Request, incident_id: str) -> JSONResponse:
-    """Drafts aren't built."""
-    return await call(request, placeholders.not_built, Operation.REQUEST_DRAFT, incident_id)
-

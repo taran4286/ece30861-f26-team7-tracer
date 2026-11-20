@@ -1,13 +1,14 @@
 """server.py's landing page and mounts, and the system's API over HTTP: status page, health
-check, test control, project operations, 405s and 501s, with statuses, error shapes and error
-order."""
+check, test control, project operations and 405s, with statuses, error shapes and error order."""
 
+import json
 import re
 import socket
 import time
 import uuid
 from pathlib import Path
 
+import httpx2
 import pytest
 import yaml
 from fastapi.testclient import TestClient
@@ -16,6 +17,7 @@ from sqlalchemy.exc import ArgumentError, OperationalError
 import app.api as system_api
 import app.db as db
 import app.services.control as control_service
+import app.services.llm as llm
 from app.api import pages
 from app.config import get_settings
 from server import app as server_app
@@ -101,15 +103,11 @@ def test_base_url_shows_the_status_page(path):
     assert "<img" not in response.text
     assert 'Database: <strong class="ok">reachable</strong>' in response.text
     assert "Tracer Shared System API 1.1.0-proposed" in response.text
-    # Built and 405 operations are listed; the 501s aren't.
+    # Every operation is listed, built or 405 by design.
     for method, path, _ in pages.operations():
         status = pages.STATUS[(method, path)]
         row = f"<td><code>{method}</code></td><td><code>{path}</code></td>"
-        if status == pages.NOT_BUILT:
-            assert row not in response.text
-        else:
-            assert f'{row}<td class="{pages.STATUS_CLASS[status]}">{status}</td>' in response.text
-    assert pages.NOT_BUILT not in response.text
+        assert f'{row}<td class="{pages.STATUS_CLASS[status]}">{status}</td>' in response.text
 
 
 def test_status_page_matches_how_each_operation_is_answered():
@@ -117,13 +115,10 @@ def test_status_page_matches_how_each_operation_is_answered():
     operations = {(method.upper(), path) for path, item in spec["paths"].items()
                   for method in item if method in METHODS}
     assert set(pages.STATUS) == operations
-    # REFUSED and NOT_BUILT are the route tests' lists below, so the page can't drift from them.
+    # REFUSED is the 405 route test's list below, so the page can't drift from it.
     refused = {(method, template) for method, template, _ in REFUSED}
-    not_built = {(method, template) for method, template, _ in NOT_BUILT}
     for operation, status in pages.STATUS.items():
-        expected = (pages.REFUSED if operation in refused
-                    else pages.NOT_BUILT if operation in not_built else pages.BUILT)
-        assert status == expected, operation
+        assert status == (pages.REFUSED if operation in refused else pages.BUILT), operation
 
 
 def test_a_malformed_database_url_reads_as_unavailable(monkeypatch, fresh_settings):
@@ -278,7 +273,7 @@ def test_setup_coverage_and_snapshot_match_the_spec():
     assert response.json() == {
         "run": {"run_id": session_id, "test_now": "2026-10-05T15:00:00+00:00",
                 "registrant_type": "Domestic", "at_risk_threshold_days": 7,
-                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-18", "REQ-21"]},
+                "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"]},
         "incidents": [], "groups": [], "audit": [],
     }
 
@@ -289,7 +284,7 @@ def test_setup_keeps_the_settings_sent():
     assert snapshot(session_id)["run"] == {
         "run_id": session_id, "test_now": "2026-10-09T12:00:00+00:00", "registrant_type": "FPI",
         "at_risk_threshold_days": 3, "llm_base_url": "http://llm.example/v1",
-        "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-18", "REQ-21"],
+        "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"],
     }
 
 
@@ -322,7 +317,7 @@ def test_a_settings_update_answers_with_the_run(session_id):
     assert response.json() == {
         "run_id": session_id, "test_now": "2026-10-08T15:00:00+00:00",
         "registrant_type": "Domestic", "at_risk_threshold_days": 3,
-        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-18", "REQ-21"],
+        "llm_base_url": "https://llm.invalid/v1", "implemented_optional": ["REQ-04", "REQ-05", "REQ-09", "REQ-17", "REQ-18", "REQ-20", "REQ-21"],
     }
     assert snapshot(session_id)["run"] == response.json()
 
@@ -676,6 +671,69 @@ def test_draft_acceptance_over_http(api_incident):
     assert snapshot(session_id) == after
 
 
+def _material_over_http(session_id: str) -> str:
+    """An incident made Material through the API, with one evidence item; returns its ID."""
+    created = client.post("/system/incidents", headers=headers(session_id),
+                          json={"title": "Ransomware", "discovery_date": "2026-10-01"})
+    incident_id = created.json()["incident_id"]
+    item = {"ticket_id": "T-1", "summary": "Files locked on 10.0.0.5",
+            "created_at": "2026-10-01T09:00:00Z"}
+    imported = client.post(url("/incidents/{incident_id}/evidence/import", incident_id),
+                           headers=headers(session_id), json={"source": "ticketing", "items": [item]})
+    evidence_id = imported.json()["evidence"][0]["evidence_id"]
+    determined = client.post(url("/incidents/{incident_id}/determination", incident_id),
+                             headers=headers(session_id, "DisclosureApprover"), json={
+                                 "decision": "Material", "determination_date": "2026-10-05",
+                                 "rationale": "Encrypted", "evidence_refs": [evidence_id],
+                                 "version": 1})
+    assert determined.json()["state"] == "DeterminedMaterial"
+    return incident_id
+
+
+def test_draft_request_over_http(monkeypatch):
+    session_id = new_session(llm_base_url="https://llm.test/v1")
+    incident_id = _material_over_http(session_id)
+    evidence_id = snapshot(session_id)["incidents"][0]["evidence"][0]["evidence_id"]
+    undetermined = {"text": "Not yet determined", "citations": [], "sensitive_flags": []}
+    content = json.dumps({
+        "nature": {"text": "Ransomware locked files on 10.0.0.5.", "citations": [evidence_id],
+                   "sensitive_flags": []},
+        **{name: undetermined for name in ("scope", "timing", "impact")},
+    })
+    monkeypatch.setattr(llm, "TRANSPORT", httpx2.MockTransport(lambda request: httpx2.Response(
+        200, json={"choices": [{"message": {"content": content}}]})))
+    template = "/incidents/{incident_id}/drafts"
+    before = snapshot(session_id)
+
+    drafted = client.post(url(template, incident_id), headers=headers(session_id, "DisclosureApprover"))
+    assert drafted.status_code == 201
+    matches_spec("POST", template, drafted)
+    draft = drafted.json()
+    assert (draft["advisory"], draft["status"], draft["form_type"]) == (
+        True, "Proposed", "8-K Item 1.05")
+    assert draft["elements"]["nature"]["sensitive_flags"] == [
+        {"excerpt": "10.0.0.5", "reason": "IP address"}]
+    # No incident, version or audit change.
+    assert snapshot(session_id) == before
+
+    accepted = client.post(f"/system/drafts/{draft['draft_id']}/accept",
+                           headers=headers(session_id, "DisclosureApprover"))
+    assert accepted.status_code == 200
+    assert accepted.json()["elements"] == draft["elements"]
+
+
+def test_draft_request_without_a_working_llm_is_503():
+    session_id = new_session()  # the default https://llm.invalid/v1
+    incident_id = _material_over_http(session_id)
+    template = "/incidents/{incident_id}/drafts"
+    before = snapshot(session_id)
+    response = client.post(url(template, incident_id), headers=headers(session_id, "DisclosureApprover"))
+    project_error(response, 503, "DRAFTING_UNAVAILABLE")
+    assert response.json()["message"] == "Drafting unavailable"
+    matches_spec("POST", template, response)
+    assert snapshot(session_id) == before
+
+
 def test_groups_over_http(api_incident):
     session_id, first = api_incident["session_id"], api_incident["incident_id"]
     responder, approver = headers(session_id), headers(session_id, "DisclosureApprover")
@@ -722,7 +780,7 @@ def test_groups_over_http(api_incident):
     assert other.json()["determination"] == determined.json()["determination"]
 
 
-# --- 405 and 501 ----------------------------------------------------------------------------
+# --- 405 ------------------------------------------------------------------------------------
 
 REFUSED = [
     ("PUT", "/incidents/{incident_id}", "GET"),
@@ -756,24 +814,3 @@ def test_evidence_routes_look_up_the_evidence(api_incident, method):
                                           api_incident["incident_id"], "ev_missing"),
                               headers=headers(api_incident["session_id"], "DisclosureApprover"))
     project_error(response, 404, "NOT_FOUND")
-
-
-NOT_BUILT = [
-    ("POST", "/incidents/{incident_id}/drafts", {"DisclosureApprover"}),
-]
-
-
-@pytest.mark.parametrize("method,template,allowed", NOT_BUILT)
-@pytest.mark.parametrize("role", ["Responder", "DisclosureApprover", "Board"])
-def test_unbuilt_operations_answer_501_after_the_role(api_incident, method, template, allowed, role):
-    session_id = api_incident["session_id"]
-    before = snapshot(session_id)
-    response = client.request(method, url(template, api_incident["incident_id"],
-                                          api_incident["evidence_id"]),
-                              headers=headers(session_id, role))
-    if role in allowed:
-        project_error(response, 501, "NOT_IMPLEMENTED")
-    else:
-        project_error(response, 403, "FORBIDDEN_ROLE")
-    matches_spec(method, template, response)
-    assert snapshot(session_id) == before

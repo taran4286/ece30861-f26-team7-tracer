@@ -1,12 +1,11 @@
-"""app/services/placeholders.py: 405 and 501 come only after the session, role and path checks."""
+"""app/services/placeholders.py: a 405 comes only after the session, role and path checks."""
 
 import pytest
 
 from app.errors import ErrorCode, TracerError
-from app.roles import Operation, Role
 from app.services.evidence import import_evidence
 from app.services.incidents import create_incident, get_incident
-from app.services.placeholders import not_built, refuse_change
+from app.services.placeholders import refuse_change
 from tests.helpers import APPROVER, BOARD, RESPONDER, alert, in_session, table_counts
 
 pytestmark = pytest.mark.usefixtures("default_session")
@@ -56,24 +55,3 @@ def test_refusal_looks_up_the_incident_and_evidence(incident, evidence_id):
     other = create_incident({"title": "Other", "discovery_date": "2026-10-01"}, **RESPONDER)
     rejected(lambda: refuse_change(other["incident_id"], evidence_id, **APPROVER),
              ErrorCode.NOT_FOUND, other["incident_id"])
-
-
-ROLES_ALLOWED = {
-    Operation.REQUEST_DRAFT: {Role.DISCLOSURE_APPROVER},
-}
-
-
-@pytest.mark.parametrize("operation", ROLES_ALLOWED)
-@pytest.mark.parametrize("who", [RESPONDER, APPROVER, BOARD])
-def test_unbuilt_operations_are_501_after_the_role(operation, who):
-    allowed = who["role"] in ROLES_ALLOWED[operation]
-    code = ErrorCode.NOT_IMPLEMENTED if allowed else ErrorCode.FORBIDDEN_ROLE
-    rejected(lambda: not_built(operation, **who), code)
-
-
-def test_unbuilt_operations_check_the_session_and_path_first(incident):
-    incident_id = incident["incident_id"]
-    rejected(lambda: not_built(Operation.REQUEST_DRAFT, **in_session(BOARD, "pytest-missing")),
-             ErrorCode.NOT_FOUND)
-    rejected(lambda: not_built(Operation.REQUEST_DRAFT, "inc_missing", **APPROVER),
-             ErrorCode.NOT_FOUND)

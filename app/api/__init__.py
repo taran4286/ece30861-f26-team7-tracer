@@ -1,8 +1,7 @@
 """The system's FastAPI app; server.py mounts it at /system.
 
 It serves a status page, a dashboard, a health check, the test-control routes, the project
-operations this team builds, and 405 or 501 for the rest of the spec's operations. Other paths
-get 501.
+operations, and 405 for the spec's operations refused by design. Other paths get 501.
 """
 
 import logging

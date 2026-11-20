@@ -13,7 +13,7 @@ SPEC = Path(__file__).resolve().parents[2] / "system-openapi.yaml"
 SPEC_LINK = "https://github.com/taran4286/ece30861-f26-team7-tracer/blob/main/system-openapi.yaml"
 METHODS = ("get", "post", "put", "patch", "delete")
 
-BUILT, REFUSED, NOT_BUILT = "Built", "405 by design", "501 not built"
+BUILT, REFUSED = "Built", "405 by design"
 
 # How this system answers each operation in system-openapi.yaml. tests/test_server.py checks
 # that it lists exactly the spec's operations, so a new spec version can't slip past it.
@@ -32,7 +32,7 @@ STATUS: dict[tuple[str, str], str] = {
     ("POST", "/incidents/{incident_id}/determination"): BUILT,
     ("POST", "/incidents/{incident_id}/transitions"): BUILT,
     ("POST", "/incidents/{incident_id}/filings"): BUILT,
-    ("POST", "/incidents/{incident_id}/drafts"): NOT_BUILT,
+    ("POST", "/incidents/{incident_id}/drafts"): BUILT,
     ("POST", "/drafts/{draft_id}/accept"): BUILT,
     ("GET", "/incidents/{incident_id}/audit"): BUILT,
     ("PUT", "/incidents/{incident_id}/audit"): REFUSED,
@@ -40,7 +40,7 @@ STATUS: dict[tuple[str, str], str] = {
     ("DELETE", "/incidents/{incident_id}/audit"): REFUSED,
     ("POST", "/groups"): BUILT,
 }
-STATUS_CLASS = {BUILT: "ok", REFUSED: "muted", NOT_BUILT: "warn"}
+STATUS_CLASS = {BUILT: "ok", REFUSED: "muted"}
 
 STYLE = """
 :root{color-scheme:light dark;--fg:#1d1d1f;--muted:#5f6368;--line:#d0d4da;--bg:#fff;
@@ -94,11 +94,6 @@ def operations() -> list[tuple[str, str, str]]:
     ]
 
 
-def shown_operations() -> list[tuple[str, str, str]]:
-    """The operations the page lists: built or refused by design, leaving out the 501s."""
-    return [op for op in operations() if STATUS[(op[0], op[1])] != NOT_BUILT]
-
-
 def render(database_ok: bool) -> str:
     """The page. Reads the spec when first needed, not at import, so a missing file breaks only
     this page."""
@@ -107,7 +102,7 @@ def render(database_ok: bool) -> str:
         f'<tr><td><code>{method}</code></td><td><code>{escape(path)}</code></td>'
         f'<td class="{STATUS_CLASS[STATUS[(method, path)]]}">{STATUS[(method, path)]}</td>'
         f"<td>{escape(summary)}</td></tr>"
-        for method, path, summary in shown_operations()
+        for method, path, summary in operations()
     )
     return PAGE.format(
         style=STYLE,

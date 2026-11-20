@@ -6,7 +6,7 @@ from app.db import transaction
 from app.errors import ErrorCode, TracerError
 from app.models import FormType, Incident, State
 from app.roles import Role
-from app.services.drafts import load_draft_context, validate_draft_elements
+from app.services.drafts import MAX_TEXT_LENGTH, load_draft_context, validate_draft_elements
 from app.services.evidence import import_evidence
 from app.services.incidents import create_incident, get_incident
 from app.services.workflow import record_determination
@@ -33,6 +33,9 @@ def draft_elements(*citations):
         "text": "Not yet determined", "citations": ["ev_ours"], "sensitive_flags": [],
     }}, "elements.impact"),
     ({**draft_elements("ev_ours"), "materiality": "Material"}, "elements"),
+    ({**draft_elements("ev_ours"), "nature": {
+        "text": "x" * (MAX_TEXT_LENGTH + 1), "citations": ["ev_ours"], "sensitive_flags": [],
+    }}, "elements.nature.text"),
 ])
 def test_rejects_invalid_model_output(elements, field):
     with pytest.raises(TracerError) as raised:
@@ -48,6 +51,8 @@ def test_accepts_a_draft_with_no_evidence_when_all_elements_are_undetermined():
 
 def test_accepts_drafted_text_with_incident_evidence():
     elements = draft_elements("ev_first", "ev_second")
+    validate_draft_elements(elements, evidence_ids={"ev_first", "ev_second"})
+    elements["nature"]["text"] = "x" * MAX_TEXT_LENGTH
     validate_draft_elements(elements, evidence_ids={"ev_first", "ev_second"})
 
 

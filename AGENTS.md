@@ -10,8 +10,8 @@ The `AGENTS.md` files describe the code as it is, so an agent can rely on them i
 | Guide | Covers |
 | --- | --- |
 | `app/AGENTS.md` | Foundation modules (config, db, models, errors, roles, clock, sessions, audit) and the data model: the system's tables and enums |
-| `app/api/AGENTS.md` | The system's FastAPI app: identity headers, the status page, dashboard, health check, test-control routes, project routes, the 405 and 501 routes, and the 501 catch-all |
-| `app/services/AGENTS.md` | Business logic: the steps and error order every operation follows, sessions, roles, dates and versions, and what each operation does, test control and the 405 and 501 operations included |
+| `app/api/AGENTS.md` | The system's FastAPI app: identity headers, the status page, dashboard, health check, test-control routes, project routes, the 405 routes, and the 501 catch-all |
+| `app/services/AGENTS.md` | Business logic: the steps and error order every operation follows, sessions, roles, dates and versions, and what each operation does, test control and the 405 operations included |
 | `tester/AGENTS.md` | Our tester's FastAPI app, its session storage and cross-team test cases, and the rule that it never imports `app` |
 | `fixtures/AGENTS.md` | The incident, ticketing and SIEM fixtures our tester sends |
 | `tests/AGENTS.md` | The pytest suite: what each file covers, shared helpers and fixtures, and how to run it |
@@ -40,7 +40,7 @@ The business logic is independent of the web framework; the FastAPI layer (route
 
 - Python 3.12, PostgreSQL, SQLAlchemy 2.0 with psycopg 3, pydantic-settings and pytest.
 - FastAPI for the system's API layer and for the tester, both served by `server.py`.
-- httpx2 for the tester's calls to target systems, and jsonschema with PyYAML to check their responses against `system-openapi.yaml`.
+- httpx2 for the tester's calls to target systems and for the system's calls to a session's LLM, and jsonschema with PyYAML to check the tester's responses against `system-openapi.yaml`.
 - Vercel runs the deployed service and Neon hosts its Postgres (see Deployment).
 - Dependencies are declared in `pyproject.toml`.
 - `rfc3986-validator` checks a session's `llm_base_url` against RFC 3986 (see `app/services/AGENTS.md`, "Test control").
@@ -65,6 +65,7 @@ The business logic is independent of the web framework; the FastAPI layer (route
 - `DATABASE_URL`: the app role's connection, used by the service and tests, e.g. `postgresql+psycopg://tracer_app:pass@127.0.0.1:5432/tracer`.
 - `TESTER_DATABASE_URL`: the tester role's connection, used by the tester's session storage and tests and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_tester:pass@127.0.0.1:5432/tracer`.
 - `ADMIN_DATABASE_URL`: the owner role's connection, used only by `scripts/setup_db.py` and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_owner:pass@127.0.0.1:5432/tracer`.
+- `LLM_API_KEY`, `LLM_MODEL` and `LLM_TRUSTED_BASE_URL`: optional, all unset by default, read by `app/config.py` for drafting. The key is sent only to a session `llm_base_url` with the trusted URL's origin, and the model name only when set (see `app/services/AGENTS.md`, "Draft requests").
 - `.env.example` holds placeholder values; never commit real credentials.
 
 **Local database (Docker)**
@@ -133,10 +134,11 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 - `DATABASE_URL` (as `tracer_app`) and `TESTER_DATABASE_URL` (as `tracer_tester`) are set in the project's environment variables, for the Production environment only, never in the repo. PR preview deployments then have no database; sharing it would leave every preview request's rows in it, and neither login role can delete them.
 - Both are Secret variables (write-only after saving). Redeploy after setting or changing any variable; changes only reach new deployments.
 - Never set `ADMIN_DATABASE_URL` on Vercel: every variable there reaches the running function.
+- The `LLM_*` variables are optional there. Without them drafting still answers, with a 503 for every session whose LLM needs a key; set `LLM_API_KEY` as a Secret variable, Production only, like the database URLs.
 - On the Hobby plan, only the project's owner sees its variables and logs, and runtime logs are kept for 1 hour.
 - Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
 - Deployment Protection stays at Standard: the production domain is public for testers, while preview and deployment-specific URLs need a Vercel login.
-- There's no `vercel.json`: the Hobby plan's default function limit of 300 s already covers the tester's longest request.
+- There's no `vercel.json`: the Hobby plan's default function limit of 300 s already covers the tester's longest request and a draft request's 55 s LLM call.
 - After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached, `DATABASE_URL` is missing or malformed, or the URL names a driver we don't install (a bare `postgresql://`); the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
 - The server clock (UTC, NTP-synced) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 
