@@ -3,6 +3,7 @@
 import ipaddress
 import logging
 import re
+import time
 from typing import Any
 
 from sqlalchemy import select
@@ -42,11 +43,16 @@ def request_draft(
     it runs. Any provider failure, or output that fails validation, is a 503 with nothing
     written; every client error comes before the call. No audit entry, and the incident's
     state and version are unchanged.
+
+    llm.TIMEOUT_SECONDS is the budget from here to the provider's last byte, so a slow
+    database read leaves the call less time rather than pushing the 503 later.
     """
+    started = time.monotonic()
     context = load_draft_context(incident_id, role=role, session_id=session_id)
     evidence_ids = {item["evidence_id"] for item in context["evidence"]}
     if evidence_ids:
-        elements = _generate(context, evidence_ids)
+        remaining = llm.TIMEOUT_SECONDS - (time.monotonic() - started)
+        elements = _generate(context, evidence_ids, remaining)
     else:
         elements = {name: _undetermined() for name in DRAFT_ELEMENTS}
 
@@ -72,10 +78,13 @@ def request_draft(
         return draft_to_dict(draft)
 
 
-def _generate(context: dict[str, Any], evidence_ids: set[str]) -> dict[str, Any]:
-    """The provider's elements, validated, with sensitive flags checked and added (REQ-17)."""
+def _generate(
+    context: dict[str, Any], evidence_ids: set[str], timeout: float,
+) -> dict[str, Any]:
+    """The provider's elements, validated, with sensitive flags checked and added (REQ-17).
+    timeout is what's left of the request's budget for the call."""
     try:
-        elements = llm.draft_elements(context)
+        elements = llm.draft_elements(context, timeout=timeout)
         validate_draft_elements(elements, evidence_ids=evidence_ids)
     except (llm.ProviderError, TracerError) as error:
         # The cause goes to the log, never the response.

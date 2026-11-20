@@ -13,8 +13,9 @@ import httpx2
 
 from app.config import get_settings
 
-# The whole call, connection to last byte. With the database work around it, the 503 arrives
-# inside the spec's 60 s (REQ-20) and AC-21's 60 s ± 2 s.
+# A draft request's budget, from its first database read to the provider's last byte, so the
+# 503 arrives inside the spec's 60 s (REQ-20) and AC-21's 60 s ± 2 s. drafts.request_draft
+# passes what's left of it as draft_elements' timeout.
 TIMEOUT_SECONDS = 59.0
 # A reply larger than this isn't a draft of four short elements.
 MAX_RESPONSE_BYTES = 1_000_000
@@ -47,9 +48,11 @@ class ProviderError(Exception):
 def draft_elements(context: dict[str, Any], *, timeout: float | None = None) -> Any:
     """Ask the session's provider for the draft's elements, given load_draft_context's result.
 
-    timeout defaults to TIMEOUT_SECONDS. The call runs on its own event loop, so call this from
-    a thread without one, as every service runs."""
+    timeout defaults to TIMEOUT_SECONDS; with none left, no request is made. The call runs on
+    its own event loop, so call this from a thread without one, as every service runs."""
     timeout = TIMEOUT_SECONDS if timeout is None else timeout
+    if timeout <= 0:
+        raise ProviderError("no time left for the call")
     base_url = context["llm_base_url"].rstrip("/")
     host = urlsplit(base_url).hostname or ""
     # RFC 6761: .invalid never resolves, so the default URL fails without a DNS lookup.

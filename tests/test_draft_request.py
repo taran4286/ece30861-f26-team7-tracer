@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import select, update
 
 import app.db as db
+import app.services.drafts as drafts
 import app.services.llm as llm
 from app.config import get_settings
 from app.db import transaction
@@ -111,6 +112,11 @@ def request(incident: dict[str, Any], who=APPROVER) -> dict[str, Any]:
     return request_draft(incident["incident_id"], **in_session(who, incident["session_id"]))
 
 
+def read(incident: dict[str, Any]) -> dict[str, Any]:
+    """The incident as a Board member of its session reads it."""
+    return get_incident(incident["incident_id"], **in_session(BOARD, incident["session_id"]))
+
+
 def never_called(request):
     pytest.fail("The LLM must not be called")
 
@@ -163,13 +169,15 @@ def test_a_long_fenced_reply_is_unwrapped_quickly(material, fake_llm):
     """A run of spaces inside a fence once took time growing with the square of its length:
     minutes for this reply. Its content isn't JSON, so it's a 503."""
     fake_llm(lambda request: reply("```x" + " " * 400_000 + "x```"))
-    counts = table_counts()
+    before, counts = read(material), table_counts()
     started = time.monotonic()
     with pytest.raises(TracerError) as raised:
         request(material)
-    assert raised.value.code == ErrorCode.DRAFTING_UNAVAILABLE
-    assert time.monotonic() - started < 2
+    elapsed = time.monotonic() - started
+    assert (raised.value.code, raised.value.field) == (ErrorCode.DRAFTING_UNAVAILABLE, None)
+    assert elapsed < 2
     assert table_counts() == counts
+    assert read(material) == before
 
 
 def test_no_evidence_drafts_every_element_undetermined_without_the_llm(session, fake_llm):
@@ -255,6 +263,55 @@ def test_no_answer_within_the_deadline_is_503(material, fake_llm, monkeypatch):
     assert table_counts() == counts
 
 
+def slow_context_load(monkeypatch, seconds: float) -> None:
+    """Make request_draft's first database read take `seconds` longer."""
+    load = drafts.load_draft_context
+
+    def slow(*args, **kwargs):
+        time.sleep(seconds)
+        return load(*args, **kwargs)
+
+    monkeypatch.setattr(drafts, "load_draft_context", slow)
+
+
+def test_a_slow_database_read_counts_against_the_deadline(material, fake_llm, monkeypatch):
+    """The budget starts with the request, so a slow read leaves the call less time instead of
+    pushing the 503 later."""
+    monkeypatch.setattr(llm, "TIMEOUT_SECONDS", 0.8)
+    slow_context_load(monkeypatch, 0.6)
+
+    async def silent(request):
+        await asyncio.sleep(5)
+        return reply(elements(material["evidence_ids"][0]))
+
+    fake_llm(silent)
+    before, counts = read(material), table_counts()
+    started = time.monotonic()
+    with pytest.raises(TracerError) as raised:
+        request(material)
+    elapsed = time.monotonic() - started
+    assert (raised.value.code, raised.value.field) == (ErrorCode.DRAFTING_UNAVAILABLE, None)
+    # 0.8 s in all; a deadline started at the call would end at about 1.4 s.
+    assert elapsed < 1.2
+    assert table_counts() == counts
+    assert read(material) == before
+
+
+def test_a_read_that_uses_up_the_deadline_is_503_without_a_request(
+    material, fake_llm, monkeypatch,
+):
+    monkeypatch.setattr(llm, "TIMEOUT_SECONDS", 0.2)
+    slow_context_load(monkeypatch, 0.3)
+    sent = fake_llm(never_called)
+    before, counts = read(material), table_counts()
+    with pytest.raises(TracerError) as raised:
+        request(material)
+    assert (raised.value.code, raised.value.field) == (ErrorCode.DRAFTING_UNAVAILABLE, None)
+    assert sent == []
+    assert table_counts() == counts
+    assert read(material) == before
+
+
 def test_a_reply_trickling_past_the_deadline_is_cut_off(material, fake_llm, monkeypatch):
     """A byte at a time never trips httpx2's per-read timeout. The deadline cancels the read
     and closes the response, rather than leaving it running after the 503."""
@@ -293,11 +350,15 @@ def test_an_unusable_base_url_is_503_without_a_request(fake_llm, llm_base_url):
     import_evidence(created["incident_id"], {"source": "ticketing", "items": [ticket()]},
                     **in_session(RESPONDER, session))
     make_material(created["incident_id"])
+    incident = {"incident_id": created["incident_id"], "session_id": session}
     sent = fake_llm(never_called)
+    before, counts = read(incident), table_counts()
     with pytest.raises(TracerError) as raised:
-        request({"incident_id": created["incident_id"], "session_id": session})
-    assert raised.value.code == ErrorCode.DRAFTING_UNAVAILABLE
+        request(incident)
+    assert (raised.value.code, raised.value.field) == (ErrorCode.DRAFTING_UNAVAILABLE, None)
     assert sent == []
+    assert table_counts() == counts
+    assert read(incident) == before
 
 
 def test_a_compressed_reply_is_refused(material, fake_llm):
