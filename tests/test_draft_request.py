@@ -1,6 +1,7 @@
 """app/services/drafts.py's request_draft and app/services/llm.py, with a fake LLM and no network."""
 
 import asyncio
+import gzip
 import json
 import time
 from typing import Any
@@ -10,6 +11,7 @@ import pytest
 from sqlalchemy import select, update
 
 import app.db as db
+import app.services.drafts as drafts
 import app.services.llm as llm
 from app.config import get_settings
 from app.db import transaction
@@ -110,6 +112,11 @@ def request(incident: dict[str, Any], who=APPROVER) -> dict[str, Any]:
     return request_draft(incident["incident_id"], **in_session(who, incident["session_id"]))
 
 
+def read(incident: dict[str, Any]) -> dict[str, Any]:
+    """The incident as a Board member of its session reads it."""
+    return get_incident(incident["incident_id"], **in_session(BOARD, incident["session_id"]))
+
+
 def never_called(request):
     pytest.fail("The LLM must not be called")
 
@@ -151,10 +158,26 @@ def test_every_eligible_state_drafts(material, fake_llm, state):
     assert request(material)["status"] == "Proposed"
 
 
-def test_a_reply_in_a_code_fence_is_accepted(material, fake_llm):
-    fenced = "```json\n" + json.dumps(elements(material["evidence_ids"][0])) + "\n```"
+@pytest.mark.parametrize("opening", ["```json\n", "```JSON ", "```\n", "```"])
+def test_a_reply_in_a_code_fence_is_accepted(material, fake_llm, opening):
+    fenced = opening + json.dumps(elements(material["evidence_ids"][0])) + "\n```"
     fake_llm(lambda request: reply(fenced))
     assert request(material)["elements"]["nature"]["citations"] == [material["evidence_ids"][0]]
+
+
+def test_a_long_fenced_reply_is_unwrapped_quickly(material, fake_llm):
+    """A run of spaces inside a fence once took time growing with the square of its length:
+    minutes for this reply. Its content isn't JSON, so it's a 503."""
+    fake_llm(lambda request: reply("```x" + " " * 400_000 + "x```"))
+    before, counts = read(material), table_counts()
+    started = time.monotonic()
+    with pytest.raises(TracerError) as raised:
+        request(material)
+    elapsed = time.monotonic() - started
+    assert (raised.value.code, raised.value.field) == (ErrorCode.DRAFTING_UNAVAILABLE, None)
+    assert elapsed < 2
+    assert table_counts() == counts
+    assert read(material) == before
 
 
 def test_no_evidence_drafts_every_element_undetermined_without_the_llm(session, fake_llm):
@@ -240,6 +263,55 @@ def test_no_answer_within_the_deadline_is_503(material, fake_llm, monkeypatch):
     assert table_counts() == counts
 
 
+def slow_context_load(monkeypatch, seconds: float) -> None:
+    """Make request_draft's first database read take `seconds` longer."""
+    load = drafts.load_draft_context
+
+    def slow(*args, **kwargs):
+        time.sleep(seconds)
+        return load(*args, **kwargs)
+
+    monkeypatch.setattr(drafts, "load_draft_context", slow)
+
+
+def test_a_slow_database_read_counts_against_the_deadline(material, fake_llm, monkeypatch):
+    """The budget starts with the request, so a slow read leaves the call less time instead of
+    pushing the 503 later."""
+    monkeypatch.setattr(llm, "TIMEOUT_SECONDS", 0.8)
+    slow_context_load(monkeypatch, 0.6)
+
+    async def silent(request):
+        await asyncio.sleep(5)
+        return reply(elements(material["evidence_ids"][0]))
+
+    fake_llm(silent)
+    before, counts = read(material), table_counts()
+    started = time.monotonic()
+    with pytest.raises(TracerError) as raised:
+        request(material)
+    elapsed = time.monotonic() - started
+    assert (raised.value.code, raised.value.field) == (ErrorCode.DRAFTING_UNAVAILABLE, None)
+    # 0.8 s in all; a deadline started at the call would end at about 1.4 s.
+    assert elapsed < 1.2
+    assert table_counts() == counts
+    assert read(material) == before
+
+
+def test_a_read_that_uses_up_the_deadline_is_503_without_a_request(
+    material, fake_llm, monkeypatch,
+):
+    monkeypatch.setattr(llm, "TIMEOUT_SECONDS", 0.2)
+    slow_context_load(monkeypatch, 0.3)
+    sent = fake_llm(never_called)
+    before, counts = read(material), table_counts()
+    with pytest.raises(TracerError) as raised:
+        request(material)
+    assert (raised.value.code, raised.value.field) == (ErrorCode.DRAFTING_UNAVAILABLE, None)
+    assert sent == []
+    assert table_counts() == counts
+    assert read(material) == before
+
+
 def test_a_reply_trickling_past_the_deadline_is_cut_off(material, fake_llm, monkeypatch):
     """A byte at a time never trips httpx2's per-read timeout. The deadline cancels the read
     and closes the response, rather than leaving it running after the 503."""
@@ -265,18 +337,46 @@ def test_a_reply_trickling_past_the_deadline_is_cut_off(material, fake_llm, monk
     assert table_counts() == counts
 
 
-def test_the_default_invalid_url_is_503_without_a_request(fake_llm):
-    session = new_session()  # llm_base_url https://llm.invalid/v1
+@pytest.mark.parametrize("llm_base_url", [
+    None,  # the default, https://llm.invalid/v1
+    # The appended /chat/completions would land after the query or fragment.
+    f"{LLM_URL}/files?purpose=",
+    f"{LLM_URL}#",
+])
+def test_an_unusable_base_url_is_503_without_a_request(fake_llm, llm_base_url):
+    session = new_session(llm_base_url=llm_base_url) if llm_base_url else new_session()
     created = create_incident({"title": "Ransomware", "discovery_date": "2026-10-01"},
                               **in_session(RESPONDER, session))
     import_evidence(created["incident_id"], {"source": "ticketing", "items": [ticket()]},
                     **in_session(RESPONDER, session))
     make_material(created["incident_id"])
+    incident = {"incident_id": created["incident_id"], "session_id": session}
     sent = fake_llm(never_called)
+    before, counts = read(incident), table_counts()
     with pytest.raises(TracerError) as raised:
-        request({"incident_id": created["incident_id"], "session_id": session})
-    assert raised.value.code == ErrorCode.DRAFTING_UNAVAILABLE
+        request(incident)
+    assert (raised.value.code, raised.value.field) == (ErrorCode.DRAFTING_UNAVAILABLE, None)
     assert sent == []
+    assert table_counts() == counts
+    assert read(incident) == before
+
+
+def test_a_compressed_reply_is_refused(material, fake_llm):
+    """The request asks for no compression, and the size limit counts bytes as received, so a
+    compressed reply, which httpx2 would expand a whole chunk at a time, is a 503."""
+    incident_id = material["incident_id"]
+    body = json.dumps({"choices": [{"message": {
+        "content": json.dumps(elements(material["evidence_ids"][0]))}}]}).encode()
+    sent = fake_llm(lambda request: httpx2.Response(
+        200, content=gzip.compress(body), headers={"Content-Encoding": "gzip"}))
+    before = get_incident(incident_id, **in_session(BOARD, material["session_id"]))
+    counts = table_counts()
+    with pytest.raises(TracerError) as raised:
+        request(material)
+    assert (raised.value.code, raised.value.field) == (ErrorCode.DRAFTING_UNAVAILABLE, None)
+    assert table_counts() == counts
+    assert get_incident(incident_id, **in_session(BOARD, material["session_id"])) == before
+    assert sent[0].headers["accept-encoding"] == "identity"
 
 
 @pytest.mark.parametrize("who,state,code", [
@@ -390,13 +490,17 @@ def test_scanning_the_longest_text_is_quick(unit):
 
 @pytest.mark.parametrize("trusted,sent", [
     ("https://llm.test/v1", True),
-    ("https://LLM.test:443/other", True),
+    ("HTTPS://LLM.test:443/v1/", True),
+    ("https://llm.test/other", False),
+    ("https://llm.test/v1/chat", False),
+    ("https://llm.test", False),
+    ("https://llm.test/v1?x=1", False),
     ("https://llm.test:8443/v1", False),
     ("http://llm.test/v1", False),
     ("https://other.test/v1", False),
     (None, False),
 ])
-def test_the_api_key_goes_only_to_the_trusted_origin(
+def test_the_api_key_goes_only_to_the_trusted_base_url(
     material, fake_llm, monkeypatch, fresh_settings, trusted, sent,
 ):
     monkeypatch.setenv("LLM_API_KEY", "sk-test")

@@ -20,6 +20,7 @@ import app.services.control as control_service
 import app.services.llm as llm
 from app.api import pages
 from app.config import get_settings
+from app.models import Draft
 from server import app as server_app
 from tester.spec import response_errors
 from tests.helpers import add_draft
@@ -200,6 +201,15 @@ def snapshot(session_id: str) -> dict:
     response = client.get(f"/system/test/report/{session_id}")
     assert response.status_code == 200
     return response.json()
+
+
+def stored_draft(draft_id: str) -> dict:
+    """A draft's acceptance fields as stored. The snapshot has no drafts and no route reads one
+    back, so a rejected acceptance is checked here."""
+    with db.transaction() as tx:
+        draft = tx.get(Draft, draft_id)
+        return {"status": draft.status.value, "accepted_by": draft.accepted_by,
+                "accepted_at": draft.accepted_at}
 
 
 def matches_spec(method: str, template: str, response) -> None:
@@ -646,12 +656,13 @@ def test_tagging_over_http(api_incident):
 def test_draft_acceptance_over_http(api_incident):
     session_id, incident_id = api_incident["session_id"], api_incident["incident_id"]
     template = "/drafts/{draft_id}/accept"
-    path = f"/system/drafts/{add_draft(incident_id)}/accept"
-    before = snapshot(session_id)
+    draft_id = add_draft(incident_id)
+    path = f"/system/drafts/{draft_id}/accept"
+    before = (snapshot(session_id), stored_draft(draft_id))
     forbidden = client.post(path, headers=headers(session_id))
     project_error(forbidden, 403, "FORBIDDEN_ROLE")
     matches_spec("POST", template, forbidden)
-    assert snapshot(session_id) == before
+    assert (snapshot(session_id), stored_draft(draft_id)) == before
 
     accepted = client.post(path, headers=headers(session_id, "DisclosureApprover"))
     assert accepted.status_code == 200
@@ -664,11 +675,12 @@ def test_draft_acceptance_over_http(api_incident):
     matches_spec("GET", "/incidents/{incident_id}/audit", trail)
     assert trail.json()["entries"][-1]["action"] == "accept_draft"
 
-    after = snapshot(session_id)
+    after = (snapshot(session_id), stored_draft(draft_id))
+    assert after[1]["status"] == "Accepted"
     again = client.post(path, headers=headers(session_id, "DisclosureApprover"))
     project_error(again, 409, "CONFLICT")
     matches_spec("POST", template, again)
-    assert snapshot(session_id) == after
+    assert (snapshot(session_id), stored_draft(draft_id)) == after
 
 
 def _material_over_http(session_id: str) -> str:

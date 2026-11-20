@@ -6,7 +6,6 @@ ProviderError. drafts.request_draft validates the result and turns any failure i
 
 import asyncio
 import json
-import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -14,8 +13,10 @@ import httpx2
 
 from app.config import get_settings
 
-# The whole call, connection to last byte; inside the spec's 60 s (REQ-20).
-TIMEOUT_SECONDS = 55.0
+# A draft request's budget, from its first database read to the provider's last byte, so the
+# 503 arrives inside the spec's 60 s (REQ-20) and AC-21's 60 s ± 2 s. drafts.request_draft
+# passes what's left of it as draft_elements' timeout.
+TIMEOUT_SECONDS = 59.0
 # A reply larger than this isn't a draft of four short elements.
 MAX_RESPONSE_BYTES = 1_000_000
 # Tests replace this with an httpx2.MockTransport; None uses the network.
@@ -47,17 +48,23 @@ class ProviderError(Exception):
 def draft_elements(context: dict[str, Any], *, timeout: float | None = None) -> Any:
     """Ask the session's provider for the draft's elements, given load_draft_context's result.
 
-    timeout defaults to TIMEOUT_SECONDS. The call runs on its own event loop, so call this from
-    a thread without one, as every service runs."""
+    timeout defaults to TIMEOUT_SECONDS; with none left, no request is made. The call runs on
+    its own event loop, so call this from a thread without one, as every service runs."""
     timeout = TIMEOUT_SECONDS if timeout is None else timeout
+    if timeout <= 0:
+        raise ProviderError("no time left for the call")
     base_url = context["llm_base_url"].rstrip("/")
     host = urlsplit(base_url).hostname or ""
     # RFC 6761: .invalid never resolves, so the default URL fails without a DNS lookup.
     if host == "invalid" or host.endswith(".invalid"):
         raise ProviderError(f"{host} is a reserved .invalid host")
+    # The path is appended to the base URL, so after a query or fragment it would send the
+    # request somewhere else on the server.
+    if "?" in base_url or "#" in base_url:
+        raise ProviderError("the base URL has a query or fragment")
 
     try:
-        body = asyncio.run(_post(f"{base_url}/chat/completions", context, timeout))
+        body = asyncio.run(_post(base_url, context, timeout))
     except ProviderError:
         raise
     except TimeoutError as error:
@@ -67,10 +74,12 @@ def draft_elements(context: dict[str, Any], *, timeout: float | None = None) -> 
     return _parse(body)
 
 
-async def _post(url: str, context: dict[str, Any], timeout: float) -> bytes:
+async def _post(base_url: str, context: dict[str, Any], timeout: float) -> bytes:
     settings = get_settings()
-    headers = {}
-    if settings.llm_api_key is not None and _trusted(url, settings.llm_trusted_base_url):
+    # No compression: the size limit counts bytes as received, and httpx2 would expand a
+    # compressed chunk in full before any limit applied.
+    headers = {"Accept-Encoding": "identity"}
+    if settings.llm_api_key is not None and _trusted(base_url, settings.llm_trusted_base_url):
         headers["Authorization"] = f"Bearer {settings.llm_api_key.get_secret_value()}"
     payload: dict[str, Any] = {
         "messages": [
@@ -91,9 +100,13 @@ async def _post(url: str, context: dict[str, Any], timeout: float) -> bytes:
         async with httpx2.AsyncClient(
             transport=TRANSPORT, timeout=timeout, follow_redirects=False,
         ) as client:
+            url = f"{base_url}/chat/completions"
             async with client.stream("POST", url, json=payload, headers=headers) as response:
                 if not response.is_success:
                     raise ProviderError(f"HTTP {response.status_code}")
+                encoding = response.headers.get("Content-Encoding", "").strip().lower()
+                if encoding not in ("", "identity"):
+                    raise ProviderError(f"compressed reply ({encoding})")
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     body += chunk
@@ -119,9 +132,6 @@ def _prompt_input(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-_FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL | re.IGNORECASE)
-
-
 def _parse(body: bytes) -> Any:
     """The elements from a chat completion: choices[0].message.content, parsed as JSON.
 
@@ -134,10 +144,7 @@ def _parse(body: bytes) -> Any:
         raise ProviderError(f"not a chat completion: {type(error).__name__}") from error
     if not isinstance(content, str):
         raise ProviderError("message content is not a string")
-    content = content.strip()
-    fenced = _FENCE.match(content)
-    if fenced:
-        content = fenced.group(1)
+    content = _unfence(content.strip())
     try:
         elements = json.loads(content)
     except (ValueError, RecursionError) as error:
@@ -145,21 +152,38 @@ def _parse(body: bytes) -> Any:
     return elements
 
 
-def _trusted(url: str, trusted_base_url: str | None) -> bool:
-    """Whether url has trusted_base_url's origin (scheme, host and port). Any tester can set a
-    session's llm_base_url, so the API key goes nowhere else."""
+def _unfence(content: str) -> str:
+    """content without a Markdown code fence around it (```, or ```json in any case), if it has
+    one. Plain string checks take time in step with the length; the regular expression this
+    replaces backtracked over runs of spaces and took minutes on a 1 MB reply."""
+    if len(content) < 6 or not (content.startswith("```") and content.endswith("```")):
+        return content
+    inner = content[3:-3]
+    if inner[:4].lower() == "json":
+        inner = inner[4:]
+    return inner.strip()
+
+
+def _trusted(base_url: str, trusted_base_url: str | None) -> bool:
+    """Whether base_url is trusted_base_url: the same scheme, host, port and path. Any tester
+    can set a session's llm_base_url, so the API key goes nowhere else, not even to another
+    path on the trusted server."""
     if not trusted_base_url:
         return False
-    return _origin(url) == _origin(trusted_base_url)
+    key = _base(base_url)
+    return key is not None and key == _base(trusted_base_url)
 
 
-def _origin(url: str) -> tuple[str, str, int | None] | None:
+def _base(url: str) -> tuple[str, str, int | None, str] | None:
+    """The parts of a base URL that decide where requests go, normalized: a lowercase scheme
+    and host, the default port filled in and a trailing slash dropped. None for a URL with no
+    host, a query or a fragment."""
     try:
         parts = urlsplit(url)
         scheme = parts.scheme.lower()
         port = parts.port or {"http": 80, "https": 443}.get(scheme)
     except ValueError:
         return None
-    if not parts.hostname:
+    if not parts.hostname or parts.query or parts.fragment or "?" in url or "#" in url:
         return None
-    return scheme, parts.hostname.lower(), port
+    return scheme, parts.hostname.lower(), port, parts.path.rstrip("/")
