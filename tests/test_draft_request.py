@@ -1,6 +1,7 @@
 """app/services/drafts.py's request_draft and app/services/llm.py, with a fake LLM and no network."""
 
 import asyncio
+import gzip
 import json
 import time
 from typing import Any
@@ -151,10 +152,24 @@ def test_every_eligible_state_drafts(material, fake_llm, state):
     assert request(material)["status"] == "Proposed"
 
 
-def test_a_reply_in_a_code_fence_is_accepted(material, fake_llm):
-    fenced = "```json\n" + json.dumps(elements(material["evidence_ids"][0])) + "\n```"
+@pytest.mark.parametrize("opening", ["```json\n", "```JSON ", "```\n", "```"])
+def test_a_reply_in_a_code_fence_is_accepted(material, fake_llm, opening):
+    fenced = opening + json.dumps(elements(material["evidence_ids"][0])) + "\n```"
     fake_llm(lambda request: reply(fenced))
     assert request(material)["elements"]["nature"]["citations"] == [material["evidence_ids"][0]]
+
+
+def test_a_long_fenced_reply_is_unwrapped_quickly(material, fake_llm):
+    """A run of spaces inside a fence once took time growing with the square of its length:
+    minutes for this reply. Its content isn't JSON, so it's a 503."""
+    fake_llm(lambda request: reply("```x" + " " * 400_000 + "x```"))
+    counts = table_counts()
+    started = time.monotonic()
+    with pytest.raises(TracerError) as raised:
+        request(material)
+    assert raised.value.code == ErrorCode.DRAFTING_UNAVAILABLE
+    assert time.monotonic() - started < 2
+    assert table_counts() == counts
 
 
 def test_no_evidence_drafts_every_element_undetermined_without_the_llm(session, fake_llm):
@@ -265,8 +280,14 @@ def test_a_reply_trickling_past_the_deadline_is_cut_off(material, fake_llm, monk
     assert table_counts() == counts
 
 
-def test_the_default_invalid_url_is_503_without_a_request(fake_llm):
-    session = new_session()  # llm_base_url https://llm.invalid/v1
+@pytest.mark.parametrize("llm_base_url", [
+    None,  # the default, https://llm.invalid/v1
+    # The appended /chat/completions would land after the query or fragment.
+    f"{LLM_URL}/files?purpose=",
+    f"{LLM_URL}#",
+])
+def test_an_unusable_base_url_is_503_without_a_request(fake_llm, llm_base_url):
+    session = new_session(llm_base_url=llm_base_url) if llm_base_url else new_session()
     created = create_incident({"title": "Ransomware", "discovery_date": "2026-10-01"},
                               **in_session(RESPONDER, session))
     import_evidence(created["incident_id"], {"source": "ticketing", "items": [ticket()]},
@@ -277,6 +298,24 @@ def test_the_default_invalid_url_is_503_without_a_request(fake_llm):
         request({"incident_id": created["incident_id"], "session_id": session})
     assert raised.value.code == ErrorCode.DRAFTING_UNAVAILABLE
     assert sent == []
+
+
+def test_a_compressed_reply_is_refused(material, fake_llm):
+    """The request asks for no compression, and the size limit counts bytes as received, so a
+    compressed reply, which httpx2 would expand a whole chunk at a time, is a 503."""
+    incident_id = material["incident_id"]
+    body = json.dumps({"choices": [{"message": {
+        "content": json.dumps(elements(material["evidence_ids"][0]))}}]}).encode()
+    sent = fake_llm(lambda request: httpx2.Response(
+        200, content=gzip.compress(body), headers={"Content-Encoding": "gzip"}))
+    before = get_incident(incident_id, **in_session(BOARD, material["session_id"]))
+    counts = table_counts()
+    with pytest.raises(TracerError) as raised:
+        request(material)
+    assert (raised.value.code, raised.value.field) == (ErrorCode.DRAFTING_UNAVAILABLE, None)
+    assert table_counts() == counts
+    assert get_incident(incident_id, **in_session(BOARD, material["session_id"])) == before
+    assert sent[0].headers["accept-encoding"] == "identity"
 
 
 @pytest.mark.parametrize("who,state,code", [
@@ -390,13 +429,17 @@ def test_scanning_the_longest_text_is_quick(unit):
 
 @pytest.mark.parametrize("trusted,sent", [
     ("https://llm.test/v1", True),
-    ("https://LLM.test:443/other", True),
+    ("HTTPS://LLM.test:443/v1/", True),
+    ("https://llm.test/other", False),
+    ("https://llm.test/v1/chat", False),
+    ("https://llm.test", False),
+    ("https://llm.test/v1?x=1", False),
     ("https://llm.test:8443/v1", False),
     ("http://llm.test/v1", False),
     ("https://other.test/v1", False),
     (None, False),
 ])
-def test_the_api_key_goes_only_to_the_trusted_origin(
+def test_the_api_key_goes_only_to_the_trusted_base_url(
     material, fake_llm, monkeypatch, fresh_settings, trusted, sent,
 ):
     monkeypatch.setenv("LLM_API_KEY", "sk-test")

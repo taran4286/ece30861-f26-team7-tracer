@@ -65,7 +65,7 @@ The business logic is independent of the web framework; the FastAPI layer (route
 - `DATABASE_URL`: the app role's connection, used by the service and tests, e.g. `postgresql+psycopg://tracer_app:pass@127.0.0.1:5432/tracer`.
 - `TESTER_DATABASE_URL`: the tester role's connection, used by the tester's session storage and tests and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_tester:pass@127.0.0.1:5432/tracer`.
 - `ADMIN_DATABASE_URL`: the owner role's connection, used only by `scripts/setup_db.py` and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_owner:pass@127.0.0.1:5432/tracer`.
-- `LLM_API_KEY`, `LLM_MODEL` and `LLM_TRUSTED_BASE_URL`: optional, all unset by default, read by `app/config.py` for drafting. The key is sent only to a session `llm_base_url` with the trusted URL's origin, and the model name only when set (see `app/services/AGENTS.md`, "Draft requests").
+- `LLM_API_KEY`, `LLM_MODEL` and `LLM_TRUSTED_BASE_URL`: optional, all unset by default, read by `app/config.py` for drafting. The key is sent only to a session whose `llm_base_url` is the trusted URL (the same scheme, host, port and path), and the model name only when set (see `app/services/AGENTS.md`, "Draft requests").
 - `.env.example` holds placeholder values; never commit real credentials.
 
 **Local database (Docker)**
@@ -138,7 +138,7 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 - On the Hobby plan, only the project's owner sees its variables and logs, and runtime logs are kept for 1 hour.
 - Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
 - Deployment Protection stays at Standard: the production domain is public for testers, while preview and deployment-specific URLs need a Vercel login.
-- There's no `vercel.json`: the Hobby plan's default function limit of 300 s already covers the tester's longest request and a draft request's 55 s LLM call.
+- There's no `vercel.json`: the Hobby plan's default function limit of 300 s already covers the tester's longest request and a draft request's 59 s LLM call.
 - After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached, `DATABASE_URL` is missing or malformed, or the URL names a driver we don't install (a bare `postgresql://`); the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
 - The server clock (UTC, NTP-synced) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 
