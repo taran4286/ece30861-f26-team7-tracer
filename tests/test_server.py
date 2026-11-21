@@ -12,6 +12,7 @@ import httpx2
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 from sqlalchemy.exc import ArgumentError, OperationalError
 
 import app.api as system_api
@@ -744,6 +745,39 @@ def test_draft_request_without_a_working_llm_is_503():
     assert response.json()["message"] == "Drafting unavailable"
     matches_spec("POST", template, response)
     assert snapshot(session_id) == before
+
+
+def test_daily_drafting_limit_over_http(monkeypatch):
+    """The contract's 503/message stay intact; a safe detail explains the daily quota."""
+    session_id = new_session(llm_base_url="https://llm.test/v1")
+    incident_id = _material_over_http(session_id)
+    provider_error = [{"error": {"message": "private provider metadata", "details": [{
+        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+        "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}],
+    }]}}]
+    monkeypatch.setattr(llm, "TRANSPORT", httpx2.MockTransport(
+        lambda request: httpx2.Response(429, json=provider_error),
+    ))
+    before = snapshot(session_id)
+    with db.transaction() as tx:
+        count_before = tx.scalar(select(func.count()).select_from(Draft).where(
+            Draft.incident_id == incident_id,
+        ))
+    template = "/incidents/{incident_id}/drafts"
+    response = client.post(url(template, incident_id),
+                           headers=headers(session_id, "DisclosureApprover"))
+    project_error(response, 503, "DRAFTING_UNAVAILABLE")
+    matches_spec("POST", template, response)
+    assert response.json() == {
+        "error": "DRAFTING_UNAVAILABLE", "message": "Drafting unavailable",
+        "detail": "The daily AI drafting limit has been reached. "
+                  "Try again after the provider's daily quota resets.",
+    }
+    assert snapshot(session_id) == before
+    with db.transaction() as tx:
+        assert tx.scalar(select(func.count()).select_from(Draft).where(
+            Draft.incident_id == incident_id,
+        )) == count_before
 
 
 def test_groups_over_http(api_incident):
