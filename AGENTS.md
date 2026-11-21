@@ -12,7 +12,7 @@ The `AGENTS.md` files describe the code as it is, so an agent can rely on them i
 | `app/AGENTS.md` | Foundation modules (config, db, models, errors, roles, clock, sessions, audit) and the data model: the system's tables and enums |
 | `app/api/AGENTS.md` | The system's FastAPI app: identity headers, the status page, dashboard, health check, test-control routes, project routes, the 405 routes, and the 501 catch-all |
 | `app/services/AGENTS.md` | Business logic: the steps and error order every operation follows, sessions, roles, dates and versions, and what each operation does, test control and the 405 operations included |
-| `tester/AGENTS.md` | Our tester's FastAPI app, its session storage and cross-team test cases, and the rule that it never imports `app` |
+| `tester/AGENTS.md` | Our tester's FastAPI app, its session storage, cross-team test cases and LLM stub, and the rule that it never imports `app` |
 | `fixtures/AGENTS.md` | The incident, ticketing and SIEM fixtures our tester sends |
 | `tests/AGENTS.md` | The pytest suite: what each file covers, shared helpers and fixtures, and how to run it |
 | `scripts/AGENTS.md` | `setup_db.py`: the roles, grants and checks it applies, and what to update when changing it; `backfill_deadlines.py`: which missing due dates it fills, and when to run it |
@@ -52,7 +52,7 @@ The business logic is independent of the web framework; the FastAPI layer (route
 - `tester-openapi.yaml`: the Tracer Shared Tester API, copied and replaced the same way. The tester reads it.
 - `app/`: the system's foundation modules (`app/AGENTS.md`), its FastAPI app `system_app` in `app/api/`, and its business logic in `app/services/`.
 - `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester`, and serves a landing page at `/` (see Deployment).
-- `tester/`: our tester's FastAPI app, `tester_app`, its session storage, and the cross-team test cases it runs against a target system; it never imports `app`.
+- `tester/`: our tester's FastAPI app, `tester_app`, its session storage, the cross-team test cases it runs against a target system, and an LLM stub a session's `llm_base_url` can point at; it never imports `app`.
 - `fixtures/`: the incident, ticketing and SIEM fixtures our tester sends.
 - `scripts/setup_db.py`: creates the app and tester roles, the tables and the grants (see Database roles).
 - `scripts/backfill_deadlines.py`: fills missing 8-K due dates on existing Domestic Material incidents, as the app role.
@@ -138,7 +138,7 @@ Vercel runs the service and Neon's free plan hosts its Postgres: Vercel gives an
 - On the Hobby plan, only the project's owner sees its variables and logs, and runtime logs are kept for 1 hour.
 - Vercel installs from `pyproject.toml` and runs the Python version in `.python-version` (3.12, matching local). It loads `server:app` through `[tool.vercel]` `entrypoint`; without that it would auto-detect files such as `app.py` or `main.py` at the root or inside `app/`.
 - Deployment Protection stays at Standard: the production domain is public for testers, while preview and deployment-specific URLs need a Vercel login.
-- There's no `vercel.json`: the Hobby plan's default function limit of 300 s already covers the tester's longest request and a draft request's 59 s LLM call.
+- There's no `vercel.json`: the Hobby plan's default function limit of 300 s already covers the tester's longest request, a draft request's 59 s LLM call and the LLM stub's 65 s silent mode.
 - After a production deploy, `GET /system/health` returns 200 with `"database": "ok"` once the function reaches Neon. A 503 means the database can't be reached, `DATABASE_URL` is missing or malformed, or the URL names a driver we don't install (a bare `postgresql://`); the function log names the cause. Preview deployments have no `DATABASE_URL`, so a team member logged in to Vercel sees 503 there.
 - The server clock (UTC, NTP-synced) is Vercel's. Stored timestamps are timezone-aware UTC from `clock.utcnow()`, so the function's time zone setting doesn't matter.
 

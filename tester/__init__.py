@@ -1,9 +1,9 @@
 """Our tester's FastAPI app; server.py mounts it at /tester.
 
 It serves a page at GET / with how to run it and any stored report, the Tester API's setup,
-run and report routes, and 501 for every other path. runner.py does the work of setup and run;
-sessions and reports live in Postgres (see sessions.py). The tester reaches systems over HTTP
-only and never imports `app`.
+run and report routes, the LLM stub under /llm (see stub.py), and 501 for every other path.
+runner.py does the work of setup and run; sessions and reports live in Postgres (see
+sessions.py). The tester reaches systems over HTTP only and never imports `app`.
 """
 
 import logging
@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
-from tester import pages
+from tester import pages, stub
 from tester.runner import checked_target_url, prepare, run_session
 from tester.sessions import ControlError, get_report
 
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 
 tester_app = FastAPI(title="Tracer tester")
+tester_app.include_router(stub.router)
 
 
 @tester_app.get("/")
