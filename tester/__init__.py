@@ -87,6 +87,21 @@ def _session_id(value: Any) -> str:
     return value
 
 
+def public_url(request: Request) -> str:
+    """The tester's base URL as the caller reached it, so a target can reach the LLM stub.
+
+    Behind Vercel's proxy the app sees its own scheme and host, so X-Forwarded-Proto and
+    X-Forwarded-Host, which the proxy sets, name the public ones when present.
+    """
+
+    def forwarded(name: str) -> str:
+        return request.headers.get(name, "").split(",")[0].strip()
+
+    scheme = forwarded("x-forwarded-proto") or request.url.scheme
+    host = forwarded("x-forwarded-host") or request.url.netloc
+    return f"{scheme}://{host}{request.scope.get('root_path', '')}"
+
+
 # setup and run block on the target and the database, so they run in the thread pool.
 
 
@@ -107,7 +122,7 @@ async def run(request: Request) -> JSONResponse:
 
     async def work() -> dict[str, Any]:
         session_id = _session_id(await _field(request, "session_id"))
-        return await run_in_threadpool(run_session, session_id)
+        return await run_in_threadpool(run_session, session_id, public_url(request))
 
     return await _respond(work)
 

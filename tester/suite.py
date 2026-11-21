@@ -25,12 +25,16 @@ class Run:
     """One session's state, shared by the cases in order.
 
     It acts in the target's session unless `session_id` names another one the run prepared
-    with `prepare`; every session shares the target's deadline and `called`.
+    with `prepare`; every session shares the target's deadline and `called`. `tester_url` is
+    the tester's own base URL, where the target reaches the LLM stub; None when the run has
+    none, which faults every case that needs the stub.
     """
 
-    def __init__(self, target: Target, session_id: str | None = None):
+    def __init__(self, target: Target, session_id: str | None = None,
+                 tester_url: str | None = None):
         self.target = target
         self.session_id = target.session_id if session_id is None else session_id
+        self.tester_url = tester_url
         self._setups: dict[str, tuple[bool, Any]] = {}
         self._baseline: dict[str, Any] | None = None
 
@@ -49,13 +53,23 @@ class Run:
             raise Fail(f"{reply.label} sent test_now {test_now} for {self.session_id}, but the "
                        f"target returned run_id {run['run_id']}, test_now {run['test_now']}")
 
+    def set_llm(self, url: str) -> None:
+        """Set this session's llm_base_url (TEST-07); fail unless the target confirms it."""
+        self._baseline = None
+        reply = self.target.settings(self.session_id, {"llm_base_url": url})
+        run = expect(reply, 200)
+        if run["run_id"] != self.session_id or run["llm_base_url"] != url:
+            raise Fail(f"{reply.label} sent llm_base_url {url} for {self.session_id}, but the "
+                       f"target returned run_id {run['run_id']}, llm_base_url "
+                       f"{run['llm_base_url']}")
+
     def prepare(self, session_id: str, setup: dict[str, Any]) -> "Run":
         """Prepare another session on the target (TEST-01) and return a Run acting in it."""
         body = expect(self.target.setup(session_id, setup), 201)
         if body["session_id"] != session_id:
             raise Fail(f"POST /test/setup returned session_id {body['session_id']}, not "
                        f"{session_id}")
-        return Run(self.target, session_id)
+        return Run(self.target, session_id, self.tester_url)
 
     def once(self, key: str, build: Callable[[], Any]) -> Any:
         """Build a shared setup on first use; a failed build fails every case that needs it."""
@@ -150,13 +164,16 @@ def _difference(before: dict[str, Any], after: dict[str, Any]) -> str:
     return "audit entries, groups or run settings changed"
 
 
-def run_cases(cases: Iterable[Case], target: Target) -> list[dict[str, Any]]:
+def run_cases(
+    cases: Iterable[Case], target: Target, tester_url: str | None = None
+) -> list[dict[str, Any]]:
     """Run every case in order and return one TestResult per case.
 
     The case the deadline stops is an error from the tester, since its evaluation was cut
-    short, and every case after it is skipped.
+    short, and every case after it is skipped. `tester_url` is where the target reaches the
+    tester's LLM stub.
     """
-    run = Run(target)
+    run = Run(target, tester_url=tester_url)
     results = []
     stopped = False
     for test_id, case in cases:

@@ -1,5 +1,5 @@
-"""The cross-team test cases, in run order: AC-02, 03, 07, 08, 20, 14, 12, 13, 15, 06, 09, 23,
-then 01.
+"""The cross-team test cases, in run order: AC-21, 02, 03, 07, 08, 20, 14, 12, 13, 15, 06, 09,
+23, 04, 05, 19, 16, 17, 18, then 01.
 
 Each criterion has normal cases and edge cases (boundaries, bad input, wrong roles, unknown
 IDs). Pass rules are the course's acceptance criteria; expected statuses, error codes and
@@ -7,7 +7,7 @@ fields come from system-openapi.yaml, and expected due dates from the tester's o
 """
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -16,6 +16,7 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 
+from tester import stub
 from tester.business_days import add_business_days
 from tester.client import NO_BODY, Actor, Reply, TargetError
 from tester.suite import Case, Fail, Run, expect
@@ -49,7 +50,7 @@ TRANSITION_MOVES = {(DM, DELAYED), (DELAYED, DM), (DNM, CLOSED), (RECORDED, AMEN
                     (RECORDED, CLOSED)}
 FILING_MOVES = {(DM, RECORDED), (DELAYED, RECORDED), (AMENDMENT, RECORDED)}
 
-FORM_8K, FORM_8KA, FORM_6K = "8-K Item 1.05", "8-K/A", "6-K"
+FORM_8K, FORM_8KA, FORM_6K, FORM_801 = "8-K Item 1.05", "8-K/A", "6-K", "8-K Item 8.01"
 # The form a filing move files in a Domestic session: the incident's required_form (3.2.2).
 FILING_FORMS = {DM: FORM_8K, DELAYED: FORM_8K, AMENDMENT: FORM_8KA}
 DUE_FLAGS = ("warning", "overdue")
@@ -71,9 +72,18 @@ GROUPS = "/groups"
 UNKNOWN_ID = "tester-unknown-id"
 IMPOSSIBLE_DATE = "2026-02-30"
 
+# Drafts (REQ-15 to REQ-17, REQ-20).
+ELEMENTS = ("nature", "scope", "timing", "impact")
+UNDETERMINED = "Not yet determined"
+DRAFTING_UNAVAILABLE = "Drafting unavailable"
+# AC-21 (a): an LLM error comes back as "Drafting unavailable" within this many seconds.
+STUB_ERROR_SECONDS = 5
+IMPACT_CATEGORIES = ["operational", "financial", "legal_regulatory", "reputational",
+                     "data_compromised"]
+
 
 @cache
-def _fixture(name: str) -> list[dict[str, Any]]:
+def _fixture(name: str) -> Any:
     return json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
 
 
@@ -219,28 +229,53 @@ def incident_in(run: Run, state: str, n: int) -> Tracked:
 
 
 @contextmanager
-def clock_at(run: Run, day: date) -> Iterator[None]:
-    """Run the block with the session's test_now at 15:00 UTC on `day`.
+def _set_back(change: Callable[[], None], reset: Callable[[], None], what: str) -> Iterator[None]:
+    """Run the block after `change`, then `reset` however the block ends.
 
-    The clock goes back to the setup default however the block ends, since later cases assume
-    TODAY. A reset that fails fails the case; when the block already failed it, the reset's
-    failure is added to that message.
+    A reset that fails fails the case; when the block already failed it, the reset's failure
+    is added to that message. `what` names the reset in those messages.
     """
     try:
-        run.set_clock(f"{day.isoformat()}T15:00:00Z")
+        change()
         yield
     except Exception as exc:
         try:
-            run.set_clock(SETUP_TEST_NOW)
-        except Exception as reset:
+            reset()
+        except Exception as error:
             if isinstance(exc, Fail):
-                raise Fail(f"{exc}; also couldn't set test_now back to {SETUP_TEST_NOW}: "
-                           f"{reset}") from exc
+                raise Fail(f"{exc}; also couldn't set {what}: {error}") from exc
         raise
     try:
-        run.set_clock(SETUP_TEST_NOW)
+        reset()
     except Fail as exc:
-        raise Fail(f"Couldn't set test_now back to {SETUP_TEST_NOW}: {exc}")
+        raise Fail(f"Couldn't set {what}: {exc}")
+
+
+def clock_at(run: Run, day: date):
+    """Run the block with the session's test_now at 15:00 UTC on `day`, then set it back to the
+    setup default, since later cases assume TODAY."""
+    return _set_back(lambda: run.set_clock(f"{day.isoformat()}T15:00:00Z"),
+                     lambda: run.set_clock(SETUP_TEST_NOW), f"test_now back to {SETUP_TEST_NOW}")
+
+
+def tester_url(run: Run) -> str:
+    if run.tester_url is None:
+        raise RuntimeError("the run has no tester URL, so the target can't reach the LLM stub")
+    return run.tester_url
+
+
+def failure_stub(run: Run) -> str:
+    """The always-failing LLM stub, every session's llm_base_url outside llm_at (AC-21 (c))."""
+    return stub.fail_url(tester_url(run))
+
+
+def llm_at(run: Run, content: dict[str, Any] | str):
+    """Run the block with the session's LLM a stub replying `content` (JSON for a dict), then
+    set it back to the failure stub."""
+    text = content if isinstance(content, str) else json.dumps(content)
+    return _set_back(lambda: run.set_llm(stub.reply_url(tester_url(run), text)),
+                     lambda: run.set_llm(failure_stub(run)),
+                     "llm_base_url back to the failure stub")
 
 
 def expected_due(start: date, stated: date) -> date:
@@ -314,6 +349,156 @@ def problems_or(problems: list[str], prefix: str, message: str) -> str:
 
 def name(state: str) -> str:
     return SHORT.get(state, state)
+
+
+# Drafts. Each case decides what the model says through the tester's LLM stub (see llm_at).
+
+
+def material(run: Run, n: int, items: list[dict[str, Any]]) -> Tracked:
+    """A new Domestic Material incident whose evidence is these ticketing items."""
+    inc = create(run, n)
+    import_items(run, inc, "ticketing", items)
+    determine(run, inc)
+    return inc
+
+
+def drafting_subject(run: Run) -> Tracked:
+    """The Material incident AC-21, AC-09 (c), AC-16's and AC-17's faults and AC-18 draft."""
+    return run.once("drafting", lambda: material(run, 0, [ticket(18)]))
+
+
+def element(text: str, citations: list[str]) -> dict[str, Any]:
+    """A DraftElement as a model would send it, with no sensitive flags of its own."""
+    return {"text": text, "citations": list(citations), "sensitive_flags": []}
+
+
+def model_reply(**elements: dict[str, Any]) -> dict[str, Any]:
+    """The model's four elements: those given, the rest Not yet determined."""
+    return {name: elements.get(name, element(UNDETERMINED, [])) for name in ELEMENTS}
+
+
+def draft(run: Run, inc: Tracked, content: dict[str, Any] | str | None = None) -> Reply:
+    """Request a draft as DisclosureApprover, the model replying `content`; with None the
+    session keeps the failure stub."""
+    if content is None:
+        return run.call("POST", DRAFTS, APPROVER, incident_id=inc.id)
+    with llm_at(run, content):
+        return run.call("POST", DRAFTS, APPROVER, incident_id=inc.id)
+
+
+def materiality_fields(value: Any, path: str = "$") -> list[str]:
+    """Where a value has a key named materiality, which the spec says no draft contains."""
+    if isinstance(value, dict):
+        own = [f"{path}.{key}" for key in value if str(key).lower() == "materiality"]
+        return own + [f for key, item in value.items()
+                      for f in materiality_fields(item, f"{path}.{key}")]
+    if isinstance(value, list):
+        return [f for k, item in enumerate(value) for f in materiality_fields(item, f"{path}[{k}]")]
+    return []
+
+
+def structure_problems(draft_body: dict[str, Any], inc: Tracked) -> list[str]:
+    """AC-16's structure: this incident's Proposed advisory draft of its form, each of the
+    four elements with text or exactly Not yet determined, and no materiality field."""
+    problems = []
+    if draft_body["incident_id"] != inc.id:
+        problems.append(f"incident_id is {draft_body['incident_id']}, not {inc.id}")
+    if draft_body["form_type"] != FORM_8K:
+        problems.append(f"form_type is {draft_body['form_type']!r}, not {FORM_8K!r}")
+    if draft_body["status"] != "Proposed":
+        problems.append(f"status is {draft_body['status']!r}, not 'Proposed'")
+    problems += [f"it has a materiality field at {f}" for f in materiality_fields(draft_body)]
+    for name in ELEMENTS:
+        if not draft_body["elements"][name]["text"].strip():
+            problems.append(f"{name} has no text, not even {UNDETERMINED!r}")
+    return problems
+
+
+def citation_problems(draft_body: dict[str, Any], inc: Tracked) -> list[str]:
+    """AC-17 (a) and the spec: drafted text cites at least one of this incident's evidence IDs
+    and nothing else; Not yet determined has no citations or flags."""
+    problems = []
+    for name in ELEMENTS:
+        item = draft_body["elements"][name]
+        if item["text"] == UNDETERMINED:
+            if item["citations"] or item["sensitive_flags"]:
+                problems.append(f"{name} is {UNDETERMINED!r} with citations "
+                                f"{item['citations']} and flags {item['sensitive_flags']}")
+            continue
+        if not item["citations"]:
+            problems.append(f"{name} has text but no citations")
+        if foreign := [c for c in item["citations"] if c not in inc.evidence]:
+            problems.append(f"{name} cites {foreign}, not evidence of this incident")
+    return problems
+
+
+def unavailable(reply: Reply) -> str:
+    """Pass a 503 DRAFTING_UNAVAILABLE whose message is exactly Drafting unavailable."""
+    body = expect(reply, 503, "DRAFTING_UNAVAILABLE")
+    if body["message"] != DRAFTING_UNAVAILABLE:
+        raise Fail(f"{reply.label}: 503 message is {body['message']!r}, not "
+                   f"{DRAFTING_UNAVAILABLE!r}")
+    return f"503 {DRAFTING_UNAVAILABLE}"
+
+
+def not_passed_on(run: Run, inc: Tracked, content: dict[str, Any], what: str) -> str:
+    """Draft with a reply the system must not pass on as sent. A 503 Drafting unavailable
+    passes, and so does a 201 draft that keeps the spec's rules without it; either way the
+    incident's state and version stay as they were."""
+    reply = draft(run, inc, content)
+    if reply.status == 201:
+        body = expect(reply, 201)
+        problems = structure_problems(body, inc) + citation_problems(body, inc)
+        message = problems_or(problems, f"{reply.label} drafted {what}",
+                              f"201 draft without {what}, keeping the spec's rules")
+    else:
+        message = f"{unavailable(reply)} for {what}"
+    return f"{message}; {incident_kept(run, inc, reply.label)}"
+
+
+def incident_kept(run: Run, inc: Tracked, label: str) -> str:
+    """Fail unless the incident still has the state and version the tester last saw; a draft
+    request changes neither."""
+    incident = get(run, inc.id)
+    if (incident["state"], incident["version"]) != (inc.state, inc.version):
+        raise Fail(f"{label} moved the incident from {inc.state} at version {inc.version} to "
+                   f"{incident['state']} at version {incident['version']}")
+    return f"still {inc.state} at version {inc.version}"
+
+
+# AC-21 (a) and (c) (REQ-20): an LLM failure is "Drafting unavailable" within 5 s, and the
+# rest works without an LLM. The session's LLM is the tester's failure stub from the first case
+# on, and every case that drafts sets it back, so AC-01 to AC-15's cases run with it down. AC-21
+# (b), no answer within 60 s, is left to the system's own tests: a call that long breaks the
+# pod's 10 s project call limit.
+
+
+def ac21() -> list[Case]:
+    def stub_down(run: Run) -> str:
+        url = failure_stub(run)
+        run.set_llm(url)
+        return (f"llm_base_url set to the tester's failure stub, {url}, for every case outside "
+                "a draft; AC-01 to AC-15's cases run with it down")
+
+    def unavailable_within(content: str | None, cause: str):
+        def case(run: Run) -> str:
+            inc = drafting_subject(run)
+            reply = draft(run, inc, content)
+            message = unavailable(reply)
+            took = (reply.received_at - reply.sent_at).total_seconds()
+            if took > STUB_ERROR_SECONDS:
+                raise Fail(f"{message} took {took:.1f} s, not {STUB_ERROR_SECONDS} s or less")
+            return (f"{message} {took:.1f} s after {cause}; "
+                    f"{incident_kept(run, inc, reply.label)}")
+        return case
+
+    return [
+        ("AC-21-c-session-uses-failure-stub", stub_down),
+        ("AC-21-a-stub-error-drafting-unavailable",
+         unavailable_within(None, "the stub's 500")),
+        ("AC-21-a-non-JSON-reply-drafting-unavailable",
+         unavailable_within("The model is unavailable.", "a reply that isn't JSON")),
+    ]
 
 
 # AC-02 (REQ-02): an imported item records its source, the importing user and server time.
@@ -879,7 +1064,8 @@ FPI_LATE = date(2026, 11, 30)
 def ac13() -> list[Case]:
     def subject(run: Run) -> tuple[Run, Tracked, dict[str, Any]]:
         def build() -> tuple[Run, Tracked, dict[str, Any]]:
-            fpi = run.prepare(f"{run.session_id}-fpi", {"registrant_type": "FPI"})
+            fpi = run.prepare(f"{run.session_id}-fpi",
+                              {"registrant_type": "FPI", "llm_base_url": failure_stub(run)})
             inc = create(fpi, 8)
             import_items(fpi, inc, "ticketing", [ticket(17)])
             return fpi, inc, determine(fpi, inc, day=FPI_DETERMINED)
@@ -1150,7 +1336,38 @@ def ac09() -> list[Case]:
                                "state UnderAssessment")
         return case
 
-    return [(f"AC-09-a-incident-{n + 1:02d}", case_for(n)) for n in range(10)]
+    def material_draft(run: Run) -> tuple[dict, Reply, dict]:
+        def build() -> tuple[dict, Reply, dict]:
+            inc = drafting_subject(run)
+            before = get(run, inc.id)
+            reply = draft(run, inc, model_reply(
+                nature=element("An unauthorized party encrypted files on a shared drive.",
+                               inc.evidence[:1])))
+            return before, reply, get(run, inc.id)
+        return run.once("ac09-c", build)
+
+    def no_materiality(run: Run) -> str:
+        before, reply, after = material_draft(run)
+        body = expect(reply, 201)
+        problems = [f"the draft has a materiality field at {f}" for f in materiality_fields(body)]
+        problems += [f"the draft changed {key} from {before.get(key)!r} to {after.get(key)!r}"
+                     for key in ("state", "version", "determination")
+                     if after.get(key) != before.get(key)]
+        return problems_or(problems, reply.label,
+                           "201 draft with no materiality field; the recorded determination, "
+                           "state and version unchanged")
+
+    def materiality_dropped(run: Run) -> str:
+        inc = drafting_subject(run)
+        content = {**model_reply(nature=element("Files on a shared drive were encrypted.",
+                                                inc.evidence[:1])), "materiality": "Material"}
+        return not_passed_on(run, inc, content, "the model's materiality field")
+
+    return [
+        *((f"AC-09-a-incident-{n + 1:02d}", case_for(n)) for n in range(10)),
+        ("AC-09-c-draft-has-no-materiality-field", no_materiality),
+        ("AC-09-c-model-materiality-not-passed-on", materiality_dropped),
+    ]
 
 
 # AC-23 (a)-(c) (REQ-22): every action is audited; audit entries, incidents and evidence
@@ -1334,6 +1551,446 @@ def ac23() -> list[Case]:
     ]
 
 
+# AC-04 (REQ-04): three incidents link into a group, one determination applies to all of them,
+# a second link creates no duplicate, and an incident can't link to itself.
+
+
+def ac04() -> list[Case]:
+    def members(run: Run) -> list[Tracked]:
+        def build() -> list[Tracked]:
+            incidents = [create(run, n) for n in (0, 1, 2)]
+            import_items(run, incidents[0], "ticketing", [ticket(19)])
+            return incidents
+        return run.once("ac04", build)
+
+    def grouped(run: Run) -> tuple[dict, list[dict], list[int]]:
+        def build() -> tuple[dict, list[dict], list[int]]:
+            incidents = members(run)
+            versions = [inc.version for inc in incidents]
+            group = expect(run.call("POST", GROUPS, RESPONDER,
+                                    json={"incident_ids": [inc.id for inc in incidents]}), 201)
+            read = [get(run, inc.id) for inc in incidents]
+            for inc, incident in zip(incidents, read):
+                inc.update(incident)
+            return group, read, versions
+        return run.once("ac04-group", build)
+
+    def ungrouped(run: Run, key: str, n: int) -> Tracked:
+        return run.once(key, lambda: create(run, n))
+
+    def group_created(run: Run) -> str:
+        group, read, versions = grouped(run)
+        ids = [inc.id for inc in members(run)]
+        problems = []
+        if sorted(group["incident_ids"]) != sorted(ids):
+            problems.append(f"the group lists {group['incident_ids']}, not {ids}")
+        for incident, version in zip(read, versions):
+            if incident.get("group_id") != group["group_id"]:
+                problems.append(f"{incident['incident_id']} has group_id "
+                                f"{incident.get('group_id')!r}")
+            if (incident["state"], incident["version"]) != (UA, version + 1):
+                problems.append(f"{incident['incident_id']} is {incident['state']} at version "
+                                f"{incident['version']}, not {UA} at {version + 1}")
+        return problems_or(problems, "POST /groups",
+                           "201; all three carry the group_id, still UnderAssessment, version +1")
+
+    def relinked(run: Run) -> str:
+        grouped(run)
+        first, second, _ = members(run)
+        message = rejected(run, "POST", GROUPS, APPROVER, {"incident_ids": [first.id, second.id]},
+                           409, "CONFLICT")
+        return f"{message}: linking grouped incidents again creates no duplicate"
+
+    def refused(body, status: int, error: str, field: str | None = None, actor=RESPONDER):
+        def case(run: Run) -> str:
+            return rejected(run, "POST", GROUPS, actor, body(run), status, error, field)
+        return case
+
+    def single(run: Run) -> str:
+        return ungrouped(run, "ac04-single", 3).id
+
+    def pair(run: Run) -> list[str]:
+        return [single(run), ungrouped(run, "ac04-second", 4).id]
+
+    def with_material(run: Run) -> list[str]:
+        return [single(run), run.once("ac04-dm", lambda: incident_in(run, DM, 5)).id]
+
+    def determined_together(run: Run) -> str:
+        grouped(run)
+        incidents = members(run)
+        # No member can be determined before its discovery, so the date is the latest one's.
+        day = max(inc.discovery for inc in incidents)
+        decision = determine(run, incidents[0], day=day)["determination"]
+        problems = []
+        for inc in incidents[1:]:
+            incident = get(run, inc.id)
+            stored = incident.get("determination") or {}
+            if incident["state"] != DM:
+                problems.append(f"{inc.id} is {incident['state']}, not {DM}")
+            if (stored.get("decision"), stored.get("determination_date")) != (
+                    decision["decision"], decision["determination_date"]):
+                problems.append(f"{inc.id} has determination {incident.get('determination')}")
+        return problems_or(problems, "Determination on one member",
+                           f"All three {DM} with the same Material determination")
+
+    return [
+        ("AC-04-three-incidents-grouped", group_created),
+        ("AC-04-second-link-no-duplicate", relinked),
+        ("AC-04-self-link-rejected",
+         refused(lambda run: {"incident_ids": [single(run), single(run)]}, 400,
+                 "VALIDATION_ERROR", "incident_ids")),
+        ("AC-04-one-incident-rejected",
+         refused(lambda run: {"incident_ids": [single(run)]}, 400, "VALIDATION_ERROR",
+                 "incident_ids")),
+        ("AC-04-group-as-Board-forbidden",
+         refused(lambda run: {"incident_ids": pair(run)}, 403, "FORBIDDEN_ROLE", actor=BOARD)),
+        ("AC-04-unknown-incident",
+         refused(lambda run: {"incident_ids": [single(run), UNKNOWN_ID]}, 404, "NOT_FOUND")),
+        ("AC-04-member-not-under-assessment",
+         refused(lambda run: {"incident_ids": with_material(run)}, 409, "CONFLICT")),
+        ("AC-04-group-determination-on-all", determined_together),
+    ]
+
+
+# AC-05 (REQ-05): an evidence item stores all five impact categories; an undefined one is
+# rejected with the item unchanged.
+
+
+def ac05() -> list[Case]:
+    def subject(run: Run) -> Tracked:
+        def build() -> Tracked:
+            inc = create(run, 6)
+            import_items(run, inc, "ticketing", [ticket(3)])
+            return inc
+        return run.once("ac05", build)
+
+    def path(run: Run, evidence_id: str | None = None) -> dict[str, str]:
+        inc = subject(run)
+        return {"incident_id": inc.id, "evidence_id": evidence_id or inc.evidence[0]}
+
+    def tag(run: Run, categories: list[str], actor: Actor = RESPONDER) -> dict[str, Any]:
+        reply = run.call("PATCH", EVIDENCE, actor, json={"impact_categories": categories},
+                         **path(run))
+        return expect(reply, 200)
+
+    def stored_categories(run: Run) -> list[str]:
+        inc = subject(run)
+        found = [e for e in get(run, inc.id, BOARD)["evidence"]
+                 if e["evidence_id"] == inc.evidence[0]]
+        if len(found) != 1:
+            raise Fail(f"GET as Board lists {len(found)} items with the tagged evidence_id")
+        return found[0]["impact_categories"]
+
+    def tagged(run: Run) -> dict[str, Any]:
+        return run.once("ac05-tagged", lambda: tag(run, IMPACT_CATEGORIES))
+
+    def all_five(run: Run) -> str:
+        item = tagged(run)
+        problems = []
+        if sorted(item["impact_categories"]) != sorted(IMPACT_CATEGORIES):
+            problems.append(f"the response has {item['impact_categories']}")
+        if sorted(stored := stored_categories(run)) != sorted(IMPACT_CATEGORIES):
+            problems.append(f"GET as Board reads {stored}")
+        return problems_or(problems, "PATCH with all five categories",
+                           f"200; all five read back: {', '.join(IMPACT_CATEGORIES)}")
+
+    def bad(categories: list[str], status: int = 400, error: str = "VALIDATION_ERROR",
+            field: str | None = "impact_categories", actor: Actor = RESPONDER):
+        def case(run: Run) -> str:
+            tagged(run)
+            return rejected(run, "PATCH", EVIDENCE, actor, {"impact_categories": categories},
+                            status, error, field, **path(run))
+        return case
+
+    def unknown_evidence(run: Run) -> str:
+        reply = run.call("PATCH", EVIDENCE, RESPONDER, json={"impact_categories": ["financial"]},
+                         **path(run, UNKNOWN_ID))
+        expect(reply, 404, "NOT_FOUND")
+        return "404 NOT_FOUND"
+
+    def replaced(run: Run) -> str:
+        tagged(run)
+        item = tag(run, ["financial"], APPROVER)
+        problems = []
+        if item["impact_categories"] != ["financial"]:
+            problems.append(f"the response has {item['impact_categories']}")
+        if (stored := stored_categories(run)) != ["financial"]:
+            problems.append(f"GET as Board reads {stored}")
+        return problems_or(problems, "PATCH as DisclosureApprover",
+                           "200; the five categories replaced by financial alone")
+
+    return [
+        ("AC-05-five-categories-stored", all_five),
+        ("AC-05-misc-rejected", bad(["misc"])),
+        ("AC-05-misc-among-valid-rejected", bad(["operational", "misc"])),
+        ("AC-05-repeated-category-rejected", bad(["operational", "operational"])),
+        ("AC-05-tag-as-Board-forbidden",
+         bad(["financial"], 403, "FORBIDDEN_ROLE", None, actor=BOARD)),
+        ("AC-05-unknown-evidence", unknown_evidence),
+        ("AC-05-tags-replaced-by-approver", replaced),
+    ]
+
+
+# AC-19 (REQ-18): a NotMaterial incident marked for voluntary disclosure is designated 8-K
+# Item 8.01; a Material one stays Item 1.05.
+
+
+def ac19() -> list[Case]:
+    def evidenced(run: Run, key: str, n: int) -> Tracked:
+        def build() -> Tracked:
+            inc = create(run, n)
+            import_items(run, inc, "ticketing", [ticket(n + 1)])
+            return inc
+        return run.once(key, build)
+
+    def voluntary(run: Run) -> tuple[Tracked, dict, dict]:
+        def build() -> tuple[Tracked, dict, dict]:
+            inc = evidenced(run, "ac19-a-incident", 7)
+            body = {**determination(inc, "NotMaterial"), "voluntary_disclosure": True}
+            incident = expect(run.call("POST", DETERMINATION, APPROVER, json=body,
+                                       incident_id=inc.id), 200)
+            inc.update(incident)
+            return inc, body, incident
+        return run.once("ac19-a", build)
+
+    def item_801(incident: dict[str, Any]) -> list[str]:
+        problems = []
+        if incident.get("required_form") != FORM_801:
+            problems.append(f"required_form is {incident.get('required_form')!r}, not "
+                            f"{FORM_801!r}")
+        if incident.get("due_date") is not None:
+            problems.append(f"due_date is {incident['due_date']}, not null")
+        if (incident.get("determination") or {}).get("voluntary_disclosure") is not True:
+            problems.append("the determination doesn't record voluntary_disclosure true")
+        return problems
+
+    def designated(run: Run) -> str:
+        _, body, incident = voluntary(run)
+        problems = determination_problems(body, incident, DNM) + item_801(incident)
+        return problems_or(problems, "NotMaterial with voluntary_disclosure",
+                           f"200; {DNM}, required_form {FORM_801}, due_date null")
+
+    def retrievable(run: Run) -> str:
+        inc = voluntary(run)[0]
+        return problems_or(item_801(get(run, inc.id, BOARD)), "GET as Board",
+                           f"required_form {FORM_801} and voluntary_disclosure true read back")
+
+    def stays_105(run: Run) -> str:
+        voluntary(run)
+        inc = run.once("ac19-b", lambda: material(run, 8, [ticket(9)]))
+        incident = get(run, inc.id)
+        if incident.get("required_form") != FORM_8K:
+            raise Fail(f"required_form is {incident.get('required_form')!r}, not {FORM_8K!r}")
+        return f"The Material incident stays {FORM_8K} after the other's voluntary disclosure"
+
+    def bad(decision: str, value: Any):
+        def case(run: Run) -> str:
+            inc = evidenced(run, "ac19-undetermined", 9)
+            body = {**determination(inc, decision), "voluntary_disclosure": value}
+            return rejected(run, "POST", DETERMINATION, APPROVER, body, 400, "VALIDATION_ERROR",
+                            "voluntary_disclosure", incident_id=inc.id)
+        return case
+
+    return [
+        ("AC-19-voluntary-not-material-gives-8-01", designated),
+        ("AC-19-voluntary-retrievable", retrievable),
+        ("AC-19-material-stays-1-05", stays_105),
+        ("AC-19-voluntary-with-Material-rejected", bad("Material", True)),
+        ("AC-19-voluntary-not-boolean-rejected", bad("NotMaterial", "yes")),
+    ]
+
+
+# AC-16 (REQ-15): drafts of 10 Material incidents each have all four elements, with text or
+# "Not yet determined". The model's replies come from the stub, so the checks are structural.
+
+AC16_TEXTS = {
+    "nature": "An unauthorized party encrypted files on a shared drive.",
+    "scope": "About 120 employees lost access to three shared folders.",
+    "timing": "The activity was detected and contained the day it began.",
+    "impact": "Operations were interrupted for about two hours.",
+}
+# The drafts whose model leaves impact Not yet determined.
+AC16_UNDETERMINED_IMPACT = {2, 5, 8}
+
+
+def ac16_draft(run: Run, k: int) -> tuple[Tracked, dict[str, Any], dict[str, Any]]:
+    """AC-16's kth incident with four tickets, the model's reply, and the 201 draft."""
+    def build() -> tuple[Tracked, dict[str, Any], dict[str, Any]]:
+        inc = material(run, k, [ticket(4 * k + j) for j in range(4)])
+        content = model_reply(**{
+            name: element(AC16_TEXTS[name], [inc.evidence[j]])
+            for j, name in enumerate(ELEMENTS)
+            if not (name == "impact" and k in AC16_UNDETERMINED_IMPACT)})
+        return inc, content, expect(draft(run, inc, content), 201)
+    return run.once(f"ac16-{k}", build)
+
+
+def ac16() -> list[Case]:
+    def structured(k: int):
+        def case(run: Run) -> str:
+            inc, content, body = ac16_draft(run, k)
+            problems = structure_problems(body, inc)
+            problems += [f"{name} reads {body['elements'][name]['text']!r}, not the model's "
+                         f"{content[name]['text']!r}" for name in ELEMENTS
+                         if body["elements"][name]["text"] != content[name]["text"]]
+            undetermined = [n for n in ELEMENTS if content[n]["text"] == UNDETERMINED]
+            return problems_or(problems, f"Draft {k + 1}",
+                               f"201 Proposed {FORM_8K} draft with all four elements"
+                               + (f", {undetermined[0]} {UNDETERMINED!r}" if undetermined else ""))
+        return case
+
+    def missing_impact(run: Run) -> str:
+        inc = drafting_subject(run)
+        content = model_reply(nature=element(AC16_TEXTS["nature"], inc.evidence[:1]))
+        del content["impact"]
+        return not_passed_on(run, inc, content, "a reply missing impact")
+
+    def ua(run: Run) -> Tracked:
+        return run.once("ac16-ua", lambda: incident_in(run, UA, 9))
+
+    def refused(subject, actor: Actor, status: int, error: str):
+        def case(run: Run) -> str:
+            return rejected(run, "POST", DRAFTS, actor, NO_BODY, status, error,
+                            incident_id=subject(run).id)
+        return case
+
+    def unknown_incident(run: Run) -> str:
+        expect(run.call("POST", DRAFTS, APPROVER, incident_id=UNKNOWN_ID), 404, "NOT_FOUND")
+        return "404 NOT_FOUND"
+
+    return [
+        *((f"AC-16-draft-{k + 1:02d}-has-four-elements", structured(k)) for k in range(10)),
+        ("AC-16-reply-missing-element-not-passed-on", missing_impact),
+        ("AC-16-draft-as-Responder-forbidden",
+         refused(drafting_subject, RESPONDER, 403, "FORBIDDEN_ROLE")),
+        ("AC-16-draft-under-assessment-rejected", refused(ua, APPROVER, 409, "NOT_MATERIAL")),
+        ("AC-16-draft-unknown-incident", unknown_incident),
+    ]
+
+
+# AC-17 (REQ-16): every drafted statement cites the incident's own evidence, and the impact of
+# 5 incidents without impact evidence is exactly "Not yet determined".
+
+
+def ac17() -> list[Case]:
+    def cited(k: int):
+        def case(run: Run) -> str:
+            inc, _, body = ac16_draft(run, k)
+            count = sum(len(body["elements"][name]["citations"]) for name in ELEMENTS)
+            return problems_or(citation_problems(body, inc), f"Draft {k + 1}",
+                               f"{count} citations, all to this incident's evidence; every "
+                               "drafted element cites at least one")
+        return case
+
+    def no_impact_draft(run: Run, k: int) -> tuple[Tracked, dict[str, Any]]:
+        def build() -> tuple[Tracked, dict[str, Any]]:
+            inc = material(run, k, [ticket(4 * k + j + 2) for j in range(3)])
+            content = model_reply(**{name: element(AC16_TEXTS[name], [inc.evidence[j]])
+                                     for j, name in enumerate(ELEMENTS[:3])})
+            return inc, expect(draft(run, inc, content), 201)
+        return run.once(f"ac17-b-{k}", build)
+
+    def impact_undetermined(k: int):
+        def case(run: Run) -> str:
+            inc, body = no_impact_draft(run, k)
+            impact = body["elements"]["impact"]
+            problems = citation_problems(body, inc)
+            if impact != element(UNDETERMINED, []):
+                problems.insert(0, f"impact is {impact}")
+            return problems_or(problems, f"Incident {k + 1} without impact evidence",
+                               f"impact exactly {UNDETERMINED!r}, no citations or flags")
+        return case
+
+    def other(run: Run) -> Tracked:
+        def build() -> Tracked:
+            inc = create(run, 7)
+            import_items(run, inc, "ticketing", [ticket(17)])
+            return inc
+        return run.once("ac17-other", build)
+
+    def fault(citations, what: str):
+        def case(run: Run) -> str:
+            inc = drafting_subject(run)
+            content = model_reply(nature=element(AC16_TEXTS["nature"], citations(run, inc)))
+            return not_passed_on(run, inc, content, what)
+        return case
+
+    return [
+        *((f"AC-17-a-draft-{k + 1:02d}-cites-own-evidence", cited(k)) for k in range(10)),
+        *((f"AC-17-b-incident-{k + 1:02d}-impact-not-yet-determined", impact_undetermined(k))
+          for k in range(5)),
+        ("AC-17-a-other-incident-citation-not-passed-on",
+         fault(lambda run, inc: other(run).evidence[:1],
+               "a citation of another incident's evidence")),
+        ("AC-17-a-unknown-citation-not-passed-on",
+         fault(lambda run, inc: [UNKNOWN_ID], "a citation of an unknown evidence ID")),
+        ("AC-17-a-uncited-text-not-passed-on",
+         fault(lambda run, inc: [], "drafted text without citations")),
+    ]
+
+
+# AC-18 (REQ-17): of 20 labeled texts, at least 9 of the 10 with technical details are flagged
+# and at most 2 of the 10 without. The stub drafts them four at a time, one per element, and a
+# text counts as flagged when its element has a sensitive flag.
+
+LABELED_TEXTS = "evaluation/sensitive_texts"
+
+
+def labeled_texts() -> list[dict[str, Any]]:
+    """The team's 20 labeled texts; anything but 10 detailed and 10 clean is a tester fault."""
+    texts = _fixture(LABELED_TEXTS)["texts"]
+    if len(texts) != 20 or sum(bool(t["expected_sensitive"]) for t in texts) != 10:
+        raise RuntimeError(f"fixtures/{LABELED_TEXTS}.json must hold 10 detailed and 10 clean "
+                           "texts")
+    return texts
+
+
+def ac18() -> list[Case]:
+    texts = labeled_texts()
+
+    def flagged(run: Run) -> dict[str, bool]:
+        def build() -> dict[str, bool]:
+            inc = drafting_subject(run)
+            found: dict[str, bool] = {}
+            for start in range(0, len(texts), len(ELEMENTS)):
+                batch = dict(zip(ELEMENTS, texts[start:start + len(ELEMENTS)]))
+                content = {name: element(t["text"], [] if t["text"] == UNDETERMINED
+                                         else inc.evidence[:1]) for name, t in batch.items()}
+                body = expect(draft(run, inc, content), 201)
+                for name, t in batch.items():
+                    item = body["elements"][name]
+                    if item["text"] != t["text"]:
+                        raise Fail(f"{name} came back as {item['text']!r}, not "
+                                   f"{t['text_id']}'s {t['text']!r}")
+                    found[t["text_id"]] = bool(item["sensitive_flags"])
+            return found
+        return run.once("ac18", build)
+
+    def detailed(run: Run) -> str:
+        found = flagged(run)
+        ids = [t["text_id"] for t in texts if t["expected_sensitive"]]
+        missed = [i for i in ids if not found[i]]
+        if len(ids) - len(missed) < 9:
+            raise Fail(f"{len(ids) - len(missed)}/10 detailed texts flagged, below 9; not "
+                       f"flagged: {', '.join(missed)}")
+        return (f"{len(ids) - len(missed)}/10 detailed texts flagged (at least 9)"
+                + (f"; not flagged: {', '.join(missed)}" if missed else ""))
+
+    def clean(run: Run) -> str:
+        found = flagged(run)
+        wrong = [t["text_id"] for t in texts
+                 if not t["expected_sensitive"] and found[t["text_id"]]]
+        if len(wrong) > 2:
+            raise Fail(f"{len(wrong)}/10 clean texts flagged, above 2: {', '.join(wrong)}")
+        return (f"{len(wrong)}/10 clean texts flagged (at most 2)"
+                + (f": {', '.join(wrong)}" if wrong else ""))
+
+    return [
+        ("AC-18-detailed-texts-flagged", detailed),
+        ("AC-18-clean-texts-not-flagged", clean),
+    ]
+
+
 # AC-01 (REQ-01): 100 creates get distinct IDs and are stored as sent, in UnderAssessment.
 # It runs last so its incidents don't enlarge every earlier snapshot.
 
@@ -1421,5 +2078,6 @@ def ac01() -> list[Case]:
 
 def planned() -> list[Case]:
     """Every case in run order; their test IDs are stable and unique."""
-    return [*ac02(), *ac03(), *ac07(), *ac08(), *ac20(), *ac14(), *ac12(), *ac13(), *ac15(),
-            *ac06(), *ac09(), *ac23(), *ac01()]
+    return [*ac21(), *ac02(), *ac03(), *ac07(), *ac08(), *ac20(), *ac14(), *ac12(), *ac13(),
+            *ac15(), *ac06(), *ac09(), *ac23(), *ac04(), *ac05(), *ac19(), *ac16(), *ac17(),
+            *ac18(), *ac01()]

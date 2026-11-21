@@ -89,12 +89,13 @@ def _setup_failure(status: int, body: Any) -> ControlError:
     return ControlError(status, body["message"], body["source"])
 
 
-def run_session(session_id: str) -> dict[str, Any]:
+def run_session(session_id: str, tester_url: str | None = None) -> dict[str, Any]:
     """Run every planned case against a prepared session and store its report (TEST-04).
 
-    Returns the report of a finished run. Raises 404 or 409 before anything runs, and 500 once
-    the run is aborted: by the deadline, by an invalid report, or by a fault in the tester. An
-    aborted run's report is stored first.
+    `tester_url` is the tester's own base URL, which the drafting cases give the target as
+    LLM stub URLs. Returns the report of a finished run. Raises 404 or 409 before anything
+    runs, and 500 once the run is aborted: by the deadline, by an invalid report, or by a fault
+    in the tester. An aborted run's report is stored first.
     """
     # Planned before the run starts: planning reads the fixture files, and if that fails the
     # session stays ready instead of running.
@@ -104,7 +105,7 @@ def run_session(session_id: str) -> dict[str, Any]:
     try:
         with client_for(target_url) as http:
             target = Target(http, session_id, deadline=time.monotonic() + CALL_CUTOFF_SECONDS)
-            results = run_cases(cases, target)
+            results = run_cases(cases, target, tester_url)
             report = {
                 "session_id": session_id,
                 "target_url": target_url,

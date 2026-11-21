@@ -5,6 +5,8 @@ Only the routes and rules the cases use are built; the rest return 501. Due date
 own holiday calendar, so the tester's expected dates are checked against an independent one.
 """
 
+import ipaddress
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -16,6 +18,7 @@ from urllib.parse import urlsplit
 import holidays
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 
 ROLES = {"Responder", "DisclosureApprover", "Board"}
 STATES = [
@@ -34,6 +37,20 @@ FILABLE = {"DeterminedMaterial", "DisclosureDelayed", "AmendmentPending"}
 FILING_FORMS = {"8-K Item 1.05", "6-K", "8-K/A"}
 SEVERITIES = {"low", "medium", "high", "critical"}
 ELEMENTS = {"nature", "scope", "timing", "impact"}
+DRAFT_ELEMENTS = ("nature", "scope", "timing", "impact")
+UNDETERMINED = "Not yet determined"
+CATEGORIES = {"operational", "financial", "legal_regulatory", "reputational", "data_compromised"}
+# Drafting is allowed from these states; UnderAssessment and DeterminedNotMaterial aren't material.
+DRAFTABLE = {"DeterminedMaterial", "DisclosureDelayed", "AmendmentPending"}
+# Its own sensitive-detail patterns, independent of the system's.
+SENSITIVE = [
+    (re.compile(r"\bCVE-\d{4}-\d{4,}\b"), "CVE"),
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "IP address"),
+    (re.compile(r"(?<![\w:])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![\w:])"), "IP address"),
+    (re.compile(r"\b[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+){2,}\b"), "hostname"),
+    (re.compile(r"\bunpatched \w+"), "unpatched system"),
+    (re.compile(r"\bfirewall rules?\b"), "firewall rule"),
+]
 ITEM_FIELDS = {
     "ticketing": ("ticket_id", "summary", "created_at"),
     "siem": ("alert_id", "rule_name", "severity", "detected_at"),
@@ -76,6 +93,24 @@ BUGS = {
     "recorded_reopens",         # /transitions allows DisclosureRecorded → DeterminedMaterial
     "amendment_closes",         # /transitions allows AmendmentPending → Closed
     "flags_not_built",          # flags are always empty
+    "llm_url_fixed",            # the settings route rejects llm_base_url
+    "drafting_message",         # a drafting failure's 503 says "LLM unavailable"
+    "draft_drops_impact",       # drafts leave out the impact element
+    "draft_keeps_missing_element",  # an element the model left out is left out of the draft
+    "draft_keeps_materiality",  # a model's extra keys, materiality included, reach the draft
+    "draft_moves_incident",     # a draft request adds 1 to the incident's version
+    "draft_keeps_foreign_citation",  # a citation of another incident's evidence is kept
+    "draft_keeps_uncited_text",  # drafted text without citations is kept
+    "draft_rewrites_undetermined",  # Not yet determined comes back with a full stop
+    "flags_nothing",            # drafts never carry sensitive flags
+    "flags_everything",         # every drafted element gets a sensitive flag
+    "group_self_link",          # a group may list the same incident twice
+    "group_relinks",            # incidents already in a group can join another
+    "group_determination_alone",  # a determination on a member applies to it alone
+    "misc_tag_accepted",        # any string is accepted as an impact category
+    "tags_not_stored",          # tagging answers 200 but stores nothing
+    "voluntary_ignored",        # voluntary_disclosure is accepted but never designates 8.01
+    "voluntary_with_material",  # voluntary_disclosure true is accepted with Material
 }
 
 
@@ -111,6 +146,7 @@ class Session:
     incidents: dict[str, dict[str, Any]] = field(default_factory=dict)
     evidence: dict[str, dict[str, Any]] = field(default_factory=dict)
     audit: list[dict[str, Any]] = field(default_factory=list)
+    groups: dict[str, list[str]] = field(default_factory=dict)
     # Incidents with a filing for their current required_form, which clears the due-date flags.
     filed: set[str] = field(default_factory=set)
 
@@ -194,16 +230,54 @@ async def control_body(request: Request) -> dict[str, Any] | None:
     return body if isinstance(body, dict) else None
 
 
+def sensitive_flags(text: str) -> list[dict[str, str]]:
+    flags: list[dict[str, str]] = []
+    for pattern, reason in SENSITIVE:
+        for match in pattern.finditer(text):
+            excerpt = match.group(0)
+            if reason == "hostname" and not any(c.isalpha() for c in excerpt):
+                continue
+            if reason == "IP address" and ":" in excerpt:
+                try:
+                    ipaddress.IPv6Address(excerpt)
+                except ValueError:
+                    continue
+            if all(f["excerpt"] != excerpt for f in flags):
+                flags.append({"excerpt": excerpt, "reason": reason})
+    return flags
+
+
+def stub_client() -> TestClient:
+    """Reaches the tester's LLM stub in-process, at any host, as the tester mounts it."""
+    from tester import tester_app
+
+    server = FastAPI()
+    server.mount("/tester", tester_app)
+    return TestClient(server)
+
+
 class FakeSystem:
-    def __init__(self, bugs: set[str] = frozenset(), elements_first: bool = False):
+    def __init__(self, bugs: set[str] = frozenset(), elements_first: bool = False,
+                 repairs_drafts: bool = False):
         """`elements_first` checks AmendmentPending's elements against the latest filing before
-        the state, a 400 on `elements[i]` where there's no filing; the spec allows either order."""
+        the state, a 400 on `elements[i]` where there's no filing; the spec allows either order.
+        `repairs_drafts` repairs a model reply that breaks the draft rules (dropping extra keys
+        and bad citations, and putting Not yet determined for what's left unsupported) instead
+        of answering 503; the spec allows either."""
         unknown = set(bugs) - BUGS
         assert not unknown, f"unknown bugs: {unknown}"
         self.bugs = set(bugs)
         self.elements_first = elements_first
+        self.repairs_drafts = repairs_drafts
         self.sessions: dict[str, Session] = {}
+        self._llm: TestClient | None = None
         self.app = self._build()
+
+    @property
+    def llm(self) -> TestClient:
+        if self._llm is None:
+            self._llm = stub_client()
+        return self._llm
 
     def _identity(self, request: Request, allowed: set[str]) -> tuple[Session, str]:
         user = request.headers.get("X-User-Id")
@@ -331,6 +405,8 @@ class FakeSystem:
                 return control_error(400, "registrant_type is fixed for a session")
             if unknown := set(body) - MUTABLE:
                 return control_error(400, f"Unknown settings: {', '.join(sorted(unknown))}")
+            if "llm_base_url" in body and "llm_url_fixed" in self.bugs:
+                return control_error(400, "llm_base_url can't be changed")
             if problem := setting_problem(body):
                 return control_error(400, problem)
             session.run |= body
@@ -341,7 +417,8 @@ class FakeSystem:
             session = self.sessions.get(run_id)
             if session is None:
                 return control_error(404, "Unknown session")
-            return {"run": session.run, "groups": [], "audit": session.audit,
+            groups = [{"group_id": g, "incident_ids": ids} for g, ids in session.groups.items()]
+            return {"run": session.run, "groups": groups, "audit": session.audit,
                     "incidents": [self._render(session, i) for i in session.incidents.values()]}
 
         @app.get("/test/report")
@@ -430,8 +507,13 @@ class FakeSystem:
             body = await json_body(request)
             if body.get("decision") not in ("Material", "NotMaterial"):
                 raise invalid("decision")
+            group = session.groups.get(incident["group_id"], [incident_id])
+            if "group_determination_alone" in self.bugs:
+                group = [incident_id]
             day = parse_date(body.get("determination_date"), "determination_date")
-            if not date.fromisoformat(incident["discovery_date"]) <= day <= session.today:
+            discovered = max(date.fromisoformat(session.incidents[m]["discovery_date"])
+                             for m in group)
+            if not discovered <= day <= session.today:
                 raise invalid("determination_date", "Must be between discovery and today")
             rationale = body.get("rationale")
             if not isinstance(rationale, str) or not rationale:
@@ -439,29 +521,40 @@ class FakeSystem:
             refs = body.get("evidence_refs")
             if not isinstance(refs, list) or not refs or len(set(map(str, refs))) != len(refs):
                 raise invalid("evidence_refs", "Expected unique evidence IDs")
-            if any(session.evidence.get(ref, {}).get("incident_id") != incident_id for ref in refs):
-                raise invalid("evidence_refs", "Every ref must be this incident's evidence")
-            check_version(body)
-            if incident["state"] != "UnderAssessment":
-                raise Reject(409, "INVALID_TRANSITION", "Only from UnderAssessment")
+            if any(session.evidence.get(ref, {}).get("incident_id") not in group for ref in refs):
+                raise invalid("evidence_refs", "Every ref must be evidence of this incident or "
+                              "its group")
             material = body["decision"] == "Material"
+            voluntary = body.get("voluntary_disclosure", False)
+            if not isinstance(voluntary, bool):
+                raise invalid("voluntary_disclosure", "Expected a boolean")
+            if voluntary and material and "voluntary_with_material" not in self.bugs:
+                raise invalid("voluntary_disclosure", "Valid only with NotMaterial")
+            if "voluntary_ignored" in self.bugs:
+                voluntary = False
+            check_version(body)
+            if any(session.incidents[m]["state"] != "UnderAssessment" for m in group):
+                raise Reject(409, "INVALID_TRANSITION", "Only from UnderAssessment")
             fpi = session.fpi and "fpi_gets_8k" not in self.bugs
-            form = ("6-K" if fpi else "8-K Item 1.05") if material else None
-            before = {"state": incident["state"], "determination": None,
-                      "version": incident["version"]}
-            incident.update(
-                state="DeterminedMaterial" if material else "DeterminedNotMaterial",
-                required_form=form,
-                due_date=self._due(day) if form == "8-K Item 1.05" else None,
-                version=incident["version"] + 1,
-                determination={"decision": body["decision"], "determination_date": day.isoformat(),
-                               "rationale": rationale, "evidence_refs": refs,
-                               "voluntary_disclosure": False, "recorded_by": user,
-                               "recorded_at": now()},
-            )
-            self._changed(session, incident)
-            session.write_audit(user, "record_determination", incident_id, before,
-                                {"state": incident["state"], "version": incident["version"]})
+            form = ("6-K" if fpi else "8-K Item 1.05") if material else (
+                "8-K Item 8.01" if voluntary else None)
+            for member in (session.incidents[m] for m in group):
+                before = {"state": member["state"], "determination": None,
+                          "version": member["version"]}
+                member.update(
+                    state="DeterminedMaterial" if material else "DeterminedNotMaterial",
+                    required_form=form,
+                    due_date=self._due(day) if form == "8-K Item 1.05" else None,
+                    version=member["version"] + 1,
+                    determination={"decision": body["decision"],
+                                   "determination_date": day.isoformat(),
+                                   "rationale": rationale, "evidence_refs": refs,
+                                   "voluntary_disclosure": voluntary, "recorded_by": user,
+                                   "recorded_at": now()},
+                )
+                self._changed(session, member)
+                session.write_audit(user, "record_determination", member["incident_id"], before,
+                                    {"state": member["state"], "version": member["version"]})
             return self._render(session, incident)
 
         @app.post("/incidents/{incident_id}/transitions")
@@ -586,22 +679,143 @@ class FakeSystem:
             raise Reject(405, "METHOD_NOT_ALLOWED", "The audit trail is append-only")
 
         @app.patch("/incidents/{incident_id}/evidence/{evidence_id}")
-        def tag_evidence(request: Request):
-            self._identity(request, writers)
-            raise Reject(501, "NOT_IMPLEMENTED", "REQ-05 isn't built")
+        async def tag_evidence(incident_id: str, evidence_id: str, request: Request):
+            session, user = self._identity(request, writers)
+            session.incident(incident_id)
+            item = session.evidence.get(evidence_id)
+            if item is None or item["incident_id"] != incident_id:
+                raise Reject(404, "NOT_FOUND", "Unknown evidence")
+            body = await json_body(request)
+            categories = body.get("impact_categories")
+            allowed = (lambda c: isinstance(c, str)) if "misc_tag_accepted" in self.bugs else (
+                lambda c: c in CATEGORIES)
+            if not isinstance(categories, list) or len(set(map(str, categories))) != len(
+                    categories) or not all(map(allowed, categories)):
+                raise invalid("impact_categories", "Expected unique impact categories")
+            before = list(item["impact_categories"])
+            if "tags_not_stored" not in self.bugs:
+                item["impact_categories"] = list(categories)
+            session.write_audit(user, "tag_evidence", incident_id, {"impact_categories": before},
+                                {"impact_categories": categories})
+            return {**item, "impact_categories": list(categories)}
 
-        @app.post("/groups")
-        def create_group(request: Request):
-            self._identity(request, writers)
-            raise Reject(501, "NOT_IMPLEMENTED", "REQ-04 isn't built")
+        @app.post("/groups", status_code=201)
+        async def create_group(request: Request):
+            session, user = self._identity(request, writers)
+            body = await json_body(request)
+            ids = body.get("incident_ids")
+            if not isinstance(ids, list) or len(ids) < 2 or not all(
+                    isinstance(i, str) and i for i in ids):
+                raise invalid("incident_ids", "Expected at least two incident IDs")
+            if len(set(ids)) != len(ids) and "group_self_link" not in self.bugs:
+                raise invalid("incident_ids", "An incident can't be linked to itself")
+            for index, incident_id in enumerate(ids):
+                if incident_id not in session.incidents:
+                    raise Reject(404, "NOT_FOUND", "Unknown incident", f"incident_ids[{index}]")
+            members = list(dict.fromkeys(ids))
+            for incident_id in members:
+                incident = session.incidents[incident_id]
+                grouped = incident["group_id"] is not None and "group_relinks" not in self.bugs
+                if grouped or incident["state"] != "UnderAssessment":
+                    raise Reject(409, "CONFLICT", "Members must be ungrouped and UnderAssessment")
+            group_id = new_id("grp")
+            session.groups[group_id] = ids
+            for incident_id in members:
+                incident = session.incidents[incident_id]
+                before = {"group_id": incident["group_id"], "version": incident["version"]}
+                incident.update(group_id=group_id, version=incident["version"] + 1)
+                session.write_audit(user, "create_group", incident_id, before,
+                                    {"group_id": group_id, "version": incident["version"]})
+            return {"group_id": group_id, "incident_ids": ids}
 
-        @app.post("/incidents/{incident_id}/drafts")
+        @app.post("/incidents/{incident_id}/drafts", status_code=201)
+        def request_draft(incident_id: str, request: Request):
+            session, _ = self._identity(request, approver)
+            incident = session.incident(incident_id)
+            if incident["state"] in ("UnderAssessment", "DeterminedNotMaterial"):
+                raise Reject(409, "NOT_MATERIAL", "Drafts are only for material incidents")
+            if incident["state"] not in DRAFTABLE:
+                raise Reject(409, "INVALID_TRANSITION", f"No draft from {incident['state']}")
+            evidence = [e for e, item in session.evidence.items()
+                        if item["incident_id"] == incident_id]
+            extras: dict[str, Any] = {}
+            if evidence:
+                elements, extras = self._drafted(session, evidence)
+            else:
+                elements = {name: self._undetermined() for name in DRAFT_ELEMENTS}
+            if "draft_drops_impact" in self.bugs:
+                del elements["impact"]
+            if "draft_moves_incident" in self.bugs:
+                incident["version"] += 1
+            body = {"draft_id": new_id("drf"), "incident_id": incident_id,
+                    "form_type": incident["required_form"], "elements": elements,
+                    "advisory": True, "status": "Proposed", "accepted_by": None,
+                    "accepted_at": None}
+            return {**body, **extras}
+
         @app.post("/drafts/{draft_id}/accept")
-        def drafting(request: Request):
+        def accept_draft(request: Request):
             self._identity(request, approver)
-            raise Reject(501, "NOT_IMPLEMENTED", "Drafting isn't built")
+            raise Reject(404, "NOT_FOUND", "Unknown draft")
 
         return app
+
+    def _undetermined(self) -> dict[str, Any]:
+        text = UNDETERMINED + ("." if "draft_rewrites_undetermined" in self.bugs else "")
+        return {"text": text, "citations": [], "sensitive_flags": []}
+
+    def _drafted(self, session: Session, evidence: list[str]) -> tuple[dict, dict]:
+        """The elements from the session's LLM, checked against the draft rules; 503 for a
+        reply that breaks them, unless repairs_drafts mends it."""
+        message = "LLM unavailable" if "drafting_message" in self.bugs else "Drafting unavailable"
+        unavailable = Reject(503, "DRAFTING_UNAVAILABLE", message)
+        try:
+            response = self.llm.post(f"{session.run['llm_base_url'].rstrip('/')}/chat/completions",
+                                     json={"messages": [{"role": "user", "content": "Draft"}]})
+            content = json.loads(response.json()["choices"][0]["message"]["content"])
+        except Exception:
+            raise unavailable
+        if not response.is_success or not isinstance(content, dict):
+            raise unavailable
+        extras = {k: v for k, v in content.items() if k not in ELEMENTS}
+        if extras and not self.repairs_drafts and "draft_keeps_materiality" not in self.bugs:
+            raise unavailable
+        elements = {}
+        for name in DRAFT_ELEMENTS:
+            if name not in content and "draft_keeps_missing_element" in self.bugs:
+                continue
+            try:
+                elements[name] = self._checked(session, evidence, content.get(name))
+            except ValueError:
+                if not self.repairs_drafts:
+                    raise unavailable
+                elements[name] = self._undetermined()
+        return elements, (extras if "draft_keeps_materiality" in self.bugs else {})
+
+    def _checked(self, session: Session, evidence: list[str], item: Any) -> dict[str, Any]:
+        """One element, or ValueError when it breaks the rules and can't be kept."""
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str) or not isinstance(
+                item.get("citations"), list):
+            raise ValueError("not an element")
+        text, citations = item["text"], item["citations"]
+        if text == UNDETERMINED:
+            if citations and not self.repairs_drafts:
+                raise ValueError("citations on an undetermined element")
+            return self._undetermined()
+        known = (lambda c: c in session.evidence) if (
+            "draft_keeps_foreign_citation" in self.bugs) else (lambda c: c in evidence)
+        kept = [c for c in citations if known(c)]
+        if len(kept) != len(citations) and not self.repairs_drafts:
+            raise ValueError("a citation outside the incident's evidence")
+        if not kept and "draft_keeps_uncited_text" not in self.bugs:
+            raise ValueError("text without citations")
+        if "flags_nothing" in self.bugs:
+            flags = []
+        elif "flags_everything" in self.bugs:
+            flags = [{"excerpt": text, "reason": "detail"}]
+        else:
+            flags = sensitive_flags(text)
+        return {"text": text, "citations": kept, "sensitive_flags": flags}
 
     @staticmethod
     def _check_item(source: str, item: Any, path: str) -> None:
