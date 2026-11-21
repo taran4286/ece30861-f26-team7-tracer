@@ -751,16 +751,18 @@ def test_daily_drafting_limit_over_http(monkeypatch):
     """The contract's 503/message stay intact; a safe detail explains the daily quota."""
     session_id = new_session(llm_base_url="https://llm.test/v1")
     incident_id = _material_over_http(session_id)
-    provider_error = {"error": {"message": "private provider metadata", "details": [{
+    provider_error = [{"error": {"message": "private provider metadata", "details": [{
         "@type": "type.googleapis.com/google.rpc.QuotaFailure",
         "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}],
-    }]}}
+    }]}}]
     monkeypatch.setattr(llm, "TRANSPORT", httpx2.MockTransport(
         lambda request: httpx2.Response(429, json=provider_error),
     ))
     before = snapshot(session_id)
     with db.transaction() as tx:
-        count_before = tx.scalar(select(func.count()).select_from(Draft))
+        count_before = tx.scalar(select(func.count()).select_from(Draft).where(
+            Draft.incident_id == incident_id,
+        ))
     template = "/incidents/{incident_id}/drafts"
     response = client.post(url(template, incident_id),
                            headers=headers(session_id, "DisclosureApprover"))
@@ -773,7 +775,9 @@ def test_daily_drafting_limit_over_http(monkeypatch):
     }
     assert snapshot(session_id) == before
     with db.transaction() as tx:
-        assert tx.scalar(select(func.count()).select_from(Draft)) == count_before
+        assert tx.scalar(select(func.count()).select_from(Draft).where(
+            Draft.incident_id == incident_id,
+        )) == count_before
 
 
 def test_groups_over_http(api_incident):

@@ -197,6 +197,7 @@ def raise_(error):
     return handler
 
 
+@pytest.mark.parametrize("envelope", ["object", "array", "mixed_array"])
 @pytest.mark.parametrize("status,body,daily", [
     (429, {"error": {"details": [{
         "@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{
@@ -225,9 +226,13 @@ def raise_(error):
     }]}}, False),
 ])
 def test_daily_quota_notice_requires_an_explicit_daily_429(
-    material, fake_llm, status, body, daily,
+    material, fake_llm, status, body, daily, envelope,
 ):
     """Quota errors write nothing and expose only a fixed daily notice, never provider text."""
+    if envelope == "array":
+        body = [body] if not isinstance(body, bytes) else body
+    elif envelope == "mixed_array" and not isinstance(body, bytes):
+        body = [None, "unrelated", {}, body]
     fake_llm(lambda request: httpx2.Response(
         status, **({"content": body} if isinstance(body, bytes) else {"json": body}),
     ))

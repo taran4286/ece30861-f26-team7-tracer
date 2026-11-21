@@ -134,20 +134,24 @@ def _daily_quota(body: bytes) -> bool:
         payload = json.loads(body)
     except (ValueError, RecursionError):
         return False
-    error = payload.get("error") if isinstance(payload, dict) else None
-    details = error.get("details") if isinstance(error, dict) else None
-    if not isinstance(details, list):
-        return False
-    for detail in details:
-        if not isinstance(detail, dict) or detail.get("@type") != "type.googleapis.com/google.rpc.QuotaFailure":
+    # Gemini's OpenAI-compatible endpoint can wrap errors in a root array; the native
+    # endpoint uses an object. Check every object so an unrelated entry cannot hide a quota.
+    entries = payload if isinstance(payload, list) else [payload]
+    for entry in entries:
+        error = entry.get("error") if isinstance(entry, dict) else None
+        details = error.get("details") if isinstance(error, dict) else None
+        if not isinstance(details, list):
             continue
-        violations = detail.get("violations")
-        if not isinstance(violations, list):
-            continue
-        for violation in violations:
-            quota_id = violation.get("quotaId") if isinstance(violation, dict) else None
-            if isinstance(quota_id, str) and "PerDay" in quota_id:
-                return True
+        for detail in details:
+            if not isinstance(detail, dict) or detail.get("@type") != "type.googleapis.com/google.rpc.QuotaFailure":
+                continue
+            violations = detail.get("violations")
+            if not isinstance(violations, list):
+                continue
+            for violation in violations:
+                quota_id = violation.get("quotaId") if isinstance(violation, dict) else None
+                if isinstance(quota_id, str) and "PerDay" in quota_id:
+                    return True
     return False
 
 
