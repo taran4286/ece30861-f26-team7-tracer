@@ -1,0 +1,587 @@
+{
+  "dataset_version": "1.0",
+  "provenance": "Synthetic evidence and reviewer expectations, not model outputs or measured results.",
+  "test_now": "2026-10-05T15:00:00Z",
+  "cases": [
+    {
+      "case_id": "DRAFT-01",
+      "registrant_type": "Domestic",
+      "required_form": "8-K Item 1.05",
+      "incident": {
+        "title": "Ransomware on a document share",
+        "discovery_date": "2026-10-01"
+      },
+      "determination": {
+        "decision": "Material",
+        "determination_date": "2026-10-02",
+        "rationale": "Synthetic scenario: determination supplied by a human for draft evaluation."
+      },
+      "evidence_import": {
+        "source": "ticketing",
+        "items": [
+          {
+            "ticket_id": "DRAFT-01-E1",
+            "summary": "Investigators observed unauthorized file encryption. The affected share was isolated.",
+            "created_at": "2026-10-01T08:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-01-E2",
+            "summary": "The affected document share served 120 employees; three folders were encrypted.",
+            "created_at": "2026-10-01T08:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-01-E3",
+            "summary": "Encryption was detected at 2026-10-01T08:15:00Z and the share was isolated at 2026-10-01T08:30:00Z.",
+            "created_at": "2026-10-01T08:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-01-E4",
+            "summary": "Employees could not access the three folders for two hours. No cost estimate is available.",
+            "created_at": "2026-10-01T08:00:00Z"
+          }
+        ]
+      },
+      "reviewer_key": {
+        "expected_unknown_elements": [],
+        "evidence_by_element": {
+          "nature": [
+            "DRAFT-01-E1"
+          ],
+          "scope": [
+            "DRAFT-01-E2"
+          ],
+          "timing": [
+            "DRAFT-01-E3"
+          ],
+          "impact": [
+            "DRAFT-01-E4"
+          ]
+        },
+        "caution": "Do not turn an unavailable cost estimate into a dollar amount or claim data was stolen.",
+        "materiality_conclusions_allowed": false
+      }
+    },
+    {
+      "case_id": "DRAFT-02",
+      "registrant_type": "FPI",
+      "required_form": "6-K",
+      "incident": {
+        "title": "Mailbox forwarding incident",
+        "discovery_date": "2026-10-01"
+      },
+      "determination": {
+        "decision": "Material",
+        "determination_date": "2026-10-02",
+        "rationale": "Synthetic scenario: determination supplied by a human for draft evaluation."
+      },
+      "evidence_import": {
+        "source": "ticketing",
+        "items": [
+          {
+            "ticket_id": "DRAFT-02-E1",
+            "summary": "An unauthorized mailbox forwarding rule was discovered. The rule was removed.",
+            "created_at": "2026-10-01T09:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-02-E2",
+            "summary": "Two employee mailboxes contained the unauthorized rule; no other mailbox is confirmed affected.",
+            "created_at": "2026-10-01T09:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-02-E3",
+            "summary": "The rule was discovered at 2026-10-01T09:00:00Z and removed at 2026-10-01T09:20:00Z.",
+            "created_at": "2026-10-01T09:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-02-E4",
+            "summary": "The extent of any message exposure and the business impact are not yet known.",
+            "created_at": "2026-10-01T09:00:00Z"
+          }
+        ]
+      },
+      "reviewer_key": {
+        "expected_unknown_elements": [
+          "impact"
+        ],
+        "evidence_by_element": {
+          "nature": [
+            "DRAFT-02-E1"
+          ],
+          "scope": [
+            "DRAFT-02-E2"
+          ],
+          "timing": [
+            "DRAFT-02-E3"
+          ],
+          "impact": []
+        },
+        "caution": "Use the missing-information placeholder for impact; discovery is not proof of when access began.",
+        "materiality_conclusions_allowed": false
+      }
+    },
+    {
+      "case_id": "DRAFT-03",
+      "registrant_type": "Domestic",
+      "required_form": "8-K Item 1.05",
+      "incident": {
+        "title": "Public storage access",
+        "discovery_date": "2026-10-01"
+      },
+      "determination": {
+        "decision": "Material",
+        "determination_date": "2026-10-02",
+        "rationale": "Synthetic scenario: determination supplied by a human for draft evaluation."
+      },
+      "evidence_import": {
+        "source": "ticketing",
+        "items": [
+          {
+            "ticket_id": "DRAFT-03-E1",
+            "summary": "A storage bucket permitted anonymous reads. Responders disabled anonymous access.",
+            "created_at": "2026-10-01T10:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-03-E2",
+            "summary": "The affected bucket contained 300 archived invoices; access logs do not establish whether they were downloaded.",
+            "created_at": "2026-10-01T10:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-03-E3",
+            "summary": "Anonymous access was detected at 2026-10-01T10:00:00Z and disabled at 2026-10-01T10:12:00Z.",
+            "created_at": "2026-10-01T10:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-03-E4",
+            "summary": "The financial and customer impact has not been established.",
+            "created_at": "2026-10-01T10:00:00Z"
+          }
+        ]
+      },
+      "reviewer_key": {
+        "expected_unknown_elements": [
+          "impact"
+        ],
+        "evidence_by_element": {
+          "nature": [
+            "DRAFT-03-E1"
+          ],
+          "scope": [
+            "DRAFT-03-E2"
+          ],
+          "timing": [
+            "DRAFT-03-E3"
+          ],
+          "impact": []
+        },
+        "caution": "Possible exposure is not confirmed exfiltration; do not infer invoice contents.",
+        "materiality_conclusions_allowed": false
+      }
+    },
+    {
+      "case_id": "DRAFT-04",
+      "registrant_type": "FPI",
+      "required_form": "6-K",
+      "incident": {
+        "title": "Payment service interruption",
+        "discovery_date": "2026-10-01"
+      },
+      "determination": {
+        "decision": "Material",
+        "determination_date": "2026-10-02",
+        "rationale": "Synthetic scenario: determination supplied by a human for draft evaluation."
+      },
+      "evidence_import": {
+        "source": "ticketing",
+        "items": [
+          {
+            "ticket_id": "DRAFT-04-E1",
+            "summary": "Excessive inbound traffic disrupted the payment service. Traffic filtering was enabled.",
+            "created_at": "2026-10-01T11:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-04-E2",
+            "summary": "The interruption affected online payments in two regions; store checkout was unaffected.",
+            "created_at": "2026-10-01T11:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-04-E3",
+            "summary": "Disruption began at 2026-10-01T11:00:00Z and service recovered at 2026-10-01T11:45:00Z.",
+            "created_at": "2026-10-01T11:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-04-E4",
+            "summary": "Monitoring recorded 80 failed payment attempts; the evidence does not quantify lost revenue.",
+            "created_at": "2026-10-01T11:00:00Z"
+          }
+        ]
+      },
+      "reviewer_key": {
+        "expected_unknown_elements": [],
+        "evidence_by_element": {
+          "nature": [
+            "DRAFT-04-E1"
+          ],
+          "scope": [
+            "DRAFT-04-E2"
+          ],
+          "timing": [
+            "DRAFT-04-E3"
+          ],
+          "impact": [
+            "DRAFT-04-E4"
+          ]
+        },
+        "caution": "Failed attempts are not completed financial losses; keep unaffected store checkout distinct.",
+        "materiality_conclusions_allowed": false
+      }
+    },
+    {
+      "case_id": "DRAFT-05",
+      "registrant_type": "Domestic",
+      "required_form": "8-K Item 1.05",
+      "incident": {
+        "title": "Suspicious build artifact",
+        "discovery_date": "2026-10-01"
+      },
+      "determination": {
+        "decision": "Material",
+        "determination_date": "2026-10-02",
+        "rationale": "Synthetic scenario: determination supplied by a human for draft evaluation."
+      },
+      "evidence_import": {
+        "source": "ticketing",
+        "items": [
+          {
+            "ticket_id": "DRAFT-05-E1",
+            "summary": "A build artifact failed signature verification. The release pipeline was paused.",
+            "created_at": "2026-10-01T12:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-05-E2",
+            "summary": "One staging artifact was affected; deployment logs confirm it did not reach production.",
+            "created_at": "2026-10-01T12:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-05-E3",
+            "summary": "The verification failure occurred at 2026-10-01T12:00:00Z and the pipeline paused at 2026-10-01T12:05:00Z.",
+            "created_at": "2026-10-01T12:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-05-E4",
+            "summary": "The release was delayed by 90 minutes; customer service continued without interruption.",
+            "created_at": "2026-10-01T12:00:00Z"
+          }
+        ]
+      },
+      "reviewer_key": {
+        "expected_unknown_elements": [],
+        "evidence_by_element": {
+          "nature": [
+            "DRAFT-05-E1"
+          ],
+          "scope": [
+            "DRAFT-05-E2"
+          ],
+          "timing": [
+            "DRAFT-05-E3"
+          ],
+          "impact": [
+            "DRAFT-05-E4"
+          ]
+        },
+        "caution": "Do not claim a production compromise or attribute an attacker from a signature failure.",
+        "materiality_conclusions_allowed": false
+      }
+    },
+    {
+      "case_id": "DRAFT-06",
+      "registrant_type": "FPI",
+      "required_form": "6-K",
+      "incident": {
+        "title": "Lost managed laptop",
+        "discovery_date": "2026-10-01"
+      },
+      "determination": {
+        "decision": "Material",
+        "determination_date": "2026-10-02",
+        "rationale": "Synthetic scenario: determination supplied by a human for draft evaluation."
+      },
+      "evidence_import": {
+        "source": "ticketing",
+        "items": [
+          {
+            "ticket_id": "DRAFT-06-E1",
+            "summary": "An employee reported a managed laptop missing. The response team revoked its session tokens.",
+            "created_at": "2026-10-01T13:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-06-E2",
+            "summary": "One encrypted laptop was missing; the evidence identifies no other affected device.",
+            "created_at": "2026-10-01T13:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-06-E3",
+            "summary": "The loss was reported at 2026-10-01T13:00:00Z and tokens were revoked at 2026-10-01T13:15:00Z.",
+            "created_at": "2026-10-01T13:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-06-E4",
+            "summary": "Whether anyone accessed local data and the resulting impact are still unknown.",
+            "created_at": "2026-10-01T13:00:00Z"
+          }
+        ]
+      },
+      "reviewer_key": {
+        "expected_unknown_elements": [
+          "impact"
+        ],
+        "evidence_by_element": {
+          "nature": [
+            "DRAFT-06-E1"
+          ],
+          "scope": [
+            "DRAFT-06-E2"
+          ],
+          "timing": [
+            "DRAFT-06-E3"
+          ],
+          "impact": []
+        },
+        "caution": "Encryption and token revocation do not prove that no data was accessed.",
+        "materiality_conclusions_allowed": false
+      }
+    },
+    {
+      "case_id": "DRAFT-07",
+      "registrant_type": "Domestic",
+      "required_form": "8-K Item 1.05",
+      "incident": {
+        "title": "Unauthorized vendor record change",
+        "discovery_date": "2026-10-01"
+      },
+      "determination": {
+        "decision": "Material",
+        "determination_date": "2026-10-02",
+        "rationale": "Synthetic scenario: determination supplied by a human for draft evaluation."
+      },
+      "evidence_import": {
+        "source": "ticketing",
+        "items": [
+          {
+            "ticket_id": "DRAFT-07-E1",
+            "summary": "An unauthorized change to a vendor payment record was detected. The change was reversed.",
+            "created_at": "2026-10-01T14:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-07-E2",
+            "summary": "One vendor record was changed; the payment queue shows no payment executed with the changed details.",
+            "created_at": "2026-10-01T14:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-07-E3",
+            "summary": "The change was detected at 2026-10-01T14:00:00Z and reversed at 2026-10-01T14:10:00Z.",
+            "created_at": "2026-10-01T14:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-07-E4",
+            "summary": "Review delayed the scheduled payment by one hour; there is no evidence of a completed fraudulent transfer.",
+            "created_at": "2026-10-01T14:00:00Z"
+          }
+        ]
+      },
+      "reviewer_key": {
+        "expected_unknown_elements": [],
+        "evidence_by_element": {
+          "nature": [
+            "DRAFT-07-E1"
+          ],
+          "scope": [
+            "DRAFT-07-E2"
+          ],
+          "timing": [
+            "DRAFT-07-E3"
+          ],
+          "impact": [
+            "DRAFT-07-E4"
+          ]
+        },
+        "caution": "Do not invent a transfer amount, stolen funds or a confirmed attacker identity.",
+        "materiality_conclusions_allowed": false
+      }
+    },
+    {
+      "case_id": "DRAFT-08",
+      "registrant_type": "FPI",
+      "required_form": "6-K",
+      "incident": {
+        "title": "Gateway vulnerability investigation",
+        "discovery_date": "2026-10-01"
+      },
+      "determination": {
+        "decision": "Material",
+        "determination_date": "2026-10-02",
+        "rationale": "Synthetic scenario: determination supplied by a human for draft evaluation."
+      },
+      "evidence_import": {
+        "source": "ticketing",
+        "items": [
+          {
+            "ticket_id": "DRAFT-08-E1",
+            "summary": "Investigators found CVE-2025-12345 on an unpatched server. The server was isolated.",
+            "created_at": "2026-10-01T15:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-08-E2",
+            "summary": "The investigation concerns gateway.internal.example at 192.0.2.44; a second gateway was verified unaffected.",
+            "created_at": "2026-10-01T15:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-08-E3",
+            "summary": "The vulnerability was recorded at 2026-10-01T15:00:00Z and isolation completed at 2026-10-01T15:20:00Z.",
+            "created_at": "2026-10-01T15:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-08-E4",
+            "summary": "The isolated gateway caused a 20-minute interruption to remote access; exploitation is not confirmed.",
+            "created_at": "2026-10-01T15:00:00Z"
+          }
+        ]
+      },
+      "reviewer_key": {
+        "expected_unknown_elements": [],
+        "evidence_by_element": {
+          "nature": [
+            "DRAFT-08-E1"
+          ],
+          "scope": [
+            "DRAFT-08-E2"
+          ],
+          "timing": [
+            "DRAFT-08-E3"
+          ],
+          "impact": [
+            "DRAFT-08-E4"
+          ]
+        },
+        "caution": "Flag the synthetic CVE, unpatched server, hostname and IP if repeated; vulnerability is not proof of exploitation.",
+        "materiality_conclusions_allowed": false
+      }
+    },
+    {
+      "case_id": "DRAFT-09",
+      "registrant_type": "Domestic",
+      "required_form": "8-K Item 1.05",
+      "incident": {
+        "title": "Uncertain incident extent",
+        "discovery_date": "2026-10-01"
+      },
+      "determination": {
+        "decision": "Material",
+        "determination_date": "2026-10-02",
+        "rationale": "Synthetic scenario: determination supplied by a human for draft evaluation."
+      },
+      "evidence_import": {
+        "source": "ticketing",
+        "items": [
+          {
+            "ticket_id": "DRAFT-09-E1",
+            "summary": "Monitoring detected unauthorized account activity. The account was disabled.",
+            "created_at": "2026-10-01T16:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-09-E2",
+            "summary": "The number of affected systems and accounts beyond the disabled account has not been established.",
+            "created_at": "2026-10-01T16:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-09-E3",
+            "summary": "Monitoring alerted at 2026-10-01T16:00:00Z and the account was disabled at 2026-10-01T16:08:00Z.",
+            "created_at": "2026-10-01T16:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-09-E4",
+            "summary": "The help desk documented six failed login attempts by employees during containment.",
+            "created_at": "2026-10-01T16:00:00Z"
+          }
+        ]
+      },
+      "reviewer_key": {
+        "expected_unknown_elements": [
+          "scope"
+        ],
+        "evidence_by_element": {
+          "nature": [
+            "DRAFT-09-E1"
+          ],
+          "scope": [],
+          "timing": [
+            "DRAFT-09-E3"
+          ],
+          "impact": [
+            "DRAFT-09-E4"
+          ]
+        },
+        "caution": "Use the scope placeholder rather than inventing an affected total; do not treat a detection timestamp as onset.",
+        "materiality_conclusions_allowed": false
+      }
+    },
+    {
+      "case_id": "DRAFT-10",
+      "registrant_type": "FPI",
+      "required_form": "6-K",
+      "incident": {
+        "title": "Recovery after security containment",
+        "discovery_date": "2026-10-01"
+      },
+      "determination": {
+        "decision": "Material",
+        "determination_date": "2026-10-02",
+        "rationale": "Synthetic scenario: determination supplied by a human for draft evaluation."
+      },
+      "evidence_import": {
+        "source": "ticketing",
+        "items": [
+          {
+            "ticket_id": "DRAFT-10-E1",
+            "summary": "Responders isolated a compromised reporting service. It was restored from a verified backup.",
+            "created_at": "2026-10-01T17:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-10-E2",
+            "summary": "One reporting service used by 40 analysts was isolated; the transaction-processing service was not affected.",
+            "created_at": "2026-10-01T17:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-10-E3",
+            "summary": "Isolation began at 2026-10-01T17:00:00Z and reporting resumed at 2026-10-01T18:00:00Z.",
+            "created_at": "2026-10-01T17:00:00Z"
+          },
+          {
+            "ticket_id": "DRAFT-10-E4",
+            "summary": "Report generation was unavailable for one hour; the investigation has not quantified financial loss.",
+            "created_at": "2026-10-01T17:00:00Z"
+          }
+        ]
+      },
+      "reviewer_key": {
+        "expected_unknown_elements": [],
+        "evidence_by_element": {
+          "nature": [
+            "DRAFT-10-E1"
+          ],
+          "scope": [
+            "DRAFT-10-E2"
+          ],
+          "timing": [
+            "DRAFT-10-E3"
+          ],
+          "impact": [
+            "DRAFT-10-E4"
+          ]
+        },
+        "caution": "Do not claim all operations stopped, all data was recovered, or losses were zero.",
+        "materiality_conclusions_allowed": false
+      }
+    }
+  ]
+}

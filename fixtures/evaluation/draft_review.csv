@@ -1,0 +1,11 @@
+case_id,registrant_type,required_form,session_id,incident_id,draft_id,model,prompt_commit,generated_at_utc,raw_draft_path,reviewer,reviewed_at_utc,total_citations,valid_citations,contains_contradiction,contains_materiality_conclusion,nature_covered,scope_covered,timing_covered,impact_covered,unknown_handling_correct,sensitive_flags_correct,notes
+DRAFT-01,Domestic,8-K Item 1.05,,,,,,,,,,,,,,,,,,,,
+DRAFT-02,FPI,6-K,,,,,,,,,,,,,,,,,,,,
+DRAFT-03,Domestic,8-K Item 1.05,,,,,,,,,,,,,,,,,,,,
+DRAFT-04,FPI,6-K,,,,,,,,,,,,,,,,,,,,
+DRAFT-05,Domestic,8-K Item 1.05,,,,,,,,,,,,,,,,,,,,
+DRAFT-06,FPI,6-K,,,,,,,,,,,,,,,,,,,,
+DRAFT-07,Domestic,8-K Item 1.05,,,,,,,,,,,,,,,,,,,,
+DRAFT-08,FPI,6-K,,,,,,,,,,,,,,,,,,,,
+DRAFT-09,Domestic,8-K Item 1.05,,,,,,,,,,,,,,,,,,,,
+DRAFT-10,FPI,6-K,,,,,,,,,,,,,,,,,,,,
