@@ -197,6 +197,60 @@ def raise_(error):
     return handler
 
 
+@pytest.mark.parametrize("status,body,daily", [
+    (429, {"error": {"details": [{
+        "@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{
+            "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+        }],
+    }]}}, True),
+    (429, {"error": {"details": [{
+        "@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{
+            "quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+        }],
+    }]}}, False),
+    (429, {"error": {"message": "Daily quota exceeded; private provider text"}}, False),
+    (429, {"error": {"details": [None, {"violations": "invalid"}]}}, False),
+    (429, ["unexpected error"], False),
+    (429, "not JSON", False),
+    (429, b"<html>Rate limited</html>", False),
+    (429, {"error": {"details": [{
+        "@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [None, {
+            "quotaId": None,
+        }],
+    }]}}, False),
+    (500, {"error": {"details": [{
+        "@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{
+            "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+        }],
+    }]}}, False),
+])
+def test_daily_quota_notice_requires_an_explicit_daily_429(
+    material, fake_llm, status, body, daily,
+):
+    """Quota errors write nothing and expose only a fixed daily notice, never provider text."""
+    fake_llm(lambda request: httpx2.Response(
+        status, **({"content": body} if isinstance(body, bytes) else {"json": body}),
+    ))
+    before, counts = read(material), table_counts()
+    with pytest.raises(TracerError) as raised:
+        request(material)
+    error = raised.value
+    assert (error.code, error.field, error.message) == (
+        ErrorCode.DRAFTING_UNAVAILABLE, None, "Drafting unavailable",
+    )
+    if daily:
+        assert error.detail == (
+            "The daily AI drafting limit has been reached. "
+            "Try again after the provider's daily quota resets."
+        )
+        assert error.to_dict()["detail"] == error.detail
+    else:
+        assert error.detail is None
+        assert "detail" not in error.to_dict()
+    assert table_counts() == counts
+    assert read(material) == before
+
+
 FAILURES = {
     "timeout": raise_(httpx2.ReadTimeout("slow")),
     "connection refused": raise_(httpx2.ConnectError("refused")),

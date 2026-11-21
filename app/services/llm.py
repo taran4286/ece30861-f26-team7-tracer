@@ -45,6 +45,10 @@ class ProviderError(Exception):
     reply that isn't the expected JSON. The message is for the log, never the response."""
 
 
+class DailyQuotaExceeded(ProviderError):
+    """The provider explicitly identified a daily quota, rather than a temporary rate limit."""
+
+
 def draft_elements(context: dict[str, Any], *, timeout: float | None = None) -> Any:
     """Ask the session's provider for the draft's elements, given load_draft_context's result.
 
@@ -102,7 +106,7 @@ async def _post(base_url: str, context: dict[str, Any], timeout: float) -> bytes
         ) as client:
             url = f"{base_url}/chat/completions"
             async with client.stream("POST", url, json=payload, headers=headers) as response:
-                if not response.is_success:
+                if not response.is_success and response.status_code != 429:
                     raise ProviderError(f"HTTP {response.status_code}")
                 encoding = response.headers.get("Content-Encoding", "").strip().lower()
                 if encoding not in ("", "identity"):
@@ -112,7 +116,39 @@ async def _post(base_url: str, context: dict[str, Any], timeout: float) -> bytes
                     body += chunk
                     if len(body) > MAX_RESPONSE_BYTES:
                         raise ProviderError(f"reply over {MAX_RESPONSE_BYTES} bytes")
+                if response.status_code == 429:
+                    if _daily_quota(bytes(body)):
+                        raise DailyQuotaExceeded("daily drafting quota exhausted")
+                    raise ProviderError("HTTP 429")
                 return bytes(body)
+
+
+def _daily_quota(body: bytes) -> bool:
+    """Recognize Gemini's structured daily-quota violations, without exposing its error body.
+
+    A 429 alone can mean per-minute throttling or another limit. Only an explicit PerDay
+    quota ID in google.rpc.QuotaFailure justifies telling the caller the daily limit was hit.
+    Malformed or unfamiliar provider errors keep the ordinary unavailable response.
+    """
+    try:
+        payload = json.loads(body)
+    except (ValueError, RecursionError):
+        return False
+    error = payload.get("error") if isinstance(payload, dict) else None
+    details = error.get("details") if isinstance(error, dict) else None
+    if not isinstance(details, list):
+        return False
+    for detail in details:
+        if not isinstance(detail, dict) or detail.get("@type") != "type.googleapis.com/google.rpc.QuotaFailure":
+            continue
+        violations = detail.get("violations")
+        if not isinstance(violations, list):
+            continue
+        for violation in violations:
+            quota_id = violation.get("quotaId") if isinstance(violation, dict) else None
+            if isinstance(quota_id, str) and "PerDay" in quota_id:
+                return True
+    return False
 
 
 def _prompt_input(context: dict[str, Any]) -> dict[str, Any]:
