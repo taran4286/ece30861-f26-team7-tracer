@@ -32,20 +32,31 @@ HTTP_STATUS: dict[ErrorCode, int] = {
 
 
 class TracerError(Exception):
-    """Carries the Error schema: error code, message and (for validation) a path-style field."""
+    """Carries the Error schema and an optional safe, user-facing detail.
 
-    def __init__(self, code: ErrorCode, message: str, field: str | None = None) -> None:
+    Drafting uses detail for an explicitly reported daily quota while keeping the shared
+    contract's fixed message. Never put raw provider responses or credentials here.
+    """
+
+    def __init__(
+        self, code: ErrorCode, message: str, field: str | None = None,
+        *, detail: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.field = field
+        self.detail = detail
 
     @property
     def status(self) -> int:
         return HTTP_STATUS[self.code]
 
     def to_dict(self) -> dict[str, str | None]:
-        return {"error": self.code.value, "message": self.message, "field": self.field}
+        body = {"error": self.code.value, "message": self.message, "field": self.field}
+        if self.detail is not None:
+            body["detail"] = self.detail
+        return body
 
     def __repr__(self) -> str:
         return f"TracerError({self.code.value!r}, {self.message!r}, field={self.field!r})"

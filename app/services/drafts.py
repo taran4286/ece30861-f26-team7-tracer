@@ -89,7 +89,13 @@ def _generate(
     except (llm.ProviderError, TracerError) as error:
         # The cause goes to the log, never the response.
         logger.warning("drafting unavailable for %s: %r", context["incident_id"], error)
-        raise TracerError(ErrorCode.DRAFTING_UNAVAILABLE, "Drafting unavailable") from None
+        detail = (
+            "The daily AI drafting limit has been reached. Try again after the provider's daily quota resets."
+            if isinstance(error, llm.DailyQuotaExceeded) else None
+        )
+        raise TracerError(
+            ErrorCode.DRAFTING_UNAVAILABLE, "Drafting unavailable", detail=detail,
+        ) from None
     return {
         name: {
             "text": elements[name]["text"],
