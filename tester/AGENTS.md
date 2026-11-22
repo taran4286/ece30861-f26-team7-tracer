@@ -10,7 +10,7 @@ Our tester service, serving the routes in `tester-openapi.yaml` and an LLM stub.
 - `POST /test/run` with `{session_id}` runs every planned case once and returns 200 with the stored `SuiteReport`, failed tests included. A missing or blank `session_id` gets 400, an unknown session 404, and a session that has already started 409. An aborted run stores its partial report and gets 500 with `source: "tester"`.
 - `GET /test/report?session_id=` returns the stored `SuiteReport` of a finished or aborted run and never starts or repeats one. A missing or blank `session_id` gets 400, an unknown session 404, and a session whose run hasn't ended 409.
 - On all three, unreachable storage gets 500 "Tester storage is unavailable" and any other fault in our code 500 "Tester fault: …", both with `source: "tester"`.
-- `POST /llm/fail/chat/completions`, `POST /llm/silent/chat/completions` and `POST /llm/reply/{content}/chat/completions` are the LLM stub (see "LLM stub").
+- `POST /llm/fail/chat/completions`, `POST /llm/silent/chat/completions`, `POST /llm/reply/{content}/chat/completions` and `POST /llm/reply/chat/completions` are the LLM stub (see "LLM stub").
 - Any other GET, POST, PUT, PATCH or DELETE request returns 501 `{"message": "/<path> is not implemented", "source": "tester"}`, the stub's paths with another method included.
 - GET and HEAD on FastAPI's generated `/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json` also answer, and other methods such as `HEAD` and `OPTIONS` elsewhere get FastAPI's 405.
 
@@ -55,8 +55,9 @@ Sessions and reports live in Postgres, in the `tester_sessions` table, reached a
 | `{tester}/llm/fail` | 500 at once, `{"error": {"message", "type": "server_error"}}` |
 | `{tester}/llm/silent` | 504 after `SILENT_SECONDS` (65 s), past the spec's 60 s plus AC-21's 2 s |
 | `{tester}/llm/reply/{content}` | 200 chat completion whose `choices[0].message.content` is `content` |
+| `{tester}/llm/reply` | the same with empty content |
 
-- `reply_url(tester_url, content)` encodes `content` as unpadded base64url of its UTF-8, so the caller decides exactly what the model says, malformed replies included. A segment that isn't that encoding, decodes to invalid UTF-8 or exceeds `MAX_CONTENT_BYTES` (8,000) decoded gets 400 `{"error": {"message", "type": "invalid_request_error"}}`.
+- `reply_url(tester_url, content)` encodes `content` as unpadded base64url of its UTF-8, or gives `{tester}/llm/reply` for empty content, which has no segment to encode, so the caller decides exactly what the model says, malformed replies included. A segment that isn't that encoding, decodes to invalid UTF-8 or exceeds `MAX_CONTENT_BYTES` (8,000) decoded gets 400 `{"error": {"message", "type": "invalid_request_error"}}`.
 - The stub ignores the request body and headers and stores nothing, so any instance answers any call.
 - Its routes are async, so the silent mode holds no worker thread while it waits.
 
