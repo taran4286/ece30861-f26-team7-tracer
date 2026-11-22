@@ -19,6 +19,7 @@ from typing import Any
 from tester import stub
 from tester.business_days import add_business_days
 from tester.client import NO_BODY, Actor, Reply, TargetError
+from tester.spec import declared_fields
 from tester.suite import Case, Fail, Run, expect
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -364,8 +365,13 @@ def name(state: str) -> str:
 # Drafts. Each case decides what the model says through the tester's LLM stub (see llm_at).
 
 
+def drafting_ticket(n: int, element_name: str, text: str) -> dict[str, Any]:
+    """Evidence that actually supports a controlled reply, not an unrelated generic ticket."""
+    return {**ticket(n), "summary": f"{element_name.capitalize()} evidence: {text}"}
+
+
 def material(run: Run, n: int, items: list[dict[str, Any]]) -> Tracked:
-    """A new Domestic Material incident whose evidence is these ticketing items."""
+    """A new Material incident in this run's registrant type, with these ticketing items."""
     inc = create(run, n)
     import_items(run, inc, "ticketing", items)
     determine(run, inc)
@@ -407,16 +413,20 @@ def materiality_fields(value: Any, path: str = "$") -> list[str]:
     return []
 
 
-def structure_problems(draft_body: dict[str, Any], inc: Tracked) -> list[str]:
+def structure_problems(
+    draft_body: dict[str, Any], inc: Tracked, form: str = FORM_8K
+) -> list[str]:
     """AC-16's structure: this incident's Proposed advisory draft of its form, each of the
     four elements with text or exactly Not yet determined, and no materiality field."""
     problems = []
     if draft_body["incident_id"] != inc.id:
         problems.append(f"incident_id is {draft_body['incident_id']}, not {inc.id}")
-    if draft_body["form_type"] != FORM_8K:
-        problems.append(f"form_type is {draft_body['form_type']!r}, not {FORM_8K!r}")
+    if draft_body["form_type"] != form:
+        problems.append(f"form_type is {draft_body['form_type']!r}, not {form!r}")
     if draft_body["status"] != "Proposed":
         problems.append(f"status is {draft_body['status']!r}, not 'Proposed'")
+    if draft_body["advisory"] is not True:
+        problems.append("draft is not marked advisory")
     problems += [f"it has a materiality field at {f}" for f in materiality_fields(draft_body)]
     for name in ELEMENTS:
         if not draft_body["elements"][name]["text"].strip():
@@ -440,6 +450,16 @@ def citation_problems(draft_body: dict[str, Any], inc: Tracked) -> list[str]:
         if foreign := [c for c in item["citations"] if c not in inc.evidence]:
             problems.append(f"{name} cites {foreign}, not evidence of this incident")
     return problems
+
+
+def dropped_problems(draft_body: dict[str, Any], content: dict[str, Any]) -> list[str]:
+    """Elements the model drafted from cited evidence that came back Not yet determined. A
+    system may reword the model's text, but not drop it: a draft of four placeholders would
+    otherwise pass AC-16's structure and AC-17's citations with nothing drafted."""
+    return [f"{name} came back {UNDETERMINED!r}, though the model drafted it from evidence"
+            for name in ELEMENTS
+            if content[name]["text"] != UNDETERMINED
+            and draft_body["elements"][name]["text"].strip() == UNDETERMINED]
 
 
 def unavailable(reply: Reply) -> str:
@@ -1558,6 +1578,104 @@ def ac23() -> list[Case]:
         ("AC-23-c-PUT-incident-as-DisclosureApprover",
          record_edit("PUT", INCIDENT, APPROVER.role)),
         ("AC-23-unknown-incident-audit", unknown_incident),
+        *draft_acceptance_cases(),
+    ]
+
+
+def draft_acceptance_cases() -> list[Case]:
+    """REQ-22: acceptance is an audited advisory decision, not an incident transition."""
+    def subject(run: Run) -> tuple[Tracked, dict[str, Any]]:
+        def build():
+            inc = material(run, 0, [drafting_ticket(18, "nature", "Unauthorized access was detected.")])
+            content = model_reply(nature=element("Unauthorized access was detected.", inc.evidence))
+            return inc, expect(draft(run, inc, content), 201)
+        return run.once("draft-acceptance", build)
+
+    def forbidden(actor: Actor):
+        def case(run: Run) -> str:
+            _, proposed = subject(run)
+            return rejected(run, "POST", ACCEPT, actor, NO_BODY, 403, "FORBIDDEN_ROLE",
+                            draft_id=proposed["draft_id"])
+        return case
+
+    def acceptance(run: Run) -> tuple[Tracked, dict[str, Any], dict[str, Any], list, Reply]:
+        """The one acceptance request, sent once, with what stood before it. Only reaching
+        the target is shared setup: each case below judges the reply itself."""
+        def build():
+            inc, proposed = subject(run)
+            before = get(run, inc.id)
+            audit_before = expect(run.call("GET", AUDIT, BOARD, incident_id=inc.id),
+                                  200)["entries"]
+            reply = run.call("POST", ACCEPT, APPROVER, draft_id=proposed["draft_id"])
+            return inc, proposed, before, audit_before, reply
+        return run.once("draft-accepted", build)
+
+    def accepted(run: Run) -> str:
+        inc, proposed, before, audit_before, reply = acceptance(run)
+        body = expect(reply, 200)
+        problems = []
+        if (body["status"], body["advisory"]) != ("Accepted", True):
+            problems.append("acceptance status or advisory flag is wrong")
+        if body.get("accepted_by") not in (None, APPROVER.user):
+            problems.append("acceptance names the wrong user")
+        for key in ("draft_id", "incident_id", "form_type", "elements"):
+            if body[key] != proposed[key]:
+                problems.append(f"acceptance changed {key}")
+        # These response fields are optional. The mandatory audit records the actor/time.
+        if body.get("accepted_at") is not None:
+            problems += clock_problems("accepted_at", body["accepted_at"], reply)
+        if declared_fields("Incident", get(run, inc.id)) != declared_fields("Incident", before):
+            problems.append("acceptance changed the incident")
+        entries = expect(run.call("GET", AUDIT, BOARD, incident_id=inc.id), 200)["entries"]
+        if len(entries) != len(audit_before) + 1 or entries[:-1] != audit_before:
+            problems.append("acceptance did not append exactly one audit entry")
+        else:
+            entry = entries[-1]
+            fields = ("draft_id", "status", "accepted_by", "accepted_at")
+            if (entry["action"], entry["target_id"], entry["user_id"]) != (
+                    "accept_draft", inc.id, APPROVER.user):
+                problems.append("acceptance audit identity is wrong")
+            problems += clock_problems("acceptance audit timestamp", entry["timestamp"], reply)
+            # Audit payloads are free-form in the shared schema. An implementation can
+            # omit null acceptance metadata or add extra fields while preserving the change.
+            expected_before = {k: proposed[k] for k in ("draft_id", "status")}
+            if not isinstance(entry["before"], dict) or any(
+                    entry["before"].get(k) != value for k, value in expected_before.items()) or any(
+                    k in entry["before"] and entry["before"][k] != proposed.get(k) for k in fields):
+                problems.append("acceptance audit before values are wrong")
+            expected_after = {k: body[k] for k in fields if body.get(k) is not None}
+            if not isinstance(entry["after"], dict) or any(
+                    entry["after"].get(k) != value for k, value in expected_after.items()):
+                problems.append("acceptance audit after values are wrong")
+        return problems_or(problems, "Draft acceptance", "Accepted once with one audit entry; "
+                           "draft content and incident unchanged")
+
+    def repeated(run: Run) -> str:
+        # The first acceptance is this case's setup, sent here if this case runs on its own.
+        _, proposed, _, _, first = acceptance(run)
+        if first.status != 200:
+            raise Fail(f"Setup failed: the first acceptance returned {first.status}, not 200")
+        return rejected(run, "POST", ACCEPT, APPROVER, NO_BODY, 409, "CONFLICT",
+                        draft_id=proposed["draft_id"])
+
+    def unknown(run: Run) -> str:
+        return rejected(run, "POST", ACCEPT, APPROVER, NO_BODY, 404, "NOT_FOUND",
+                        draft_id=UNKNOWN_ID)
+
+    def other_session(run: Run) -> str:
+        _, proposed = subject(run)
+        other = run.once("accept-other-session", lambda: run.prepare(
+            f"{run.session_id}-accept-other", {"llm_base_url": failure_stub(run)}))
+        return rejected(other, "POST", ACCEPT, APPROVER, NO_BODY, 404, "NOT_FOUND",
+                        draft_id=proposed["draft_id"])
+
+    return [
+        ("AC-23-draft-accept-as-Responder-forbidden", forbidden(RESPONDER)),
+        ("AC-23-draft-accept-as-Board-forbidden", forbidden(BOARD)),
+        ("AC-23-draft-accept-once-audited", accepted),
+        ("AC-23-draft-repeat-acceptance-conflict", repeated),
+        ("AC-23-draft-unknown-rejected", unknown),
+        ("AC-23-draft-other-session-rejected", other_session),
     ]
 
 
@@ -1826,7 +1944,11 @@ AC16_UNDETERMINED_IMPACT = {2, 5, 8}
 def ac16_draft(run: Run, k: int) -> tuple[Tracked, dict[str, Any], dict[str, Any]]:
     """AC-16's kth incident with four tickets, the model's reply, and the 201 draft."""
     def build() -> tuple[Tracked, dict[str, Any], dict[str, Any]]:
-        inc = material(run, k, [ticket(4 * k + j) for j in range(4)])
+        items = [drafting_ticket(4 * k + j, name,
+                                "Not yet determined; no measured impact is available."
+                                if name == "impact" and k in AC16_UNDETERMINED_IMPACT
+                                else AC16_TEXTS[name]) for j, name in enumerate(ELEMENTS)]
+        inc = material(run, k, items)
         content = model_reply(**{
             name: element(AC16_TEXTS[name], [inc.evidence[j]])
             for j, name in enumerate(ELEMENTS)
@@ -1836,14 +1958,40 @@ def ac16_draft(run: Run, k: int) -> tuple[Tracked, dict[str, Any], dict[str, Any
 
 
 def ac16() -> list[Case]:
+    def fpi_draft(run: Run) -> str:
+        def prepare_subject():
+            fpi = run.prepare(f"{run.session_id}-draft-fpi",
+                              {"registrant_type": "FPI", "llm_base_url": failure_stub(run)})
+            inc = material(fpi, 1, [drafting_ticket(18, "nature", "Unauthorized access was detected.")])
+            return fpi, inc, get(fpi, inc.id)
+
+        # Preparation failures are shared-setup failures, not evaluated FPI draft checks.
+        fpi, inc, before = run.once("ac16-fpi-subject", prepare_subject)
+        content = model_reply(nature=element("Unauthorized access was detected.", inc.evidence))
+        try:
+            body = expect(draft(fpi, inc, content), 201)
+        finally:
+            if fpi.pending_reset is not None:
+                run.pending_reset = fpi.settle
+        problems = (structure_problems(body, inc, FORM_6K) + citation_problems(body, inc)
+                    + dropped_problems(body, content))
+        if declared_fields("Incident", get(fpi, inc.id)) != declared_fields("Incident", before):
+            problems.append("drafting changed the FPI incident")
+        return problems_or(problems, "FPI draft", "Proposed advisory 6-K with four elements "
+                           "and owned citations; incident unchanged")
+
     def structured(k: int):
         def case(run: Run) -> str:
             inc, content, body = ac16_draft(run, k)
-            problems = structure_problems(body, inc)
-            problems += [f"{name} reads {body['elements'][name]['text']!r}, not the model's "
-                         f"{content[name]['text']!r}" for name in ELEMENTS
-                         if body["elements"][name]["text"] != content[name]["text"]]
+            problems = (structure_problems(body, inc) + citation_problems(body, inc)
+                        + dropped_problems(body, content))
             undetermined = [n for n in ELEMENTS if content[n]["text"] == UNDETERMINED]
+            # AC-16 checks the delivered structure, not verbatim echo of a provider reply,
+            # though drafted elements must stay drafted (dropped_problems). The explicit
+            # no-evidence cases still require the exact missing-data marker.
+            problems += [f"{name} without evidence is not exactly {UNDETERMINED!r}"
+                         for name in undetermined
+                         if body["elements"][name] != element(UNDETERMINED, [])]
             return problems_or(problems, f"Draft {k + 1}",
                                f"201 Proposed {FORM_8K} draft with all four elements"
                                + (f", {undetermined[0]} {UNDETERMINED!r}" if undetermined else ""))
@@ -1875,6 +2023,7 @@ def ac16() -> list[Case]:
          refused(drafting_subject, RESPONDER, 403, "FORBIDDEN_ROLE")),
         ("AC-16-draft-under-assessment-rejected", refused(ua, APPROVER, 409, "NOT_MATERIAL")),
         ("AC-16-draft-unknown-incident", unknown_incident),
+        ("AC-16-FPI-draft-is-6-K", fpi_draft),
     ]
 
 
@@ -1885,26 +2034,28 @@ def ac16() -> list[Case]:
 def ac17() -> list[Case]:
     def cited(k: int):
         def case(run: Run) -> str:
-            inc, _, body = ac16_draft(run, k)
+            inc, content, body = ac16_draft(run, k)
             count = sum(len(body["elements"][name]["citations"]) for name in ELEMENTS)
-            return problems_or(citation_problems(body, inc), f"Draft {k + 1}",
+            problems = citation_problems(body, inc) + dropped_problems(body, content)
+            return problems_or(problems, f"Draft {k + 1}",
                                f"{count} citations, all to this incident's evidence; every "
                                "drafted element cites at least one")
         return case
 
-    def no_impact_draft(run: Run, k: int) -> tuple[Tracked, dict[str, Any]]:
-        def build() -> tuple[Tracked, dict[str, Any]]:
-            inc = material(run, k, [ticket(4 * k + j + 2) for j in range(3)])
+    def no_impact_draft(run: Run, k: int) -> tuple[Tracked, dict[str, Any], dict[str, Any]]:
+        def build() -> tuple[Tracked, dict[str, Any], dict[str, Any]]:
+            inc = material(run, k, [drafting_ticket(4 * k + j + 2, name, AC16_TEXTS[name])
+                                    for j, name in enumerate(ELEMENTS[:3])])
             content = model_reply(**{name: element(AC16_TEXTS[name], [inc.evidence[j]])
                                      for j, name in enumerate(ELEMENTS[:3])})
-            return inc, expect(draft(run, inc, content), 201)
+            return inc, content, expect(draft(run, inc, content), 201)
         return run.once(f"ac17-b-{k}", build)
 
     def impact_undetermined(k: int):
         def case(run: Run) -> str:
-            inc, body = no_impact_draft(run, k)
+            inc, content, body = no_impact_draft(run, k)
             impact = body["elements"]["impact"]
-            problems = citation_problems(body, inc)
+            problems = citation_problems(body, inc) + dropped_problems(body, content)
             if impact != element(UNDETERMINED, []):
                 problems.insert(0, f"impact is {impact}")
             return problems_or(problems, f"Incident {k + 1} without impact evidence",
@@ -1960,24 +2111,28 @@ def ac18() -> list[Case]:
 
     def flagged(run: Run) -> dict[str, bool]:
         def build() -> dict[str, bool]:
-            inc = drafting_subject(run)
             found: dict[str, bool] = {}
             for start in range(0, len(texts), len(ELEMENTS)):
-                batch = dict(zip(ELEMENTS, texts[start:start + len(ELEMENTS)]))
-                content = {name: element(t["text"], [] if t["text"] == UNDETERMINED
-                                         else inc.evidence[:1]) for name, t in batch.items()}
+                batch = texts[start:start + len(ELEMENTS)]
+                inc = material(run, start, [drafting_ticket(start + j, "nature", t["text"])
+                                            for j, t in enumerate(batch)])
+                combined = "\n\n".join(t["text"] for t in batch)
+                content = model_reply(nature=element(combined, inc.evidence))
                 body = expect(draft(run, inc, content), 201)
                 # Flags only count on a draft that keeps the rules, its citations included.
                 problems = structure_problems(body, inc) + citation_problems(body, inc)
                 if problems:
-                    raise Fail(f"Draft of {', '.join(t['text_id'] for t in batch.values())}: "
+                    raise Fail(f"Draft of {', '.join(t['text_id'] for t in batch)}: "
                                f"{'; '.join(problems)}")
-                for name, t in batch.items():
-                    item = body["elements"][name]
-                    if item["text"] != t["text"]:
-                        raise Fail(f"{name} came back as {item['text']!r}, not "
-                                   f"{t['text_id']}'s {t['text']!r}")
-                    found[t["text_id"]] = bool(item["sensitive_flags"])
+                item = body["elements"]["nature"]
+                for t in batch:
+                    if t["text"] not in item["text"]:
+                        raise Fail(f"Controlled text {t['text_id']} was rewritten; cannot "
+                                   "evaluate the fixed sensitive-detail sample")
+                    found[t["text_id"]] = any(
+                        flag["excerpt"].strip() and (flag["excerpt"] in t["text"]
+                                                     or t["text"] in flag["excerpt"])
+                        for flag in item["sensitive_flags"])
             return found
         return run.once("ac18", build)
 

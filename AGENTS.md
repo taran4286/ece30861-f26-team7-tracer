@@ -50,6 +50,7 @@ The business logic is independent of the web framework; the FastAPI layer (route
 
 - `system-openapi.yaml`: the Tracer Shared System API, copied verbatim from the version shared with Team 10 (its `info.version` names it). Don't edit it here; when the pod agrees on a new version, replace the whole file. The status page, the tester and the tests read it.
 - `tester-openapi.yaml`: the Tracer Shared Tester API, copied and replaced the same way. The tester reads it.
+- `tester/spec.py` also validates the class-required optional `coverage.model` measure locally; the shared pod spec copies remain unchanged. Self-only inclusion and design traceability are described in `tester/AGENTS.md`.
 - `app/`: the system's foundation modules (`app/AGENTS.md`), its FastAPI app `system_app` in `app/api/`, and its business logic in `app/services/`.
 - `server.py`: the deployed ASGI app; it mounts the system at `/system` and the tester at `/tester`, and serves a landing page at `/` (see Deployment).
 - `tester/`: our tester's FastAPI app, `tester_app`, its session storage, the cross-team test cases it runs against a target system, and an LLM stub a session's `llm_base_url` can point at; it never imports `app`.
@@ -64,6 +65,7 @@ The business logic is independent of the web framework; the FastAPI layer (route
 
 - `DATABASE_URL`: the app role's connection, used by the service and tests, e.g. `postgresql+psycopg://tracer_app:pass@127.0.0.1:5432/tracer`.
 - `TESTER_DATABASE_URL`: the tester role's connection, used by the tester's session storage and tests and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_tester:pass@127.0.0.1:5432/tracer`.
+- `TESTER_OWN_SYSTEM_URL`: optional, defaults to `https://ece30861-f26-team7-tracer.vercel.app/system`. It identifies our own target for model coverage; set it to the local system base URL for local self-tests. It is read by the tester only, contains no credentials, and does not change the target selected at setup.
 - `ADMIN_DATABASE_URL`: the owner role's connection, used only by `scripts/setup_db.py` and never read by `app/config.py`, e.g. `postgresql+psycopg://tracer_owner:pass@127.0.0.1:5432/tracer`.
 - `LLM_API_KEY`, `LLM_MODEL` and `LLM_TRUSTED_BASE_URL`: optional, all unset by default, read by `app/config.py` for drafting. The key is sent only to a session whose `llm_base_url` is the trusted URL (the same scheme, host, port and path), and the model name only when set (see `app/services/AGENTS.md`, "Draft requests").
 - `.env.example` holds placeholder values; never commit real credentials.

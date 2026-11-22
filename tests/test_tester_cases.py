@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tester import business_days, stub
+from tester import business_days, model_coverage, stub
 from tester.cases import SETUP_TEST_NOW, STATES, clock_problems, name, planned
 from tester.client import Reply, Target
 from tester.spec import response_errors, schema_errors
@@ -180,10 +180,150 @@ def test_every_llm_change_is_set_back_to_the_failure_stub(conforming, conforming
 def test_drafts_go_through_the_testers_stub(conforming, conforming_system):
     fake, sent = conforming_system
     drafted = [url for method, url, _ in sent if method == "POST" and url.endswith("/drafts")]
-    # AC-09 (a)'s ten, AC-21's two, AC-09 (c)'s two, AC-16's fourteen, AC-17's eight, AC-18's five
-    assert len(drafted) == 41
+    # The earlier 41 requests plus the FPI draft and the acceptance subject's draft.
+    assert len(drafted) == 43
     assert conforming["AC-18-detailed-texts-flagged"]["message"].startswith("10/10")
     assert conforming["AC-18-clean-texts-not-flagged"]["message"].startswith("0/10")
+
+
+@pytest.mark.parametrize("criterion", ["AC-16", "AC-17", "AC-18"])
+def test_controlled_valid_draft_text_is_supported_by_its_cited_fixture(criterion):
+    fake = FakeSystem()
+    run_against(fake, criterion)
+    checked = 0
+    for session in fake.sessions.values():
+        for draft in session.drafts.values():
+            for item in draft["elements"].values():
+                if item["text"] == "Not yet determined":
+                    continue
+                assert item["citations"]
+                for paragraph in item["text"].split("\n\n"):
+                    assert any(paragraph in session.evidence[eid]["summary"]
+                               for eid in item["citations"])
+                checked += 1
+    assert checked > 0
+
+
+@pytest.mark.parametrize("criterion", ["AC-16", "AC-23"])
+def test_allowed_response_extensions_and_omitted_null_audit_metadata_pass(criterion):
+    results = run_against(FakeSystem(drafts_extension=True, compact_acceptance_audit=True), criterion)
+    assert {tid: r["message"] for tid, r in results.items() if r["outcome"] != "pass"} == {}
+
+
+def test_a_draft_of_placeholders_fails_the_drafting_cases():
+    # Rewording is allowed, but a system that never drafts mustn't pass AC-16 and AC-17.
+    def all_undetermined(http):
+        class Wrapped:
+            def request(self, method, url, **kwargs):
+                response = http.request(method, url, **kwargs)
+                if method == "POST" and url.endswith("/drafts") and response.status_code == 201:
+                    body = response.json()
+                    body["elements"] = {name: {"text": "Not yet determined", "citations": [],
+                                               "sensitive_flags": []} for name in body["elements"]}
+                    return httpx2.Response(201, json=body)
+                return response
+        return Wrapped()
+
+    for criterion, drafted in [("AC-16", "has-four-elements"), ("AC-16", "FPI-draft"),
+                               ("AC-17", "cites-own-evidence"),
+                               ("AC-17", "impact-not-yet-determined")]:
+        results = run_against(FakeSystem(), criterion, wrap=all_undetermined)
+        cases = {tid: r for tid, r in results.items() if drafted in tid}
+        assert cases
+        assert all(r["outcome"] == "fail" and "though the model drafted it" in r["message"]
+                   for r in cases.values()), cases
+
+
+def test_a_failed_acceptance_is_evaluated_not_a_setup_failure():
+    results = run_against(FakeSystem(bugs={"accept_no_audit"}), "AC-23")
+    accepted = results["AC-23-draft-accept-once-audited"]
+    assert accepted["outcome"] == "fail"
+    assert accepted["message"].startswith("Draft acceptance: ")
+    # The first acceptance itself succeeded, so the repeat is still evaluated.
+    assert results["AC-23-draft-repeat-acceptance-conflict"]["outcome"] == "pass"
+    measure = model_coverage.measure(list(results.values()))
+    assert "P5-D14" in measure["basis"]
+
+
+def test_a_rejected_first_acceptance_is_the_repeat_cases_setup_failure():
+    results = run_against(FakeSystem(bugs={"accept_responder_allowed"}), "AC-23")
+    # Accepting as Responder succeeds, so the approver's acceptance is already a repeat.
+    accepted = results["AC-23-draft-accept-once-audited"]
+    assert accepted["outcome"] == "fail" and not accepted["message"].startswith("Setup failed:")
+    repeat = results["AC-23-draft-repeat-acceptance-conflict"]
+    assert repeat["outcome"] == "fail"
+    assert repeat["message"] == "Setup failed: the first acceptance returned 409, not 200"
+
+
+def test_structural_draft_checks_allow_a_supported_paraphrase():
+    results = run_against(FakeSystem(paraphrases_drafts=True), "AC-16")
+    assert {tid: r["message"] for tid, r in results.items() if r["outcome"] != "pass"} == {}
+
+
+@pytest.mark.parametrize("kind", ["fpi-session", "fpi-incident", "acceptance-session"])
+def test_failed_drafting_prerequisites_do_not_count_as_model_evaluation(kind):
+    fake = FakeSystem()
+    server = FastAPI()
+    server.mount("/system", fake.app)
+    with TestClient(server, base_url="http://target/system") as http:
+        sid = "prerequisite-review"
+        http.post("/test/setup", json={"session_id": sid, "setup": {}})
+        sent = []
+
+        class RejectedPrerequisite:
+            def request(self, method, url, **kwargs):
+                session = kwargs.get("headers", {}).get("X-Test-Run", "")
+                sent.append((method, url, session))
+                body = kwargs.get("json") or {}
+                suffix = "-accept-other" if kind == "acceptance-session" else "-draft-fpi"
+                if (kind != "fpi-incident" and method == "POST" and url == "/test/setup"
+                        and body["session_id"].endswith(suffix)):
+                    return httpx2.Response(400, json={"message": "Rejected preparation",
+                                                      "source": "system"})
+                if (kind == "fpi-incident" and method == "POST" and url == "/incidents"
+                        and session.endswith(suffix)):
+                    return httpx2.Response(400, json={"error": "VALIDATION_ERROR",
+                                                      "message": "Rejected preparation",
+                                                      "field": "title"})
+                return http.request(method, url, **kwargs)
+
+        selected = [c for c in planned() if (
+            c[0].startswith("AC-23-draft-") if kind == "acceptance-session"
+            else c[0] == "AC-16-FPI-draft-is-6-K")]
+        results = run_cases(selected, Target(RejectedPrerequisite(), sid), TESTER_URL)
+        failed = [r for r in results if r["outcome"] != "pass"]
+        assert len(failed) == 1
+        assert failed[0]["message"].startswith("Setup failed:")
+        assert model_coverage.measure(results)["covered"] == 0
+        if kind.startswith("fpi"):
+            assert not any(url.endswith("/drafts") for _, url, _ in sent)
+        else:
+            assert not any(session.endswith("-accept-other") for _, _, session in sent)
+
+
+@pytest.mark.parametrize("omit_status", ["Proposed", "Accepted", "both"])
+def test_draft_responses_may_omit_optional_acceptance_metadata(omit_status):
+    fake = FakeSystem()
+    server = FastAPI()
+    server.mount("/system", fake.app)
+    with TestClient(server, base_url="http://target/system") as http:
+        sid = "optional-proposal-metadata"
+        http.post("/test/setup", json={"session_id": sid, "setup": {}})
+
+        class WithoutProposalMetadata:
+            def request(self, method, url, **kwargs):
+                response = http.request(method, url, **kwargs)
+                if method == "POST" and response.status_code in (200, 201):
+                    body = response.json()
+                    if "draft_id" in body and (omit_status == "both" or body["status"] == omit_status):
+                        body.pop("accepted_by", None)
+                        body.pop("accepted_at", None)
+                        return httpx2.Response(response.status_code, json=body)
+                return response
+
+        cases = [c for c in planned() if c[0].startswith("AC-23-draft-")]
+        results = run_cases(cases, Target(WithoutProposalMetadata(), sid), TESTER_URL)
+        assert {r["test_id"]: r["message"] for r in results if r["outcome"] != "pass"} == {}
 
 
 def test_a_system_that_repairs_bad_replies_passes_too():
@@ -360,6 +500,11 @@ def test_the_testers_calendar_counts_4_business_days(start, due):
         ("draft_adds_citation", "AC-18-clean-texts-not-flagged"),
         ("draft_adds_citation", "AC-17-a-draft-01-cites-own-evidence"),
         ("flags_everything", "AC-18-clean-texts-not-flagged"),
+        ("draft_fpi_wrong_form", "AC-16-FPI-draft-is-6-K"),
+        ("accept_no_audit", "AC-23-draft-accept-once-audited"),
+        ("accept_moves_incident", "AC-23-draft-accept-once-audited"),
+        ("accept_repeat_allowed", "AC-23-draft-repeat-acceptance-conflict"),
+        ("accept_responder_allowed", "AC-23-draft-accept-as-Responder-forbidden"),
     ],
 )
 def test_cases_fail_a_faulty_system(bug, test_id):

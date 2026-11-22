@@ -88,6 +88,16 @@ For each attempt, append the manifest row **including failures**, keep the provi
 
 For each of the five named cases, both reviewers fill `missing_impact_review.csv` from the actual API draft: `actual_impact_text` must be exactly `Not yet determined`, `citations_json` must be `[]`, and `sensitive_flags_json` must be `[]`. All five must pass after adjudication. Also inspect the raw provider completion to distinguish correct LLM behavior from any service transformation. A 503 or missing response does not satisfy the placeholder check. Do not count the additional unknown-scope case as a sixth missing-impact case.
 
+## Full-duration timeout check (AC-21b)
+
+The regular cross-team suite uses the pod's 10-second project-call limit, so the real 60-second timeout is a separate check. A shortened local test does not establish the full-duration result.
+
+1. Prepare a new isolated session with `llm_base_url` set to `https://ece30861-f26-team7-tracer.vercel.app/tester/llm/silent`. Confirm the URL through the settings endpoint before requesting any draft. The silent stub waits 65 seconds; it does not use Gemini.
+2. Create an incident, import synthetic evidence and record its human-supplied Material determination. Keep the snapshot and, locally, the incident-scoped draft count.
+3. With a standalone HTTP client whose timeout is 75 seconds, measure one draft request from just before sending it until its response arrives. Keep the regular suite's project timeout unchanged.
+4. Require HTTP 503, error `DRAFTING_UNAVAILABLE`, message `Drafting unavailable`, and elapsed time in the AC-21b interval of 58–62 seconds. Compare the snapshot after the call; local tests also compare the draft count because the public snapshot does not expose drafts.
+5. Retain the session ID, target URL, elapsed time, response, source version and readback checks as separate evidence. This standalone result is not inserted into the standard suite's model-coverage count.
+
 ## Statement selection and labels
 
 Traverse `nature`, `scope`, `timing`, then `impact` in that order, taking the first four factual sentences as four slots per draft. If a sentence makes several claims, judge it supported only when **all** claims are supported. Copy each sentence verbatim, including its element's citation IDs, and quote the supporting or conflicting evidence. Do not count the exact `Not yet determined` placeholder as a factual statement. Record a shortage instead of inventing or duplicating statements; the 40-statement evaluation is then incomplete and must be rerun under a documented revised protocol.

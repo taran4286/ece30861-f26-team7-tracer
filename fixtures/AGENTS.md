@@ -11,6 +11,8 @@ The static JSON items our tester sends to target systems.
 
 See the evaluation README for [provider configuration](evaluation/README.md#provider-configuration), [attempt capture](evaluation/README.md#capture-each-attempt-before-validation), [independent review and adjudication](evaluation/README.md#run-a-draft-evaluation), [missing-impact checks](evaluation/README.md#five-missing-impact-checks-ac-17), and [scoring thresholds](evaluation/README.md#score-the-results).
 
+The [full-duration timeout procedure](evaluation/README.md#full-duration-timeout-check-ac-21b) measures the real deadline with the silent stub as a standalone request and retains separate evidence; the regular cross-team suite keeps its 10-second project-call limit.
+
 ## Rules
 
 - Each top-level JSON file is an array of items that match the `system-openapi.yaml` schema exactly, so the tester sends them as they are. The offline `evaluation/` datasets are structured objects with metadata and reviewer-only expectations, not API request bodies; send only the named incident/import bodies, map generated evidence IDs, and never supply reviewer keys to a provider.

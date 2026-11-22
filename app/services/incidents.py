@@ -62,7 +62,9 @@ def create_incident(
             tx, AuditAction.CREATE_INCIDENT, incident.incident_id, None, after,
             user_id=user_id, session_id=session_id,
         )
-        return incident_to_dict(tx, incident)
+        # This new ID has no related rows yet. Use the shared formatter without three
+        # empty-table reads; transaction() still commits the incident and audit together.
+        return _incident_dict(incident, None, [], [], session)
 
 
 def get_incident(
@@ -70,9 +72,11 @@ def get_incident(
 ) -> dict[str, Any]:
     """GET /incidents/{incident_id}: the full Incident, for every role."""
     with transaction() as tx:
-        load_session(tx, session_id)
+        # Keep a strong reference: SQLAlchemy's identity map uses weak references, so
+        # discarding this row would make the response formatter fetch it a second time.
+        session = load_session(tx, session_id)
         require_role(role, Operation.READ)
-        return incident_to_dict(tx, load_incident(tx, incident_id, session_id=session_id))
+        return incident_to_dict(tx, load_incident(tx, incident_id, session_id=session.session_id))
 
 
 def load_incident(
