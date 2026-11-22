@@ -35,6 +35,9 @@ class Run:
         self.target = target
         self.session_id = target.session_id if session_id is None else session_id
         self.tester_url = tester_url
+        # A reset a case couldn't make, such as setting the LLM back to the failure stub; the
+        # next case tries it again before it runs.
+        self.pending_reset: Callable[[], None] | None = None
         self._setups: dict[str, tuple[bool, Any]] = {}
         self._baseline: dict[str, Any] | None = None
 
@@ -70,6 +73,20 @@ class Run:
             raise Fail(f"POST /test/setup returned session_id {body['session_id']}, not "
                        f"{session_id}")
         return Run(self.target, session_id, self.tester_url)
+
+    def settle(self) -> None:
+        """Make a reset an earlier case couldn't, so this case doesn't run on the state that case
+        left; a reset that fails again fails or errors this case, and the next tries once more."""
+        if self.pending_reset is None:
+            return
+        try:
+            self.pending_reset()
+        except Fail as exc:
+            raise Fail(f"Before this case, an earlier case's reset failed again: {exc}") from exc
+        except TargetError as exc:
+            raise TargetError(exc.source, "Before this case, an earlier case's reset failed "
+                                          f"again: {exc.message}") from exc
+        self.pending_reset = None
 
     def once(self, key: str, build: Callable[[], Any]) -> Any:
         """Build a shared setup on first use; a failed build fails every case that needs it."""
@@ -182,6 +199,7 @@ def run_cases(
                             "message": "Not run: the run reached its time limit"})
             continue
         try:
+            run.settle()
             result = {"test_id": test_id, "outcome": "pass", "message": case(run)}
         except Stopped as exc:
             stopped = True

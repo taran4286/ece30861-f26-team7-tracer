@@ -102,6 +102,7 @@ BUGS = {
     "draft_keeps_foreign_citation",  # a citation of another incident's evidence is kept
     "draft_keeps_uncited_text",  # drafted text without citations is kept
     "draft_rewrites_undetermined",  # Not yet determined comes back with a full stop
+    "draft_adds_citation",      # each drafted element also cites an unknown evidence ID
     "flags_nothing",            # drafts never carry sensitive flags
     "flags_everything",         # every drafted element gets a sensitive flag
     "group_self_link",          # a group may list the same incident twice
@@ -815,6 +816,8 @@ class FakeSystem:
             flags = [{"excerpt": text, "reason": "detail"}]
         else:
             flags = sensitive_flags(text)
+        if "draft_adds_citation" in self.bugs:
+            kept = [*kept, "ev-unknown"]
         return {"text": text, "citations": kept, "sensitive_flags": flags}
 
     @staticmethod

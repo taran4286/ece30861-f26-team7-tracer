@@ -271,11 +271,21 @@ def failure_stub(run: Run) -> str:
 
 def llm_at(run: Run, content: dict[str, Any] | str):
     """Run the block with the session's LLM a stub replying `content` (JSON for a dict), then
-    set it back to the failure stub."""
+    set it back to the failure stub. Until the target confirms that reset, it stays the run's
+    pending reset, so the next case tries it again before running on a reply stub."""
     text = content if isinstance(content, str) else json.dumps(content)
-    return _set_back(lambda: run.set_llm(stub.reply_url(tester_url(run), text)),
-                     lambda: run.set_llm(failure_stub(run)),
-                     "llm_base_url back to the failure stub")
+
+    def change() -> None:
+        # This block sets the URL itself, so an earlier reset no longer needs making.
+        run.pending_reset = None
+        run.set_llm(stub.reply_url(tester_url(run), text))
+
+    def reset() -> None:
+        run.pending_reset = lambda: run.set_llm(failure_stub(run))
+        run.pending_reset()
+        run.pending_reset = None
+
+    return _set_back(change, reset, "llm_base_url back to the failure stub")
 
 
 def expected_due(start: date, stated: date) -> date:
@@ -1957,6 +1967,11 @@ def ac18() -> list[Case]:
                 content = {name: element(t["text"], [] if t["text"] == UNDETERMINED
                                          else inc.evidence[:1]) for name, t in batch.items()}
                 body = expect(draft(run, inc, content), 201)
+                # Flags only count on a draft that keeps the rules, its citations included.
+                problems = structure_problems(body, inc) + citation_problems(body, inc)
+                if problems:
+                    raise Fail(f"Draft of {', '.join(t['text_id'] for t in batch.values())}: "
+                               f"{'; '.join(problems)}")
                 for name, t in batch.items():
                     item = body["elements"][name]
                     if item["text"] != t["text"]:

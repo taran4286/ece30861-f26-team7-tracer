@@ -64,6 +64,22 @@ class TimesOut:
         return self.http.request(method, url, **kwargs)
 
 
+class LlmResetTimesOut:
+    """An HTTP client whose first `failures` calls setting the LLM back to the failure stub, after
+    AC-21's first case sets it, never answer."""
+
+    def __init__(self, http: TestClient, failures: int):
+        self.http, self.failures, self.set_once = http, failures, False
+
+    def request(self, method: str, url: str, **kwargs):
+        if method == "PATCH" and (kwargs.get("json") or {}).get("llm_base_url") == FAILURE_STUB:
+            if self.set_once and self.failures:
+                self.failures -= 1
+                raise httpx2.ReadTimeout("timed out")
+            self.set_once = True
+        return self.http.request(method, url, **kwargs)
+
+
 class ResetTimesOut:
     """An HTTP client whose calls setting test_now back to the setup default never answer."""
 
@@ -217,6 +233,28 @@ def test_a_failed_clock_case_still_sets_the_clock_back(bug, test_id):
     assert {s.run["test_now"] for s in fake.sessions.values()} == {SETUP_TEST_NOW}
 
 
+def test_a_failed_llm_reset_is_made_before_the_next_case():
+    fake = FakeSystem()
+    results = run_against(fake, "AC-16", wrap=lambda http: LlmResetTimesOut(http, 1))
+    first, second = results["AC-16-draft-01-has-four-elements"], results[
+        "AC-16-draft-02-has-four-elements"]
+    assert (first["outcome"], first["source"]) == ("error", "communication"), first
+    # The next case sets the failure stub back before it drafts, and passes.
+    assert second["outcome"] == "pass", second
+    assert fake.sessions["run-1"].run["llm_base_url"] == FAILURE_STUB
+
+
+def test_a_reset_that_fails_again_fails_the_next_case_and_is_tried_once_more():
+    fake = FakeSystem()
+    results = run_against(fake, "AC-16", wrap=lambda http: LlmResetTimesOut(http, 2))
+    second, third = results["AC-16-draft-02-has-four-elements"], results[
+        "AC-16-draft-03-has-four-elements"]
+    assert second["outcome"] == "error", second
+    assert second["message"].startswith("Before this case, an earlier case's reset failed again")
+    assert third["outcome"] == "pass", third
+    assert fake.sessions["run-1"].run["llm_base_url"] == FAILURE_STUB
+
+
 def test_a_failed_reset_is_added_to_a_failed_cases_message():
     # The case fails inside clock_at, and setting the clock back gets no answer either.
     results = run_against(FakeSystem({"flags_not_built"}), "AC-12", wrap=ResetTimesOut)
@@ -318,6 +356,9 @@ def test_the_testers_calendar_counts_4_business_days(start, due):
         ("draft_keeps_uncited_text", "AC-17-a-uncited-text-not-passed-on"),
         ("draft_rewrites_undetermined", "AC-17-b-incident-01-impact-not-yet-determined"),
         ("flags_nothing", "AC-18-detailed-texts-flagged"),
+        ("draft_adds_citation", "AC-18-detailed-texts-flagged"),
+        ("draft_adds_citation", "AC-18-clean-texts-not-flagged"),
+        ("draft_adds_citation", "AC-17-a-draft-01-cites-own-evidence"),
         ("flags_everything", "AC-18-clean-texts-not-flagged"),
     ],
 )
