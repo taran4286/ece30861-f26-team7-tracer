@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tester import business_days, stub
+from tester import business_days, model_coverage, stub
 from tester.cases import SETUP_TEST_NOW, STATES, clock_problems, name, planned
 from tester.client import Reply, Target
 from tester.spec import response_errors, schema_errors
@@ -213,6 +213,72 @@ def test_allowed_response_extensions_and_omitted_null_audit_metadata_pass(criter
 def test_structural_draft_checks_allow_a_supported_paraphrase():
     results = run_against(FakeSystem(paraphrases_drafts=True), "AC-16")
     assert {tid: r["message"] for tid, r in results.items() if r["outcome"] != "pass"} == {}
+
+
+@pytest.mark.parametrize("kind", ["fpi-session", "fpi-incident", "acceptance-session"])
+def test_failed_drafting_prerequisites_do_not_count_as_model_evaluation(kind):
+    fake = FakeSystem()
+    server = FastAPI()
+    server.mount("/system", fake.app)
+    with TestClient(server, base_url="http://target/system") as http:
+        sid = "prerequisite-review"
+        http.post("/test/setup", json={"session_id": sid, "setup": {}})
+        sent = []
+
+        class RejectedPrerequisite:
+            def request(self, method, url, **kwargs):
+                session = kwargs.get("headers", {}).get("X-Test-Run", "")
+                sent.append((method, url, session))
+                body = kwargs.get("json") or {}
+                suffix = "-accept-other" if kind == "acceptance-session" else "-draft-fpi"
+                if (kind != "fpi-incident" and method == "POST" and url == "/test/setup"
+                        and body["session_id"].endswith(suffix)):
+                    return httpx2.Response(400, json={"message": "Rejected preparation",
+                                                      "source": "system"})
+                if (kind == "fpi-incident" and method == "POST" and url == "/incidents"
+                        and session.endswith(suffix)):
+                    return httpx2.Response(400, json={"error": "VALIDATION_ERROR",
+                                                      "message": "Rejected preparation",
+                                                      "field": "title"})
+                return http.request(method, url, **kwargs)
+
+        selected = [c for c in planned() if (
+            c[0].startswith("AC-23-draft-") if kind == "acceptance-session"
+            else c[0] == "AC-16-FPI-draft-is-6-K")]
+        results = run_cases(selected, Target(RejectedPrerequisite(), sid), TESTER_URL)
+        failed = [r for r in results if r["outcome"] != "pass"]
+        assert len(failed) == 1
+        assert failed[0]["message"].startswith("Setup failed:")
+        assert model_coverage.measure(results)["covered"] == 0
+        if kind.startswith("fpi"):
+            assert not any(url.endswith("/drafts") for _, url, _ in sent)
+        else:
+            assert not any(session.endswith("-accept-other") for _, _, session in sent)
+
+
+@pytest.mark.parametrize("omit_status", ["Proposed", "Accepted", "both"])
+def test_draft_responses_may_omit_optional_acceptance_metadata(omit_status):
+    fake = FakeSystem()
+    server = FastAPI()
+    server.mount("/system", fake.app)
+    with TestClient(server, base_url="http://target/system") as http:
+        sid = "optional-proposal-metadata"
+        http.post("/test/setup", json={"session_id": sid, "setup": {}})
+
+        class WithoutProposalMetadata:
+            def request(self, method, url, **kwargs):
+                response = http.request(method, url, **kwargs)
+                if method == "POST" and response.status_code in (200, 201):
+                    body = response.json()
+                    if "draft_id" in body and (omit_status == "both" or body["status"] == omit_status):
+                        body.pop("accepted_by", None)
+                        body.pop("accepted_at", None)
+                        return httpx2.Response(response.status_code, json=body)
+                return response
+
+        cases = [c for c in planned() if c[0].startswith("AC-23-draft-")]
+        results = run_cases(cases, Target(WithoutProposalMetadata(), sid), TESTER_URL)
+        assert {r["test_id"]: r["message"] for r in results if r["outcome"] != "pass"} == {}
 
 
 def test_a_system_that_repairs_bad_replies_passes_too():

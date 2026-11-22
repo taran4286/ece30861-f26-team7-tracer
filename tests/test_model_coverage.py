@@ -85,8 +85,8 @@ def test_only_the_configured_complete_system_url_is_a_self_test(target, own, exp
 
 
 def test_own_system_setting_defaults_to_production_and_allows_a_local_override():
-    settings = config.TesterSettings(_env_file=None, tester_database_url="unused")
-    assert settings.tester_own_system_url == config.DEFAULT_OWN_SYSTEM_URL
+    assert config.TesterSettings.model_fields["tester_own_system_url"].default == (
+        config.DEFAULT_OWN_SYSTEM_URL)
     assert config.TesterSettings(_env_file=None, tester_database_url="unused",
                                 tester_own_system_url=OWN+"/").tester_own_system_url == OWN
     with pytest.raises(ValidationError):

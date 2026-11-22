@@ -1595,15 +1595,15 @@ def draft_acceptance_cases() -> list[Case]:
         reply = run.call("POST", ACCEPT, APPROVER, draft_id=proposed["draft_id"])
         body = expect(reply, 200)
         problems = []
-        if (body["status"], body["accepted_by"], body["advisory"]) != (
-                "Accepted", APPROVER.user, True):
-            problems.append("acceptance status, user or advisory flag is wrong")
+        if (body["status"], body["advisory"]) != ("Accepted", True):
+            problems.append("acceptance status or advisory flag is wrong")
+        if body.get("accepted_by") not in (None, APPROVER.user):
+            problems.append("acceptance names the wrong user")
         for key in ("draft_id", "incident_id", "form_type", "elements"):
             if body[key] != proposed[key]:
                 problems.append(f"acceptance changed {key}")
-        if body["accepted_at"] is None:
-            problems.append("accepted_at is missing")
-        else:
+        # These response fields are optional. The mandatory audit records the actor/time.
+        if body.get("accepted_at") is not None:
             problems += clock_problems("accepted_at", body["accepted_at"], reply)
         if declared_fields("Incident", get(run, inc.id)) != declared_fields("Incident", before):
             problems.append("acceptance changed the incident")
@@ -1616,15 +1616,17 @@ def draft_acceptance_cases() -> list[Case]:
             if (entry["action"], entry["target_id"], entry["user_id"]) != (
                     "accept_draft", inc.id, APPROVER.user):
                 problems.append("acceptance audit identity is wrong")
+            problems += clock_problems("acceptance audit timestamp", entry["timestamp"], reply)
             # Audit payloads are free-form in the shared schema. An implementation can
             # omit null acceptance metadata or add extra fields while preserving the change.
             expected_before = {k: proposed[k] for k in ("draft_id", "status")}
             if not isinstance(entry["before"], dict) or any(
                     entry["before"].get(k) != value for k, value in expected_before.items()) or any(
-                    k in entry["before"] and entry["before"][k] != proposed[k] for k in fields):
+                    k in entry["before"] and entry["before"][k] != proposed.get(k) for k in fields):
                 problems.append("acceptance audit before values are wrong")
+            expected_after = {k: body[k] for k in fields if body.get(k) is not None}
             if not isinstance(entry["after"], dict) or any(
-                    entry["after"].get(k) != body[k] for k in fields):
+                    entry["after"].get(k) != value for k, value in expected_after.items()):
                 problems.append("acceptance audit after values are wrong")
         return problems_or(problems, "Draft acceptance", "Accepted once with one audit entry; "
                            "draft content and incident unchanged")
@@ -1645,7 +1647,8 @@ def draft_acceptance_cases() -> list[Case]:
 
     def other_session(run: Run) -> str:
         _, proposed = subject(run)
-        other = run.prepare(f"{run.session_id}-accept-other", {"llm_base_url": failure_stub(run)})
+        other = run.once("accept-other-session", lambda: run.prepare(
+            f"{run.session_id}-accept-other", {"llm_base_url": failure_stub(run)}))
         return rejected(other, "POST", ACCEPT, APPROVER, NO_BODY, 404, "NOT_FOUND",
                         draft_id=proposed["draft_id"])
 
@@ -1939,11 +1942,15 @@ def ac16_draft(run: Run, k: int) -> tuple[Tracked, dict[str, Any], dict[str, Any
 
 def ac16() -> list[Case]:
     def fpi_draft(run: Run) -> str:
-        fpi = run.prepare(f"{run.session_id}-draft-fpi",
-                          {"registrant_type": "FPI", "llm_base_url": failure_stub(run)})
-        inc = material(fpi, 1, [drafting_ticket(18, "nature", "Unauthorized access was detected.")])
+        def prepare_subject():
+            fpi = run.prepare(f"{run.session_id}-draft-fpi",
+                              {"registrant_type": "FPI", "llm_base_url": failure_stub(run)})
+            inc = material(fpi, 1, [drafting_ticket(18, "nature", "Unauthorized access was detected.")])
+            return fpi, inc, get(fpi, inc.id)
+
+        # Preparation failures are shared-setup failures, not evaluated FPI draft checks.
+        fpi, inc, before = run.once("ac16-fpi-subject", prepare_subject)
         content = model_reply(nature=element("Unauthorized access was detected.", inc.evidence))
-        before = get(fpi, inc.id)
         try:
             body = expect(draft(fpi, inc, content), 201)
         finally:
