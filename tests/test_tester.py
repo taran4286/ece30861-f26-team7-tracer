@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from psycopg.errors import InsufficientPrivilege
+from starlette.requests import Request
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, OperationalError
 
@@ -23,6 +24,7 @@ from server import app as server_app
 from tester import config as tester_config
 from tester import db as tester_db
 from tester import pages as tester_pages
+from tester import public_url
 from tester.cases import planned
 from tester.models import RunStatus, StoredSession
 from tester.runner import report_problems
@@ -484,7 +486,28 @@ def test_a_run_reports_code_component_and_system_coverage(finished):
         "covered": None, "total": None, "basis": "The fake system doesn't measure code coverage"
     }
     assert (coverage["component"]["covered"], coverage["component"]["total"]) == (7, 7)
-    assert (coverage["system"]["covered"], coverage["system"]["total"]) == (13, 13)
+    assert (coverage["system"]["covered"], coverage["system"]["total"]) == (20, 20)
+
+
+def test_a_run_passes_every_case_against_a_conforming_fake_system(finished):
+    # The drafting cases reach the LLM stub at the tester URL the run route derived.
+    failed = {r["test_id"]: r["message"] for r in finished[1].json()["results"]
+              if r["outcome"] != "pass"}
+    assert failed == {}
+
+
+@pytest.mark.parametrize(("headers", "expected"), [
+    ([], "http://app.internal:8000/tester"),
+    ([(b"x-forwarded-proto", b"https"), (b"x-forwarded-host", b"tracer.example")],
+     "https://tracer.example/tester"),
+    ([(b"x-forwarded-proto", b"https, http"), (b"x-forwarded-host", b"tracer.example, proxy")],
+     "https://tracer.example/tester"),
+])
+def test_the_testers_public_url_follows_the_proxys_forwarded_headers(headers, expected):
+    scope = {"type": "http", "method": "POST", "scheme": "http", "path": "/tester/test/run",
+             "root_path": "/tester", "query_string": b"", "server": ("app.internal", 8000),
+             "headers": [(b"host", b"app.internal:8000"), *headers]}
+    assert public_url(Request(scope)) == expected
 
 
 def test_a_session_runs_only_once(finished):

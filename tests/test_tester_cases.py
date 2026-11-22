@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tester import business_days
+from tester import business_days, stub
 from tester.cases import SETUP_TEST_NOW, STATES, clock_problems, name, planned
 from tester.client import Reply, Target
 from tester.spec import response_errors, schema_errors
@@ -19,9 +19,14 @@ from tests.fake_system import FakeSystem
 # Target sets the 10 s call timeout on every request; TestClient warns that it ignores it.
 pytestmark = pytest.mark.filterwarnings("ignore:You should not use the 'timeout' argument")
 
-CRITERIA = ["AC-02", "AC-03", "AC-07", "AC-08", "AC-20", "AC-14", "AC-12", "AC-13", "AC-15",
-            "AC-06", "AC-09", "AC-23", "AC-01"]
+CRITERIA = ["AC-21", "AC-02", "AC-03", "AC-07", "AC-08", "AC-20", "AC-14", "AC-12", "AC-13",
+            "AC-15", "AC-06", "AC-09", "AC-23", "AC-04", "AC-05", "AC-19", "AC-16", "AC-17",
+            "AC-18", "AC-01"]
 SETTINGS = "/test/sessions/{session_id}/settings"
+# Where the cases tell the fake system to find the tester's LLM stub; its client reaches the
+# stub in-process whatever the host.
+TESTER_URL = "http://tester/tester"
+FAILURE_STUB = stub.fail_url(TESTER_URL)
 
 
 class StaleDate:
@@ -59,6 +64,22 @@ class TimesOut:
         return self.http.request(method, url, **kwargs)
 
 
+class LlmResetTimesOut:
+    """An HTTP client whose first `failures` calls setting the LLM back to the failure stub, after
+    AC-21's first case sets it, never answer."""
+
+    def __init__(self, http: TestClient, failures: int):
+        self.http, self.failures, self.set_once = http, failures, False
+
+    def request(self, method: str, url: str, **kwargs):
+        if method == "PATCH" and (kwargs.get("json") or {}).get("llm_base_url") == FAILURE_STUB:
+            if self.set_once and self.failures:
+                self.failures -= 1
+                raise httpx2.ReadTimeout("timed out")
+            self.set_once = True
+        return self.http.request(method, url, **kwargs)
+
+
 class ResetTimesOut:
     """An HTTP client whose calls setting test_now back to the setup default never answer."""
 
@@ -72,14 +93,21 @@ class ResetTimesOut:
 
 
 def run_against(fake: FakeSystem, criterion: str | None = None, wrap=None) -> dict[str, dict]:
-    """Run the planned cases (or one criterion's) against `fake` served under /system."""
+    """Run the planned cases (or one criterion's) against `fake` served under /system. A single
+    criterion other than AC-21 runs after AC-21's first case, which points the session's LLM at
+    the failure stub, as it would in a full run."""
     server = FastAPI()
     server.mount("/system", fake.app)
     http = TestClient(server, base_url="http://target/system")
     assert http.post("/test/setup", json={"session_id": "run-1", "setup": {}}).status_code == 201
-    cases = [c for c in planned() if criterion is None or c[0].startswith(f"{criterion}-")]
+    cases = planned()
+    if criterion is not None:
+        first = [] if criterion == "AC-21" else cases[:1]
+        cases = first + [c for c in cases if c[0].startswith(f"{criterion}-")]
     target = Target(wrap(http) if wrap else http, "run-1")
-    return {result["test_id"]: result for result in run_cases(cases, target)}
+    results = run_cases(cases, target, TESTER_URL)
+    return {r["test_id"]: r for r in results if criterion is None or r["test_id"].startswith(
+        f"{criterion}-")}
 
 
 @pytest.fixture(scope="module")
@@ -121,7 +149,7 @@ def test_every_clock_move_is_set_back_to_the_setup_default(conforming, conformin
     fake, sent = conforming_system
     moves: dict[str, list[str]] = {}
     for method, url, body in sent:
-        if method == "PATCH" and url.endswith("/settings"):
+        if method == "PATCH" and url.endswith("/settings") and "test_now" in body:
             assert set(body) == {"test_now"}
             moves.setdefault(url, []).append(body["test_now"])
     assert set(moves) == {SETTINGS.format(session_id="run-1"),
@@ -133,6 +161,51 @@ def test_every_clock_move_is_set_back_to_the_setup_default(conforming, conformin
         assert SETUP_TEST_NOW not in days[::2]
     assert {s: fake.sessions[s].run["test_now"] for s in ("run-1", "run-1-fpi")} == {
         "run-1": SETUP_TEST_NOW, "run-1-fpi": SETUP_TEST_NOW}
+
+
+def test_every_llm_change_is_set_back_to_the_failure_stub(conforming, conforming_system):
+    fake, sent = conforming_system
+    urls = [body["llm_base_url"] for method, url, body in sent
+            if method == "PATCH" and url == SETTINGS.format(session_id="run-1")
+            and "llm_base_url" in body]
+    # AC-21's first case sets the failure stub; each draft sets a reply stub, then sets it back.
+    assert urls[0] == FAILURE_STUB
+    assert len(urls) % 2 == 1
+    assert urls[2::2] == [FAILURE_STUB] * (len(urls) // 2)
+    assert all(url.startswith(f"{TESTER_URL}/llm/reply/") for url in urls[1::2])
+    assert {s: fake.sessions[s].run["llm_base_url"] for s in ("run-1", "run-1-fpi")} == {
+        "run-1": FAILURE_STUB, "run-1-fpi": FAILURE_STUB}
+
+
+def test_drafts_go_through_the_testers_stub(conforming, conforming_system):
+    fake, sent = conforming_system
+    drafted = [url for method, url, _ in sent if method == "POST" and url.endswith("/drafts")]
+    # AC-09 (a)'s ten, AC-21's two, AC-09 (c)'s two, AC-16's fourteen, AC-17's eight, AC-18's five
+    assert len(drafted) == 41
+    assert conforming["AC-18-detailed-texts-flagged"]["message"].startswith("10/10")
+    assert conforming["AC-18-clean-texts-not-flagged"]["message"].startswith("0/10")
+
+
+def test_a_system_that_repairs_bad_replies_passes_too():
+    # The spec allows a 503 or a draft that keeps its rules without what the model got wrong.
+    results = run_against(FakeSystem(repairs_drafts=True))
+    assert {t: r["message"] for t, r in results.items() if r["outcome"] != "pass"} == {}
+    for test_id in ("AC-09-c-model-materiality-not-passed-on",
+                    "AC-16-reply-missing-element-not-passed-on",
+                    "AC-17-a-other-incident-citation-not-passed-on",
+                    "AC-17-a-unknown-citation-not-passed-on",
+                    "AC-17-a-uncited-text-not-passed-on"):
+        assert results[test_id]["message"].startswith("201 draft without"), results[test_id]
+
+
+def test_drafting_cases_need_the_testers_url():
+    server = FastAPI()
+    server.mount("/system", FakeSystem().app)
+    http = TestClient(server, base_url="http://target/system")
+    http.post("/test/setup", json={"session_id": "run-1", "setup": {}})
+    results = run_cases(planned()[:1], Target(http, "run-1"))
+    assert (results[0]["outcome"], results[0]["source"]) == ("error", "tester")
+    assert "no tester URL" in results[0]["message"]
 
 
 def test_fpi_cases_act_in_a_second_session_prepared_as_fpi(conforming, conforming_system):
@@ -158,6 +231,28 @@ def test_a_failed_clock_case_still_sets_the_clock_back(bug, test_id):
     results = run_against(fake, test_id[:5])
     assert results[test_id]["outcome"] == "fail", results[test_id]
     assert {s.run["test_now"] for s in fake.sessions.values()} == {SETUP_TEST_NOW}
+
+
+def test_a_failed_llm_reset_is_made_before_the_next_case():
+    fake = FakeSystem()
+    results = run_against(fake, "AC-16", wrap=lambda http: LlmResetTimesOut(http, 1))
+    first, second = results["AC-16-draft-01-has-four-elements"], results[
+        "AC-16-draft-02-has-four-elements"]
+    assert (first["outcome"], first["source"]) == ("error", "communication"), first
+    # The next case sets the failure stub back before it drafts, and passes.
+    assert second["outcome"] == "pass", second
+    assert fake.sessions["run-1"].run["llm_base_url"] == FAILURE_STUB
+
+
+def test_a_reset_that_fails_again_fails_the_next_case_and_is_tried_once_more():
+    fake = FakeSystem()
+    results = run_against(fake, "AC-16", wrap=lambda http: LlmResetTimesOut(http, 2))
+    second, third = results["AC-16-draft-02-has-four-elements"], results[
+        "AC-16-draft-03-has-four-elements"]
+    assert second["outcome"] == "error", second
+    assert second["message"].startswith("Before this case, an earlier case's reset failed again")
+    assert third["outcome"] == "pass", third
+    assert fake.sessions["run-1"].run["llm_base_url"] == FAILURE_STUB
 
 
 def test_a_failed_reset_is_added_to_a_failed_cases_message():
@@ -239,6 +334,32 @@ def test_the_testers_calendar_counts_4_business_days(start, due):
         ("no_amendments", "AC-06-DisclosureRecorded-to-AmendmentPending"),
         ("amendment_closes", "AC-06-AmendmentPending-to-Closed"),
         ("amendment_keeps_form", "AC-06-AmendmentPending-to-DisclosureRecorded"),
+        ("llm_url_fixed", "AC-21-c-session-uses-failure-stub"),
+        ("drafting_message", "AC-21-a-stub-error-drafting-unavailable"),
+        ("drafting_message", "AC-21-a-non-JSON-reply-drafting-unavailable"),
+        ("draft_moves_incident", "AC-09-c-draft-has-no-materiality-field"),
+        ("draft_keeps_materiality", "AC-09-c-model-materiality-not-passed-on"),
+        ("group_relinks", "AC-04-second-link-no-duplicate"),
+        ("group_self_link", "AC-04-self-link-rejected"),
+        ("group_determination_alone", "AC-04-group-determination-on-all"),
+        ("misc_tag_accepted", "AC-05-misc-rejected"),
+        ("misc_tag_accepted", "AC-05-misc-among-valid-rejected"),
+        ("tags_not_stored", "AC-05-five-categories-stored"),
+        ("tags_not_stored", "AC-05-tags-replaced-by-approver"),
+        ("voluntary_ignored", "AC-19-voluntary-not-material-gives-8-01"),
+        ("voluntary_ignored", "AC-19-voluntary-retrievable"),
+        ("voluntary_with_material", "AC-19-voluntary-with-Material-rejected"),
+        ("draft_drops_impact", "AC-16-draft-01-has-four-elements"),
+        ("draft_rewrites_undetermined", "AC-16-draft-03-has-four-elements"),
+        ("draft_keeps_missing_element", "AC-16-reply-missing-element-not-passed-on"),
+        ("draft_keeps_foreign_citation", "AC-17-a-other-incident-citation-not-passed-on"),
+        ("draft_keeps_uncited_text", "AC-17-a-uncited-text-not-passed-on"),
+        ("draft_rewrites_undetermined", "AC-17-b-incident-01-impact-not-yet-determined"),
+        ("flags_nothing", "AC-18-detailed-texts-flagged"),
+        ("draft_adds_citation", "AC-18-detailed-texts-flagged"),
+        ("draft_adds_citation", "AC-18-clean-texts-not-flagged"),
+        ("draft_adds_citation", "AC-17-a-draft-01-cites-own-evidence"),
+        ("flags_everything", "AC-18-clean-texts-not-flagged"),
     ],
 )
 def test_cases_fail_a_faulty_system(bug, test_id):
