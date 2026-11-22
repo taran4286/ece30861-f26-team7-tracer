@@ -15,11 +15,12 @@ from app.errors import ErrorCode, TracerError
 from app.models import FormType, Incident, State
 from app.services.drafts import request_draft
 from app.services.evidence import import_evidence
-from app.services.incidents import create_incident
+from app.services.incidents import create_incident, get_incident
 from server import app as server_app
 from tester import stub
 from tests.helpers import (
     APPROVER,
+    BOARD,
     RESPONDER,
     change_session,
     in_session,
@@ -73,6 +74,14 @@ def test_the_reply_stub_returns_its_content_as_a_chat_completion(content):
     assert body["object"] == "chat.completion"
     assert body["choices"][0]["message"] == {"role": "assistant", "content": content}
     assert body["choices"][0]["finish_reason"] == "stop"
+
+
+def test_the_reply_stub_returns_empty_content_at_its_own_base_url():
+    url = stub.reply_url(TESTER, "")
+    assert url == f"{TESTER}/llm/reply"
+    response = completion(url)
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"] == {"role": "assistant", "content": ""}
 
 
 def test_a_trailing_slash_on_the_testers_url_is_dropped():
@@ -135,28 +144,43 @@ def draft(incident: dict[str, Any]) -> dict[str, Any]:
     return request_draft(incident["incident_id"], **in_session(APPROVER, incident["session_id"]))
 
 
-@pytest.mark.parametrize("url", [stub.fail_url(TESTER), stub.reply_url(TESTER, "not JSON")])
+def read(incident: dict[str, Any]) -> dict[str, Any]:
+    """The incident as a Board member of its session reads it."""
+    return get_incident(incident["incident_id"], **in_session(BOARD, incident["session_id"]))
+
+
+def assert_unavailable(raised: pytest.ExceptionInfo, incident: dict[str, Any],
+                       before: dict[str, Any], counts: dict[str, int]) -> None:
+    """The 503 a failed draft request gives, with no field, no rows and the incident as it was."""
+    error = raised.value
+    assert (error.code, error.field, error.message) == (
+        ErrorCode.DRAFTING_UNAVAILABLE, None, "Drafting unavailable")
+    assert table_counts() == counts
+    assert read(incident) == before
+
+
+@pytest.mark.parametrize("url", [stub.fail_url(TESTER), stub.reply_url(TESTER, "not JSON"),
+                                 stub.reply_url(TESTER, "")])
 def test_a_failing_stub_makes_drafting_unavailable_within_5_seconds(through_the_stub, url):
     incident = material_incident(url)
-    counts = table_counts()
+    before, counts = read(incident), table_counts()
     started = time.monotonic()
     with pytest.raises(TracerError) as raised:
         draft(incident)
     assert time.monotonic() - started < 5
-    assert (raised.value.code, raised.value.message) == (
-        ErrorCode.DRAFTING_UNAVAILABLE, "Drafting unavailable")
-    assert table_counts() == counts
+    assert_unavailable(raised, incident, before, counts)
 
 
 def test_the_silent_stub_makes_drafting_unavailable_at_the_deadline(through_the_stub, monkeypatch):
     monkeypatch.setattr(llm, "TIMEOUT_SECONDS", 0.5)
     monkeypatch.setattr(stub, "SILENT_SECONDS", 5)
     incident = material_incident(stub.silent_url(TESTER))
+    before, counts = read(incident), table_counts()
     started = time.monotonic()
     with pytest.raises(TracerError) as raised:
         draft(incident)
     assert 0.5 <= time.monotonic() - started < 2
-    assert raised.value.code == ErrorCode.DRAFTING_UNAVAILABLE
+    assert_unavailable(raised, incident, before, counts)
 
 
 def test_a_reply_stub_drafts_what_it_was_given(through_the_stub):

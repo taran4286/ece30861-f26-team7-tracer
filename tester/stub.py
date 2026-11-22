@@ -6,8 +6,9 @@ A system calls {llm_base_url}/chat/completions, so each mode is a base URL under
 - {tester}/llm/fail answers 500 at once.
 - {tester}/llm/silent answers nothing for SILENT_SECONDS, past the spec's 60 s, then 504.
 - {tester}/llm/reply/{content} answers 200 with a chat completion whose message content is
-  `content`, base64url-encoded in the path; reply_url builds it. The case that sets the URL
-  decides exactly what the model says, including replies a system must refuse.
+  `content`, base64url-encoded in the path, and {tester}/llm/reply one whose content is empty;
+  reply_url builds both. The case that sets the URL decides exactly what the model says,
+  including replies a system must refuse.
 
 The stub ignores the request body and stores nothing, so any instance can answer.
 """
@@ -44,9 +45,11 @@ def silent_url(tester_url: str) -> str:
 
 
 def reply_url(tester_url: str, content: str) -> str:
-    """The base URL of a stub whose reply's message content is `content`."""
+    """The base URL of a stub whose reply's message content is `content`. Empty content has no
+    path segment to encode it in, so it gets the reply mode's own base URL."""
     encoded = base64.urlsafe_b64encode(content.encode("utf-8")).rstrip(b"=").decode("ascii")
-    return f"{tester_url.rstrip('/')}/llm/reply/{encoded}"
+    base = f"{tester_url.rstrip('/')}/llm/reply"
+    return f"{base}/{encoded}" if encoded else base
 
 
 def decode(encoded: str) -> str | None:
@@ -78,12 +81,21 @@ async def silent() -> JSONResponse:
     return _error(504, f"The tester's LLM stub waited {SILENT_SECONDS:g} s", "timeout")
 
 
+@router.post(f"/llm/reply{COMPLETION}")
+async def empty_reply() -> JSONResponse:
+    return _completion("")
+
+
 @router.post("/llm/reply/{encoded}" + COMPLETION)
 async def reply(encoded: str) -> JSONResponse:
     content = decode(encoded)
     if content is None:
         return _error(400, "The reply isn't base64url-encoded UTF-8 of at most "
                            f"{MAX_CONTENT_BYTES} bytes", "invalid_request_error")
+    return _completion(content)
+
+
+def _completion(content: str) -> JSONResponse:
     return JSONResponse({
         "id": "chatcmpl-tester-stub",
         "object": "chat.completion",
