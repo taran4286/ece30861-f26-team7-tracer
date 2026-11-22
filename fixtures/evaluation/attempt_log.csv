@@ -1,0 +1,1 @@
+case_id,attempt_id,session_id,incident_id,attempted_at_utc,provider,model,prompt_commit,raw_provider_path,api_response_path,http_status,capture_status,notes
