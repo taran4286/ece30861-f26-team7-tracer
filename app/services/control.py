@@ -16,6 +16,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.clock import utcnow
+from app.config import get_settings
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
 from app.models import AuditEntry, Incident, RegistrantType, TestSession
@@ -31,12 +32,13 @@ from app.services.validation import (
 from app.services.workflow import audit_entry_to_dict
 from app.sessions import load_session
 
-# The pod defaults an empty setup gets (system spec, "Testing interface update").
+# The pod defaults an empty setup gets (system spec, "Testing interface update"). Its LLM is
+# the deployment's configured one, LLM_TRUSTED_BASE_URL, read at setup (default_settings);
+# this placeholder, a host that never resolves (RFC 6761), stands in when none is configured.
 DEFAULTS: dict[str, Any] = {
     "test_now": datetime(2026, 10, 5, 15, tzinfo=UTC),
     "registrant_type": RegistrantType.DOMESTIC,
     "at_risk_threshold_days": 7,
-    # The deployment's LLM URL. No drafting is built, so it names a host that never resolves.
     "llm_base_url": "https://llm.invalid/v1",
 }
 
@@ -65,7 +67,7 @@ def setup_session(body: Any) -> dict[str, str]:
     """
     body = require_object(body)
     session_id = require_string(body, "session_id", "session_id")
-    settings = {**DEFAULTS, **_settings(require_object(body.get("setup"), "setup"))}
+    settings = {**default_settings(), **_settings(require_object(body.get("setup"), "setup"))}
     with transaction() as tx:
         if tx.get(TestSession, session_id) is not None:
             raise _duplicate(session_id)
@@ -76,6 +78,13 @@ def setup_session(body: Any) -> dict[str, str]:
             # Another setup stored the same ID after the check above.
             raise _duplicate(session_id) from None
     return {"session_id": session_id}
+
+
+def default_settings() -> dict[str, Any]:
+    """DEFAULTS with the deployment's LLM: LLM_TRUSTED_BASE_URL when set, the one URL its API
+    key goes to, so a tester that never sets llm_base_url drafts with the configured model."""
+    trusted = get_settings().llm_trusted_base_url
+    return {**DEFAULTS, "llm_base_url": trusted} if trusted else dict(DEFAULTS)
 
 
 def _settings(setup: dict[str, Any]) -> dict[str, Any]:
