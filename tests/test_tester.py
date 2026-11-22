@@ -574,7 +574,7 @@ def test_a_run_that_cant_plan_its_cases_leaves_the_session_ready(fake, monkeypat
 
 
 def test_a_run_whose_report_check_fails_is_stored_as_aborted(fake, ac08_only, monkeypatch):
-    def unreadable(report: dict[str, Any], cases: list) -> list[str]:
+    def unreadable(report: dict[str, Any], cases: list, **kwargs) -> list[str]:
         raise OSError("tester-openapi.yaml is missing")
 
     monkeypatch.setattr("tester.runner.report_problems", unreadable)

@@ -69,7 +69,7 @@ def record_filing(
 - `incidents.require_current_version(incident, version)` raises 409 `STALE_VERSION` when `version` is older than `incident.version`, with a message naming both versions and saying to reload; equal or newer passes. Only an older version is stale.
 - `evidence.load_evidence(tx, incident_id, evidence_id, *, for_update=False)` loads evidence named in the path, after its incident, or raises `NOT_FOUND`; evidence of another incident counts as unknown. `for_update=True` locks the row, which the app role's UPDATE grant on `impact_categories` allows; tagging uses it.
 - `drafts.load_draft(tx, draft_id, *, session_id, for_update=False)` loads the draft named in the path, joined to its incident, or raises `NOT_FOUND`; a draft of another session's incident counts as unknown. `for_update=True` locks only the draft row, which the app role's UPDATE grant on the acceptance columns allows; acceptance uses it.
-- `incidents.incident_to_dict(tx, incident)` builds the full Incident (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values), and every operation that returns an Incident uses it. `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations, evidence and filings. `evidence_to_dict`, `determination_to_dict` and `filing_to_dict` build the parts; `raw_item` is never returned.
+- `incidents.incident_to_dict(tx, incident)` builds a stored Incident (JSON-ready: dates and timestamps as ISO-8601 strings, enums as values). `incidents_to_dicts(tx, incidents)` builds many at once with one query each for their determinations, evidence and filings. Both use `_incident_dict`, which also formats a newly created incident directly with empty related data, avoiding reads of tables that cannot contain that new ID yet. `evidence_to_dict`, `determination_to_dict` and `filing_to_dict` build the parts; `raw_item` is never returned.
 - An Incident returns its stored `due_date` as YYYY-MM-DD or null, with `flags` computed on read (see Flags) and saved `filings` ordered oldest first by their internal `seq`. Its `evidence` is ordered by `imported_at`, then `evidence_id`; items from one import share an `imported_at` and their IDs are random, so they don't come back in the order they were sent.
 - `workflow.audit_entry_to_dict(entry)` builds an audit entry (without `seq` or `session_id`) for the audit list and the snapshot.
 
@@ -144,7 +144,7 @@ These take no identity headers or role and write no audit entries or project rec
 ## Incidents (`incidents.py`; REQ-01, REQ-22)
 
 - `create_incident` (Responder, DisclosureApprover) checks `title` (`require_string`), then `discovery_date` (a date not after today; equal to today passes). It inserts the incident in the request's session with `state: UnderAssessment`, `required_form`, `due_date` and `group_id` null and `version: 1`, writes a `create_incident` audit entry (`before: null`, `after: {state, title, discovery_date, version}`) and returns the full Incident.
-- `get_incident` (all roles) returns the full Incident.
+- `get_incident` (all roles) returns the full Incident. It retains the loaded test session while formatting the response, so SQLAlchemy's weak identity map does not cause a second session lookup.
 
 ## Evidence import (`evidence.py`; REQ-02, REQ-03)
 

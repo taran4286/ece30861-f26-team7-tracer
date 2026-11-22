@@ -68,9 +68,20 @@ def schema_errors(name: str, instance: Any) -> list[str]:
     return _errors(f"/components/schemas/{_escape(name)}", instance)
 
 
+def declared_fields(name: str, instance: dict[str, Any]) -> dict[str, Any]:
+    """Shared response fields only; implementations may return additional metadata."""
+    return {key: instance.get(key) for key in _spec()["components"]["schemas"][name]["properties"]}
+
+
 def report_errors(report: Any) -> list[str]:
-    """Problems with a suite report against SuiteReport in tester-openapi.yaml."""
-    return _errors("/components/schemas/SuiteReport", report, TESTER_SPEC)
+    """Shared SuiteReport plus the class's model measure, without editing the pod's copy."""
+    errors = _errors("/components/schemas/SuiteReport", report, TESTER_SPEC)
+    coverage = report.get("coverage") if isinstance(report, dict) else None
+    if isinstance(coverage, dict) and "model" in coverage:
+        errors += [error.replace("$", "$.coverage.model", 1)
+                   for error in _errors("/components/schemas/CoverageMeasure", coverage["model"],
+                                        TESTER_SPEC)]
+    return errors
 
 
 def tags() -> list[str]:

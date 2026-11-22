@@ -1,0 +1,398 @@
+{
+  "design_version": "team7-phase5-design-v1",
+  "design_source": "https://docs.google.com/document/d/1tiLG7EBDA0D3fyNLSsHnVD7dzdjXlFtYZcZ3V9CDM9Y/edit",
+  "design_sections": [
+    "Phase 2 Section 3.1 requirements",
+    "Phase 2 Section 3.2 Disclosure Drafting and workflow models",
+    "Phase 2 Section 6.3 Phase 5 increment",
+    "Shared System API draft and acceptance operations"
+  ],
+  "scope": "Team 7 Phase 5 increment and its supporting design constraints. These P5-D IDs are Team 7 traceability IDs, not new pod requirements or a claim to cover the entire Phase 2 design.",
+  "coverage_rule": "A requirement is covered only if its nonempty list of exact suite test IDs all reach pass or fail in this session. Errors, skips and failures preventing evaluation through shared setup/reset do not count. Requirements with empty lists are explicit evaluation gaps. Results determine correctness separately.",
+  "limits": "Stub tests evaluate implementation behavior, not real-model output quality. Separate local pytest runs and human reviews are not added to this session measurement.",
+  "requirements": [
+    {
+      "id": "P5-D01",
+      "description": "Human materiality judgment is preserved: imports and advisory drafting do not set or change the incident determination, and a provider materiality field is not passed through.",
+      "source_requirements": [
+        "REQ-08"
+      ],
+      "test_ids": [
+        "AC-09-a-incident-01",
+        "AC-09-a-incident-02",
+        "AC-09-a-incident-03",
+        "AC-09-a-incident-04",
+        "AC-09-a-incident-05",
+        "AC-09-a-incident-06",
+        "AC-09-a-incident-07",
+        "AC-09-a-incident-08",
+        "AC-09-a-incident-09",
+        "AC-09-a-incident-10",
+        "AC-09-c-draft-has-no-materiality-field",
+        "AC-09-c-model-materiality-not-passed-on"
+      ]
+    },
+    {
+      "id": "P5-D02",
+      "description": "An eligible Domestic incident yields a Proposed Item 1.05 draft with nature, scope, timing and impact; malformed structures and unauthorized or under-assessment requests are rejected.",
+      "source_requirements": [
+        "REQ-15",
+        "Section 5 Draft API"
+      ],
+      "test_ids": [
+        "AC-16-draft-01-has-four-elements",
+        "AC-16-draft-02-has-four-elements",
+        "AC-16-draft-03-has-four-elements",
+        "AC-16-draft-04-has-four-elements",
+        "AC-16-draft-05-has-four-elements",
+        "AC-16-draft-06-has-four-elements",
+        "AC-16-draft-07-has-four-elements",
+        "AC-16-draft-08-has-four-elements",
+        "AC-16-draft-09-has-four-elements",
+        "AC-16-draft-10-has-four-elements",
+        "AC-16-reply-missing-element-not-passed-on",
+        "AC-16-draft-as-Responder-forbidden",
+        "AC-16-draft-under-assessment-rejected",
+        "AC-16-draft-unknown-incident"
+      ]
+    },
+    {
+      "id": "P5-D03",
+      "description": "An eligible foreign private issuer receives a 6-K draft using the same four-element structure.",
+      "source_requirements": [
+        "REQ-12",
+        "REQ-15"
+      ],
+      "test_ids": [
+        "AC-16-FPI-draft-is-6-K"
+      ]
+    },
+    {
+      "id": "P5-D04",
+      "description": "Drafted elements cite evidence belonging to that individual incident; unknown, other-incident and missing citations are not passed through as valid text.",
+      "source_requirements": [
+        "REQ-16"
+      ],
+      "test_ids": [
+        "AC-17-a-draft-01-cites-own-evidence",
+        "AC-17-a-draft-02-cites-own-evidence",
+        "AC-17-a-draft-03-cites-own-evidence",
+        "AC-17-a-draft-04-cites-own-evidence",
+        "AC-17-a-draft-05-cites-own-evidence",
+        "AC-17-a-draft-06-cites-own-evidence",
+        "AC-17-a-draft-07-cites-own-evidence",
+        "AC-17-a-draft-08-cites-own-evidence",
+        "AC-17-a-draft-09-cites-own-evidence",
+        "AC-17-a-draft-10-cites-own-evidence",
+        "AC-17-a-other-incident-citation-not-passed-on",
+        "AC-17-a-unknown-citation-not-passed-on",
+        "AC-17-a-uncited-text-not-passed-on"
+      ]
+    },
+    {
+      "id": "P5-D05",
+      "description": "For five additional incidents without impact evidence, impact is exactly Not yet determined with empty citations and sensitive flags.",
+      "source_requirements": [
+        "REQ-16"
+      ],
+      "test_ids": [
+        "AC-17-b-incident-01-impact-not-yet-determined",
+        "AC-17-b-incident-02-impact-not-yet-determined",
+        "AC-17-b-incident-03-impact-not-yet-determined",
+        "AC-17-b-incident-04-impact-not-yet-determined",
+        "AC-17-b-incident-05-impact-not-yet-determined"
+      ]
+    },
+    {
+      "id": "P5-D06",
+      "description": "Technical-detail flags identify at least nine of ten labeled sensitive texts and flag at most two of ten clean texts.",
+      "source_requirements": [
+        "REQ-17"
+      ],
+      "test_ids": [
+        "AC-18-detailed-texts-flagged",
+        "AC-18-clean-texts-not-flagged"
+      ]
+    },
+    {
+      "id": "P5-D07",
+      "description": "Provider errors and malformed replies return Drafting unavailable within five seconds without changing incident data.",
+      "source_requirements": [
+        "REQ-20"
+      ],
+      "test_ids": [
+        "AC-21-a-stub-error-drafting-unavailable",
+        "AC-21-a-non-JSON-reply-drafting-unavailable"
+      ]
+    },
+    {
+      "id": "P5-D08",
+      "description": "A provider that gives no response returns Drafting unavailable at the specified 60-second timeout, within the acceptance tolerance.",
+      "source_requirements": [
+        "REQ-20"
+      ],
+      "test_ids": [],
+      "evaluation_gap": "AC-21(b) is not in this suite because its 60-second wait exceeds the pod project-call limit. Shortened local timeout tests do not demonstrate the real 60-second timing requirement."
+    },
+    {
+      "id": "P5-D09",
+      "description": "Core incident, evidence, determination, transition, filing, deadline, validation and audit operations remain usable with the provider set to the failure stub.",
+      "source_requirements": [
+        "REQ-01 through REQ-14",
+        "REQ-19",
+        "REQ-20",
+        "REQ-22"
+      ],
+      "test_ids": [
+        "AC-21-c-session-uses-failure-stub",
+        "AC-02-ticketing-import-recorded",
+        "AC-02-siem-import-by-approver-recorded",
+        "AC-02-imports-retrievable",
+        "AC-02-import-keeps-version",
+        "AC-02-import-as-Board-forbidden",
+        "AC-02-import-unknown-incident",
+        "AC-03-ticketing-20-items-normalized",
+        "AC-03-siem-20-items-normalized",
+        "AC-03-40-items-retrievable",
+        "AC-03-evidence-ids-distinct",
+        "AC-03-reject-unknown-severity",
+        "AC-03-reject-malformed-timestamp",
+        "AC-03-reject-siem-item-as-ticketing",
+        "AC-03-reject-unknown-source",
+        "AC-03-reject-empty-items",
+        "AC-07-missing-decision",
+        "AC-07-missing-determination_date",
+        "AC-07-missing-rationale",
+        "AC-07-missing-evidence_refs",
+        "AC-07-missing-version",
+        "AC-07-empty-evidence-refs",
+        "AC-07-ref-from-other-incident",
+        "AC-07-unknown-evidence-ref",
+        "AC-07-duplicate-evidence-refs",
+        "AC-07-own-and-other-incident-refs",
+        "AC-07-empty-rationale",
+        "AC-07-unknown-decision",
+        "AC-07-impossible-determination-date",
+        "AC-07-version-zero",
+        "AC-07-material-recorded",
+        "AC-07-material-sets-required-form",
+        "AC-07-determination-retrievable",
+        "AC-07-second-determination-rejected",
+        "AC-07-not-material-recorded",
+        "AC-07-unknown-incident",
+        "AC-08-Responder-forbidden",
+        "AC-08-Board-forbidden",
+        "AC-08-unknown-role-rejected",
+        "AC-08-missing-role-rejected",
+        "AC-08-missing-user-id-rejected",
+        "AC-08-DisclosureApprover-allowed",
+        "AC-20-create-missing-title",
+        "AC-20-create-missing-discovery_date",
+        "AC-20-create-empty-title",
+        "AC-20-create-discovery-tomorrow",
+        "AC-20-create-impossible-discovery-date",
+        "AC-20-create-discovery-today-accepted",
+        "AC-20-import-missing-source",
+        "AC-20-import-missing-items",
+        "AC-20-import-ticketing-missing-ticket_id",
+        "AC-20-import-ticketing-missing-summary",
+        "AC-20-import-ticketing-missing-created_at",
+        "AC-20-import-siem-missing-alert_id",
+        "AC-20-import-siem-missing-rule_name",
+        "AC-20-import-siem-missing-severity",
+        "AC-20-import-siem-missing-detected_at",
+        "AC-20-transition-missing-to",
+        "AC-20-transition-missing-version",
+        "AC-20-determination-before-discovery",
+        "AC-20-determination-after-today",
+        "AC-20-determination-on-discovery-accepted",
+        "AC-20-determination-on-today-accepted",
+        "AC-14-missing-form_type",
+        "AC-14-missing-filing_date",
+        "AC-14-missing-accession_number",
+        "AC-14-filing-recorded",
+        "AC-14-filing-retrievable",
+        "AC-12-due-date-4-business-days",
+        "AC-12-no-flag-2-business-days-left",
+        "AC-12-warning-1-business-day-left",
+        "AC-12-warning-on-due-date",
+        "AC-12-overdue-after-due-date",
+        "AC-12-filing-clears-flags",
+        "AC-13-material-requires-6-K",
+        "AC-13-no-warning-or-overdue",
+        "AC-13-6-K-missing-home_disclosure_date",
+        "AC-13-6-K-stores-home_disclosure_date",
+        "AC-15-amendment-pending",
+        "AC-15-amendment-requires-8-K-A",
+        "AC-15-due-date-skips-Veterans-Day",
+        "AC-06-UA-to-UA",
+        "AC-06-UA-to-DisclosureDelayed",
+        "AC-06-UA-to-DisclosureRecorded",
+        "AC-06-UA-to-AmendmentPending",
+        "AC-06-UA-to-Closed",
+        "AC-06-UA-to-DM-via-transitions",
+        "AC-06-UA-to-DNM-via-transitions",
+        "AC-06-UA-to-DM",
+        "AC-06-UA-to-DNM",
+        "AC-06-DM-to-UA",
+        "AC-06-DM-to-DM",
+        "AC-06-DM-to-DNM",
+        "AC-06-DM-to-AmendmentPending",
+        "AC-06-DM-to-Closed",
+        "AC-06-transition-as-Responder-forbidden",
+        "AC-06-transition-as-Board-forbidden",
+        "AC-06-unknown-target-state",
+        "AC-06-DM-to-DisclosureRecorded-via-transitions",
+        "AC-06-DM-to-DisclosureDelayed",
+        "AC-06-DM-to-DisclosureRecorded",
+        "AC-06-DisclosureDelayed-to-UA",
+        "AC-06-DisclosureDelayed-to-DNM",
+        "AC-06-DisclosureDelayed-to-DisclosureDelayed",
+        "AC-06-DisclosureDelayed-to-AmendmentPending",
+        "AC-06-DisclosureDelayed-to-Closed",
+        "AC-06-DisclosureDelayed-to-DisclosureRecorded-via-transitions",
+        "AC-06-DisclosureDelayed-to-DM",
+        "AC-06-DisclosureDelayed-to-DisclosureRecorded",
+        "AC-06-DNM-to-UA",
+        "AC-06-DNM-to-DM",
+        "AC-06-DNM-to-DNM",
+        "AC-06-DNM-to-DisclosureDelayed",
+        "AC-06-DNM-to-DisclosureRecorded",
+        "AC-06-DNM-to-AmendmentPending",
+        "AC-06-DNM-to-DM-via-determination",
+        "AC-06-DNM-to-Closed",
+        "AC-06-Closed-to-UA",
+        "AC-06-Closed-to-DM",
+        "AC-06-Closed-to-DNM",
+        "AC-06-Closed-to-DisclosureDelayed",
+        "AC-06-Closed-to-DisclosureRecorded",
+        "AC-06-Closed-to-AmendmentPending",
+        "AC-06-Closed-to-Closed",
+        "AC-06-DisclosureRecorded-to-UA",
+        "AC-06-DisclosureRecorded-to-DM",
+        "AC-06-DisclosureRecorded-to-DNM",
+        "AC-06-DisclosureRecorded-to-DisclosureDelayed",
+        "AC-06-DisclosureRecorded-to-DisclosureRecorded",
+        "AC-06-DisclosureRecorded-to-AmendmentPending",
+        "AC-06-DisclosureRecorded-to-Closed",
+        "AC-06-AmendmentPending-to-UA",
+        "AC-06-AmendmentPending-to-DM",
+        "AC-06-AmendmentPending-to-DNM",
+        "AC-06-AmendmentPending-to-DisclosureDelayed",
+        "AC-06-AmendmentPending-to-AmendmentPending",
+        "AC-06-AmendmentPending-to-Closed",
+        "AC-06-AmendmentPending-to-DisclosureRecorded-via-transitions",
+        "AC-06-AmendmentPending-to-DisclosureRecorded",
+        "AC-06-unknown-incident",
+        "AC-09-a-incident-01",
+        "AC-09-a-incident-02",
+        "AC-09-a-incident-03",
+        "AC-09-a-incident-04",
+        "AC-09-a-incident-05",
+        "AC-09-a-incident-06",
+        "AC-09-a-incident-07",
+        "AC-09-a-incident-08",
+        "AC-09-a-incident-09",
+        "AC-09-a-incident-10",
+        "AC-04-three-incidents-grouped",
+        "AC-04-second-link-no-duplicate",
+        "AC-04-self-link-rejected",
+        "AC-04-one-incident-rejected",
+        "AC-04-group-as-Board-forbidden",
+        "AC-04-unknown-incident",
+        "AC-04-member-not-under-assessment",
+        "AC-04-group-determination-on-all",
+        "AC-05-five-categories-stored",
+        "AC-05-misc-rejected",
+        "AC-05-misc-among-valid-rejected",
+        "AC-05-repeated-category-rejected",
+        "AC-05-tag-as-Board-forbidden",
+        "AC-05-unknown-evidence",
+        "AC-05-tags-replaced-by-approver",
+        "AC-01-create-as-Board-forbidden",
+        "AC-01-create-as-DisclosureApprover-defaults",
+        "AC-01-get-unknown-incident",
+        "AC-01-100-creates",
+        "AC-01-distinct-ids",
+        "AC-01-stored-as-sent"
+      ]
+    },
+    {
+      "id": "P5-D10",
+      "description": "Related incidents can be grouped once, invalid group membership is rejected, and a human determination applies to every group member.",
+      "source_requirements": [
+        "REQ-04"
+      ],
+      "test_ids": [
+        "AC-04-three-incidents-grouped",
+        "AC-04-second-link-no-duplicate",
+        "AC-04-self-link-rejected",
+        "AC-04-one-incident-rejected",
+        "AC-04-group-as-Board-forbidden",
+        "AC-04-unknown-incident",
+        "AC-04-member-not-under-assessment",
+        "AC-04-group-determination-on-all"
+      ]
+    },
+    {
+      "id": "P5-D11",
+      "description": "Evidence supports the five user-selected impact categories; invalid categories are rejected and a later authorized tag replaces the old categories.",
+      "source_requirements": [
+        "REQ-05"
+      ],
+      "test_ids": [
+        "AC-05-five-categories-stored",
+        "AC-05-misc-rejected",
+        "AC-05-misc-among-valid-rejected",
+        "AC-05-repeated-category-rejected",
+        "AC-05-tag-as-Board-forbidden",
+        "AC-05-unknown-evidence",
+        "AC-05-tags-replaced-by-approver"
+      ]
+    },
+    {
+      "id": "P5-D12",
+      "description": "Voluntary disclosure for NotMaterial selects Item 8.01 without changing Material incidents to Item 8.01.",
+      "source_requirements": [
+        "REQ-18"
+      ],
+      "test_ids": [
+        "AC-19-voluntary-not-material-gives-8-01",
+        "AC-19-voluntary-retrievable",
+        "AC-19-material-stays-1-05",
+        "AC-19-voluntary-with-Material-rejected",
+        "AC-19-voluntary-not-boolean-rejected"
+      ]
+    },
+    {
+      "id": "P5-D13",
+      "description": "Real generated drafts meet the independent-review quality thresholds: no contradictions in at least nine of ten drafts, valid evidence support for at least 36 of 40 sampled statements, and no materiality recommendations in the reviewed sample.",
+      "source_requirements": [
+        "REQ-08",
+        "REQ-15",
+        "REQ-16",
+        "AC-09(c)",
+        "AC-16",
+        "AC-17"
+      ],
+      "test_ids": [],
+      "evaluation_gap": "Controlled stub outputs do not evaluate real-provider prose. The evaluation materials require two independent reviewers and adjudication; their results are separate evidence, not measured by this suite."
+    },
+    {
+      "id": "P5-D14",
+      "description": "Accepting a Proposed advisory draft is approver-only and one-time, records acceptance metadata and one audit entry, and preserves incident state and version.",
+      "source_requirements": [
+        "REQ-22",
+        "Section 5 Draft Acceptance API"
+      ],
+      "test_ids": [
+        "AC-23-draft-accept-as-Responder-forbidden",
+        "AC-23-draft-accept-as-Board-forbidden",
+        "AC-23-draft-accept-once-audited",
+        "AC-23-draft-repeat-acceptance-conflict",
+        "AC-23-draft-unknown-rejected",
+        "AC-23-draft-other-session-rejected"
+      ]
+    }
+  ]
+}

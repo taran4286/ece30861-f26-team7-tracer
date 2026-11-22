@@ -12,8 +12,10 @@ from urllib.parse import urlsplit
 
 import httpx2
 
+from tester import model_coverage
 from tester.cases import planned
 from tester.client import SETUP_TIMEOUT_SECONDS, Target, TargetError
+from tester.config import DEFAULT_OWN_SYSTEM_URL, get_tester_settings
 from tester.sessions import ControlError, create_session, finish_run, start_run
 from tester.spec import operation_tags, report_errors, schema_errors, tags
 from tester.suite import Case, run_cases
@@ -100,9 +102,13 @@ def run_session(session_id: str, tester_url: str | None = None) -> dict[str, Any
     # Planned before the run starts: planning reads the fixture files, and if that fails the
     # session stays ready instead of running.
     cases = planned()
+    own_system_url = get_tester_settings().tester_own_system_url
     target_url = start_run(session_id)
+    self_test = model_coverage.is_own_system(target_url, own_system_url)
     results: list[dict[str, Any]] = []
     try:
+        if self_test:
+            model_coverage.validate_mapping([test_id for test_id, _ in cases])
         with client_for(target_url) as http:
             target = Target(http, session_id, deadline=time.monotonic() + CALL_CUTOFF_SECONDS)
             results = run_cases(cases, target, tester_url)
@@ -116,11 +122,13 @@ def run_session(session_id: str, tester_url: str | None = None) -> dict[str, Any
                     "system": system_coverage(results),
                 },
             }
-        problems = report_problems(report, cases)
+            if self_test:
+                report["coverage"]["model"] = model_coverage.measure(results)
+        problems = report_problems(report, cases, own_system_url=own_system_url)
     except Exception as exc:
         # A fault outside the cases, which run_cases already contains: store an aborted report
         # so the session doesn't stay running.
-        unfinished = _unfinished_report(session_id, target_url, cases, results)
+        unfinished = _unfinished_report(session_id, target_url, cases, results, self_test=self_test)
         finish_run(session_id, unfinished, aborted=True)
         raise ControlError(500, f"Tester fault: {type(exc).__name__}: {exc}") from exc
     finish_run(session_id, report, aborted=target.stopped or bool(problems))
@@ -181,31 +189,44 @@ def system_coverage(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def report_problems(report: dict[str, Any], cases: list[Case]) -> list[str]:
+def report_problems(
+    report: dict[str, Any], cases: list[Case], *, own_system_url: str = DEFAULT_OWN_SYSTEM_URL
+) -> list[str]:
     """Problems with a report: its SuiteReport schema, plus the rules the schema can't express."""
     problems = report_errors(report)
+    has_model = "model" in report["coverage"]
+    if model_coverage.is_own_system(report["target_url"], own_system_url):
+        if not has_model:
+            problems.append("a self-test report must include model coverage")
+    elif has_model:
+        problems.append("a cross-team report must omit model coverage")
     test_ids = [result.get("test_id") for result in report["results"]]
     if len(set(test_ids)) != len(test_ids):
         problems.append("a test ID appears more than once")
     if set(test_ids) != {test_id for test_id, _ in cases}:
         problems.append("the results don't list every planned test")
     for name, measure in report["coverage"].items():
-        if isinstance(measure.get("covered"), int) and measure["covered"] > measure["total"]:
+        if (isinstance(measure.get("covered"), int) and isinstance(measure.get("total"), int)
+                and measure["covered"] > measure["total"]):
             problems.append(f"{name} coverage counts more covered than total")
     return problems
 
 
 def _unfinished_report(
-    session_id: str, target_url: str, cases: list[Case], results: list[dict[str, Any]]
+    session_id: str, target_url: str, cases: list[Case], results: list[dict[str, Any]],
+    *, self_test: bool = False,
 ) -> dict[str, Any]:
     """An aborted report: the cases' results if they all ran, otherwise every case skipped."""
     reason = "the tester failed before the run finished"
     skipped = [{"test_id": test_id, "outcome": "skip", "message": f"Not run: {reason}"}
                for test_id, _ in cases]
     unmeasured = _unmeasured(f"Not measured: {reason}")
-    return {
+    report = {
         "session_id": session_id,
         "target_url": target_url,
         "results": results or skipped,
         "coverage": {"code": unmeasured, "component": unmeasured, "system": unmeasured},
     }
+    if self_test:
+        report["coverage"]["model"] = model_coverage.unavailable(reason)
+    return report

@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy import event
 
-from app.db import transaction
+from app.db import get_engine, transaction
 from app.errors import ErrorCode, TracerError
 from app.models import AuditAction, Incident
+from app.services import incidents
 from app.services.incidents import create_incident, get_incident
 from tests.helpers import (
     APPROVER,
@@ -19,6 +21,53 @@ from tests.helpers import (
 )
 
 pytestmark = pytest.mark.usefixtures("default_session")
+
+
+@pytest.fixture
+def statements():
+    """Count statements issued by an operation, excluding connection-pool housekeeping."""
+    sent = []
+    engine = get_engine()
+
+    def record(conn, cursor, statement, parameters, context, many):
+        sent.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        yield sent
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+
+def test_create_avoids_reads_of_empty_related_tables(statements):
+    created = create_incident({"title": "Old discovery", "discovery_date": "2026-09-01"},
+                              **RESPONDER)
+    # Only the session lookup and the incident/audit inserts are needed. A newly allocated
+    # incident cannot already have a determination, evidence or filings.
+    assert len(statements) <= 3
+    assert created["flags"] == ["at_risk"]
+    assert get_incident(created["incident_id"], **BOARD) == created
+    assert len(audit_entries(created["incident_id"])) == 1
+
+
+def test_get_reuses_the_session_loaded_for_authorization(incident, statements):
+    assert get_incident(incident["incident_id"], **BOARD) == incident
+    # One session, one incident and three related-data reads, with no second session lookup.
+    assert len(statements) <= 5
+
+
+def test_create_rolls_back_if_audit_fails(monkeypatch):
+    before = table_counts()
+    real_audit = incidents.audit
+
+    def fail_after_audit(*args, **kwargs):
+        real_audit(*args, **kwargs)
+        raise RuntimeError("audit failure")
+
+    monkeypatch.setattr(incidents, "audit", fail_after_audit)
+    with pytest.raises(RuntimeError, match="audit failure"):
+        create_incident({"title": "Rolled back", "discovery_date": "2026-10-01"}, **RESPONDER)
+    assert table_counts() == before
 
 
 def _rejected(body, code=ErrorCode.VALIDATION_ERROR, field=None, who=RESPONDER):

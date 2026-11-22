@@ -180,10 +180,39 @@ def test_every_llm_change_is_set_back_to_the_failure_stub(conforming, conforming
 def test_drafts_go_through_the_testers_stub(conforming, conforming_system):
     fake, sent = conforming_system
     drafted = [url for method, url, _ in sent if method == "POST" and url.endswith("/drafts")]
-    # AC-09 (a)'s ten, AC-21's two, AC-09 (c)'s two, AC-16's fourteen, AC-17's eight, AC-18's five
-    assert len(drafted) == 41
+    # The earlier 41 requests plus the FPI draft and the acceptance subject's draft.
+    assert len(drafted) == 43
     assert conforming["AC-18-detailed-texts-flagged"]["message"].startswith("10/10")
     assert conforming["AC-18-clean-texts-not-flagged"]["message"].startswith("0/10")
+
+
+@pytest.mark.parametrize("criterion", ["AC-16", "AC-17", "AC-18"])
+def test_controlled_valid_draft_text_is_supported_by_its_cited_fixture(criterion):
+    fake = FakeSystem()
+    run_against(fake, criterion)
+    checked = 0
+    for session in fake.sessions.values():
+        for draft in session.drafts.values():
+            for item in draft["elements"].values():
+                if item["text"] == "Not yet determined":
+                    continue
+                assert item["citations"]
+                for paragraph in item["text"].split("\n\n"):
+                    assert any(paragraph in session.evidence[eid]["summary"]
+                               for eid in item["citations"])
+                checked += 1
+    assert checked > 0
+
+
+@pytest.mark.parametrize("criterion", ["AC-16", "AC-23"])
+def test_allowed_response_extensions_and_omitted_null_audit_metadata_pass(criterion):
+    results = run_against(FakeSystem(drafts_extension=True, compact_acceptance_audit=True), criterion)
+    assert {tid: r["message"] for tid, r in results.items() if r["outcome"] != "pass"} == {}
+
+
+def test_structural_draft_checks_allow_a_supported_paraphrase():
+    results = run_against(FakeSystem(paraphrases_drafts=True), "AC-16")
+    assert {tid: r["message"] for tid, r in results.items() if r["outcome"] != "pass"} == {}
 
 
 def test_a_system_that_repairs_bad_replies_passes_too():
@@ -360,6 +389,11 @@ def test_the_testers_calendar_counts_4_business_days(start, due):
         ("draft_adds_citation", "AC-18-clean-texts-not-flagged"),
         ("draft_adds_citation", "AC-17-a-draft-01-cites-own-evidence"),
         ("flags_everything", "AC-18-clean-texts-not-flagged"),
+        ("draft_fpi_wrong_form", "AC-16-FPI-draft-is-6-K"),
+        ("accept_no_audit", "AC-23-draft-accept-once-audited"),
+        ("accept_moves_incident", "AC-23-draft-accept-once-audited"),
+        ("accept_repeat_allowed", "AC-23-draft-repeat-acceptance-conflict"),
+        ("accept_responder_allowed", "AC-23-draft-accept-as-Responder-forbidden"),
     ],
 )
 def test_cases_fail_a_faulty_system(bug, test_id):

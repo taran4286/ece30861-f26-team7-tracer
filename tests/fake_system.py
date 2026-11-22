@@ -64,6 +64,11 @@ DEFAULTS = {"test_now": "2026-10-05T15:00:00Z", "registrant_type": "Domestic",
 MUTABLE = set(DEFAULTS) - {"registrant_type"}
 
 BUGS = {
+    "draft_fpi_wrong_form",     # FPI drafts incorrectly use 8-K Item 1.05
+    "accept_no_audit",          # accepting a draft writes no audit entry
+    "accept_moves_incident",    # acceptance changes the incident version
+    "accept_repeat_allowed",    # an Accepted draft can be accepted again
+    "accept_responder_allowed", # Responder can accept a draft
     "responder_determines",     # a Responder can record a determination
     "dnm_to_dm",                # /transitions allows DeterminedNotMaterial → DeterminedMaterial
     "transitions_determine",    # /transitions moves UnderAssessment to DeterminedMaterial
@@ -148,6 +153,7 @@ class Session:
     evidence: dict[str, dict[str, Any]] = field(default_factory=dict)
     audit: list[dict[str, Any]] = field(default_factory=list)
     groups: dict[str, list[str]] = field(default_factory=dict)
+    drafts: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Incidents with a filing for their current required_form, which clears the due-date flags.
     filed: set[str] = field(default_factory=set)
 
@@ -259,7 +265,8 @@ def stub_client() -> TestClient:
 
 class FakeSystem:
     def __init__(self, bugs: set[str] = frozenset(), elements_first: bool = False,
-                 repairs_drafts: bool = False):
+                 repairs_drafts: bool = False, drafts_extension: bool = False,
+                 compact_acceptance_audit: bool = False, paraphrases_drafts: bool = False):
         """`elements_first` checks AmendmentPending's elements against the latest filing before
         the state, a 400 on `elements[i]` where there's no filing; the spec allows either order.
         `repairs_drafts` repairs a model reply that breaks the draft rules (dropping extra keys
@@ -270,6 +277,9 @@ class FakeSystem:
         self.bugs = set(bugs)
         self.elements_first = elements_first
         self.repairs_drafts = repairs_drafts
+        self.drafts_extension = drafts_extension
+        self.compact_acceptance_audit = compact_acceptance_audit
+        self.paraphrases_drafts = paraphrases_drafts
         self.sessions: dict[str, Session] = {}
         self._llm: TestClient | None = None
         self.app = self._build()
@@ -348,7 +358,10 @@ class FakeSystem:
         evidence = [e for e in session.evidence.values() if e["incident_id"] == incident_id]
         flags = incident["flags"] if "stale_flags" in self.bugs else self._due_flags(
             session, incident)
-        return {**incident, "evidence": evidence, "flags": flags}
+        body = {**incident, "evidence": evidence, "flags": flags}
+        if self.drafts_extension:
+            body["drafts"] = [d for d in session.drafts.values() if d["incident_id"] == incident_id]
+        return body
 
     def _build(self) -> FastAPI:
         app = FastAPI()
@@ -746,18 +759,40 @@ class FakeSystem:
                 elements = {name: self._undetermined() for name in DRAFT_ELEMENTS}
             if "draft_drops_impact" in self.bugs:
                 del elements["impact"]
+            if self.paraphrases_drafts and elements["nature"]["text"] == (
+                    "An unauthorized party encrypted files on a shared drive."):
+                elements["nature"]["text"] = "Files on a shared drive were encrypted by an unauthorized party."
             if "draft_moves_incident" in self.bugs:
                 incident["version"] += 1
             body = {"draft_id": new_id("drf"), "incident_id": incident_id,
                     "form_type": incident["required_form"], "elements": elements,
                     "advisory": True, "status": "Proposed", "accepted_by": None,
                     "accepted_at": None}
+            if "draft_fpi_wrong_form" in self.bugs and session.fpi:
+                body["form_type"] = "8-K Item 1.05"
+            session.drafts[body["draft_id"]] = body
             return {**body, **extras}
 
         @app.post("/drafts/{draft_id}/accept")
-        def accept_draft(request: Request):
-            self._identity(request, approver)
-            raise Reject(404, "NOT_FOUND", "Unknown draft")
+        def accept_draft(draft_id: str, request: Request):
+            allowed = writers if "accept_responder_allowed" in self.bugs else approver
+            session, user = self._identity(request, allowed)
+            stored = session.drafts.get(draft_id)
+            if stored is None:
+                raise Reject(404, "NOT_FOUND", "Unknown draft")
+            if stored["status"] == "Accepted" and "accept_repeat_allowed" not in self.bugs:
+                raise Reject(409, "CONFLICT", "Draft already accepted")
+            fields = ("draft_id", "status", "accepted_by", "accepted_at")
+            before = {k: stored[k] for k in fields}
+            if self.compact_acceptance_audit:
+                before = {k: before[k] for k in ("draft_id", "status")}
+            stored.update(status="Accepted", accepted_by=user, accepted_at=now())
+            if "accept_moves_incident" in self.bugs:
+                session.incident(stored["incident_id"])["version"] += 1
+            if "accept_no_audit" not in self.bugs:
+                session.write_audit(user, "accept_draft", stored["incident_id"], before,
+                                    {k: stored[k] for k in fields})
+            return stored
 
         return app
 
