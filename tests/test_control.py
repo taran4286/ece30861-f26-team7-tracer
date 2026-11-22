@@ -8,7 +8,7 @@ from psycopg.errors import InsufficientPrivilege
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from app.config import get_settings
+from app.config import Settings
 from app.db import transaction
 from app.errors import ErrorCode, TracerError
 from app.models import RegistrantType, TestSession
@@ -46,19 +46,14 @@ def test_empty_setup_stores_the_pod_defaults():
 
 
 @pytest.mark.parametrize("trusted", ["https://llm.example/v1beta/openai", None])
-def test_empty_setup_uses_the_deployments_configured_llm(monkeypatch, trusted):
+def test_empty_setup_uses_the_deployments_configured_llm(configured_llm, trusted):
     # The spec's default is the deployment's configured LLM; without one, the placeholder.
-    if trusted:
-        monkeypatch.setenv("LLM_TRUSTED_BASE_URL", trusted)
-    else:
-        monkeypatch.delenv("LLM_TRUSTED_BASE_URL", raising=False)
-    get_settings.cache_clear()
-    try:
-        configured, sent = new_id(), new_id()
-        control.setup_session({"session_id": configured, "setup": {}})
-        control.setup_session({"session_id": sent, "setup": {"llm_base_url": "http://other/v1"}})
-    finally:
-        get_settings.cache_clear()
+    # configured_llm stands in for this Settings field.
+    assert "llm_trusted_base_url" in Settings.model_fields
+    configured_llm(trusted)
+    configured, sent = new_id(), new_id()
+    control.setup_session({"session_id": configured, "setup": {}})
+    control.setup_session({"session_id": sent, "setup": {"llm_base_url": "http://other/v1"}})
     assert stored(configured).llm_base_url == (trusted or "https://llm.invalid/v1")
     assert stored(sent).llm_base_url == "http://other/v1"
 
