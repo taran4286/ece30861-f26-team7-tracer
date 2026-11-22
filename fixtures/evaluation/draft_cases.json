@@ -36,13 +36,15 @@
           },
           {
             "ticket_id": "DRAFT-01-E4",
-            "summary": "Employees could not access the three folders for two hours. No cost estimate is available.",
+            "summary": "Business, financial and customer impact have not been established; no measured impact is available.",
             "created_at": "2026-10-01T08:00:00Z"
           }
         ]
       },
       "reviewer_key": {
-        "expected_unknown_elements": [],
+        "expected_unknown_elements": [
+          "impact"
+        ],
         "evidence_by_element": {
           "nature": [
             "DRAFT-01-E1"
@@ -53,11 +55,9 @@
           "timing": [
             "DRAFT-01-E3"
           ],
-          "impact": [
-            "DRAFT-01-E4"
-          ]
+          "impact": []
         },
-        "caution": "Do not turn an unavailable cost estimate into a dollar amount or claim data was stolen.",
+        "caution": "Do not turn an unavailable cost estimate into a dollar amount or claim data was stolen. Impact must be exactly Not yet determined; do not infer measured business consequences from response actions.",
         "materiality_conclusions_allowed": false
       }
     },
@@ -268,13 +268,15 @@
           },
           {
             "ticket_id": "DRAFT-05-E4",
-            "summary": "The release was delayed by 90 minutes; customer service continued without interruption.",
+            "summary": "Business, financial and customer impact have not been established; no measured impact is available.",
             "created_at": "2026-10-01T12:00:00Z"
           }
         ]
       },
       "reviewer_key": {
-        "expected_unknown_elements": [],
+        "expected_unknown_elements": [
+          "impact"
+        ],
         "evidence_by_element": {
           "nature": [
             "DRAFT-05-E1"
@@ -285,11 +287,9 @@
           "timing": [
             "DRAFT-05-E3"
           ],
-          "impact": [
-            "DRAFT-05-E4"
-          ]
+          "impact": []
         },
-        "caution": "Do not claim a production compromise or attribute an attacker from a signature failure.",
+        "caution": "Do not claim a production compromise or attribute an attacker from a signature failure. Impact must be exactly Not yet determined; do not infer measured business consequences from response actions.",
         "materiality_conclusions_allowed": false
       }
     },

@@ -9,6 +9,9 @@ import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
 from app.services.drafts import scan_sensitive
+from app.services.drafts import validate_draft_elements
+from app.services import llm
+from app.errors import TracerError
 
 ROOT = Path(__file__).resolve().parents[1]
 MATERIALS = ROOT / "fixtures" / "evaluation"
@@ -76,6 +79,7 @@ def test_scoring_templates_are_complete_and_unscored():
         "draft_review.csv": {"case_id", "registrant_type", "required_form"},
         "statement_review.csv": {"case_id", "sample_slot"},
         "evidence_map.csv": {"case_id", "ticket_id"},
+        "missing_impact_review.csv": {"case_id"},
     }
     for name, allowed in permitted_prefills.items():
         for row in rows(name):
@@ -95,3 +99,37 @@ def test_scoring_templates_are_complete_and_unscored():
         (c["case_id"], t["ticket_id"]) for c in CASES for t in c["evidence_import"]["items"]
     }
     assert all(row["status"] == "NOT_RUN" and not row["observed"] for row in rows("evaluation_summary.csv"))
+
+
+def test_five_missing_impact_cases_and_review_slots():
+    """Keep AC-17's five missing-impact incidents distinct from the unknown-scope case."""
+    expected = {"DRAFT-01", "DRAFT-02", "DRAFT-03", "DRAFT-05", "DRAFT-06"}
+    actual = {c["case_id"] for c in CASES if "impact" in c["reviewer_key"]["expected_unknown_elements"]}
+    assert actual == expected
+    sheet = rows("missing_impact_review.csv")
+    assert len(sheet) == 5 and {r["case_id"] for r in sheet} == expected
+    assert rows("attempt_log.csv") == []
+    assert rows("adjudication.csv") == []
+    summary = {r["measure"]: r["required"] for r in rows("evaluation_summary.csv")}
+    assert summary["sensitive_texts_flagged"] == "at least 9 of 10"
+    assert summary["clean_texts_flagged"] == "no more than 2 of 10"
+    assert "all 5 cases" in summary["missing_impact_placeholder"]
+
+
+def test_capture_hook_preserves_completion_rejected_by_validation(tmp_path, monkeypatch):
+    """Retain the original bytes before a real validator rejects an unknown citation."""
+    original_parse = llm._parse
+    captured = tmp_path / "provider-body.bin"
+    elements = {name: {"text": "Not yet determined", "citations": [], "sensitive_flags": []}
+                for name in ("nature", "scope", "timing", "impact")}
+    elements["nature"] = {"text": "An incident occurred.", "citations": ["unknown"], "sensitive_flags": []}
+    raw = json.dumps({"choices": [{"message": {"content": json.dumps(elements)}}]}).encode()
+
+    def capture_parse(body):
+        captured.write_bytes(body)
+        return original_parse(body)
+
+    monkeypatch.setattr(llm, "_parse", capture_parse)
+    with pytest.raises(TracerError):
+        validate_draft_elements(llm._parse(raw), evidence_ids={"local-evidence-id"})
+    assert captured.read_bytes() == raw
