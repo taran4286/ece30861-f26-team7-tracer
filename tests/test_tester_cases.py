@@ -210,6 +210,51 @@ def test_allowed_response_extensions_and_omitted_null_audit_metadata_pass(criter
     assert {tid: r["message"] for tid, r in results.items() if r["outcome"] != "pass"} == {}
 
 
+def test_a_draft_of_placeholders_fails_the_drafting_cases():
+    # Rewording is allowed, but a system that never drafts mustn't pass AC-16 and AC-17.
+    def all_undetermined(http):
+        class Wrapped:
+            def request(self, method, url, **kwargs):
+                response = http.request(method, url, **kwargs)
+                if method == "POST" and url.endswith("/drafts") and response.status_code == 201:
+                    body = response.json()
+                    body["elements"] = {name: {"text": "Not yet determined", "citations": [],
+                                               "sensitive_flags": []} for name in body["elements"]}
+                    return httpx2.Response(201, json=body)
+                return response
+        return Wrapped()
+
+    for criterion, drafted in [("AC-16", "has-four-elements"), ("AC-16", "FPI-draft"),
+                               ("AC-17", "cites-own-evidence"),
+                               ("AC-17", "impact-not-yet-determined")]:
+        results = run_against(FakeSystem(), criterion, wrap=all_undetermined)
+        cases = {tid: r for tid, r in results.items() if drafted in tid}
+        assert cases
+        assert all(r["outcome"] == "fail" and "though the model drafted it" in r["message"]
+                   for r in cases.values()), cases
+
+
+def test_a_failed_acceptance_is_evaluated_not_a_setup_failure():
+    results = run_against(FakeSystem(bugs={"accept_no_audit"}), "AC-23")
+    accepted = results["AC-23-draft-accept-once-audited"]
+    assert accepted["outcome"] == "fail"
+    assert accepted["message"].startswith("Draft acceptance: ")
+    # The first acceptance itself succeeded, so the repeat is still evaluated.
+    assert results["AC-23-draft-repeat-acceptance-conflict"]["outcome"] == "pass"
+    measure = model_coverage.measure(list(results.values()))
+    assert "P5-D14" in measure["basis"]
+
+
+def test_a_rejected_first_acceptance_is_the_repeat_cases_setup_failure():
+    results = run_against(FakeSystem(bugs={"accept_responder_allowed"}), "AC-23")
+    # Accepting as Responder succeeds, so the approver's acceptance is already a repeat.
+    accepted = results["AC-23-draft-accept-once-audited"]
+    assert accepted["outcome"] == "fail" and not accepted["message"].startswith("Setup failed:")
+    repeat = results["AC-23-draft-repeat-acceptance-conflict"]
+    assert repeat["outcome"] == "fail"
+    assert repeat["message"] == "Setup failed: the first acceptance returned 409, not 200"
+
+
 def test_structural_draft_checks_allow_a_supported_paraphrase():
     results = run_against(FakeSystem(paraphrases_drafts=True), "AC-16")
     assert {tid: r["message"] for tid, r in results.items() if r["outcome"] != "pass"} == {}

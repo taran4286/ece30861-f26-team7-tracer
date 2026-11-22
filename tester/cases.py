@@ -452,6 +452,16 @@ def citation_problems(draft_body: dict[str, Any], inc: Tracked) -> list[str]:
     return problems
 
 
+def dropped_problems(draft_body: dict[str, Any], content: dict[str, Any]) -> list[str]:
+    """Elements the model drafted from cited evidence that came back Not yet determined. A
+    system may reword the model's text, but not drop it: a draft of four placeholders would
+    otherwise pass AC-16's structure and AC-17's citations with nothing drafted."""
+    return [f"{name} came back {UNDETERMINED!r}, though the model drafted it from evidence"
+            for name in ELEMENTS
+            if content[name]["text"] != UNDETERMINED
+            and draft_body["elements"][name]["text"].strip() == UNDETERMINED]
+
+
 def unavailable(reply: Reply) -> str:
     """Pass a 503 DRAFTING_UNAVAILABLE whose message is exactly Drafting unavailable."""
     body = expect(reply, 503, "DRAFTING_UNAVAILABLE")
@@ -1588,11 +1598,20 @@ def draft_acceptance_cases() -> list[Case]:
                             draft_id=proposed["draft_id"])
         return case
 
+    def acceptance(run: Run) -> tuple[Tracked, dict[str, Any], dict[str, Any], list, Reply]:
+        """The one acceptance request, sent once, with what stood before it. Only reaching
+        the target is shared setup: each case below judges the reply itself."""
+        def build():
+            inc, proposed = subject(run)
+            before = get(run, inc.id)
+            audit_before = expect(run.call("GET", AUDIT, BOARD, incident_id=inc.id),
+                                  200)["entries"]
+            reply = run.call("POST", ACCEPT, APPROVER, draft_id=proposed["draft_id"])
+            return inc, proposed, before, audit_before, reply
+        return run.once("draft-accepted", build)
+
     def accepted(run: Run) -> str:
-        inc, proposed = subject(run)
-        before = get(run, inc.id)
-        audit_before = expect(run.call("GET", AUDIT, BOARD, incident_id=inc.id), 200)["entries"]
-        reply = run.call("POST", ACCEPT, APPROVER, draft_id=proposed["draft_id"])
+        inc, proposed, before, audit_before, reply = acceptance(run)
         body = expect(reply, 200)
         problems = []
         if (body["status"], body["advisory"]) != ("Accepted", True):
@@ -1632,14 +1651,12 @@ def draft_acceptance_cases() -> list[Case]:
                            "draft content and incident unchanged")
 
     def repeated(run: Run) -> str:
-        # Establish the accepted state even when this case is run on its own.
-        run.once("draft-accepted", lambda: accepted(run))
-        _, proposed = subject(run)
+        # The first acceptance is this case's setup, sent here if this case runs on its own.
+        _, proposed, _, _, first = acceptance(run)
+        if first.status != 200:
+            raise Fail(f"Setup failed: the first acceptance returned {first.status}, not 200")
         return rejected(run, "POST", ACCEPT, APPROVER, NO_BODY, 409, "CONFLICT",
                         draft_id=proposed["draft_id"])
-
-    def accept_once(run: Run) -> str:
-        return run.once("draft-accepted", lambda: accepted(run))
 
     def unknown(run: Run) -> str:
         return rejected(run, "POST", ACCEPT, APPROVER, NO_BODY, 404, "NOT_FOUND",
@@ -1655,7 +1672,7 @@ def draft_acceptance_cases() -> list[Case]:
     return [
         ("AC-23-draft-accept-as-Responder-forbidden", forbidden(RESPONDER)),
         ("AC-23-draft-accept-as-Board-forbidden", forbidden(BOARD)),
-        ("AC-23-draft-accept-once-audited", accept_once),
+        ("AC-23-draft-accept-once-audited", accepted),
         ("AC-23-draft-repeat-acceptance-conflict", repeated),
         ("AC-23-draft-unknown-rejected", unknown),
         ("AC-23-draft-other-session-rejected", other_session),
@@ -1956,7 +1973,8 @@ def ac16() -> list[Case]:
         finally:
             if fpi.pending_reset is not None:
                 run.pending_reset = fpi.settle
-        problems = structure_problems(body, inc, FORM_6K) + citation_problems(body, inc)
+        problems = (structure_problems(body, inc, FORM_6K) + citation_problems(body, inc)
+                    + dropped_problems(body, content))
         if declared_fields("Incident", get(fpi, inc.id)) != declared_fields("Incident", before):
             problems.append("drafting changed the FPI incident")
         return problems_or(problems, "FPI draft", "Proposed advisory 6-K with four elements "
@@ -1965,10 +1983,12 @@ def ac16() -> list[Case]:
     def structured(k: int):
         def case(run: Run) -> str:
             inc, content, body = ac16_draft(run, k)
-            problems = structure_problems(body, inc) + citation_problems(body, inc)
+            problems = (structure_problems(body, inc) + citation_problems(body, inc)
+                        + dropped_problems(body, content))
             undetermined = [n for n in ELEMENTS if content[n]["text"] == UNDETERMINED]
-            # AC-16 checks the delivered structure, not verbatim echo of a provider reply.
-            # The explicit no-evidence cases still require the exact missing-data marker.
+            # AC-16 checks the delivered structure, not verbatim echo of a provider reply,
+            # though drafted elements must stay drafted (dropped_problems). The explicit
+            # no-evidence cases still require the exact missing-data marker.
             problems += [f"{name} without evidence is not exactly {UNDETERMINED!r}"
                          for name in undetermined
                          if body["elements"][name] != element(UNDETERMINED, [])]
@@ -2014,27 +2034,28 @@ def ac16() -> list[Case]:
 def ac17() -> list[Case]:
     def cited(k: int):
         def case(run: Run) -> str:
-            inc, _, body = ac16_draft(run, k)
+            inc, content, body = ac16_draft(run, k)
             count = sum(len(body["elements"][name]["citations"]) for name in ELEMENTS)
-            return problems_or(citation_problems(body, inc), f"Draft {k + 1}",
+            problems = citation_problems(body, inc) + dropped_problems(body, content)
+            return problems_or(problems, f"Draft {k + 1}",
                                f"{count} citations, all to this incident's evidence; every "
                                "drafted element cites at least one")
         return case
 
-    def no_impact_draft(run: Run, k: int) -> tuple[Tracked, dict[str, Any]]:
-        def build() -> tuple[Tracked, dict[str, Any]]:
+    def no_impact_draft(run: Run, k: int) -> tuple[Tracked, dict[str, Any], dict[str, Any]]:
+        def build() -> tuple[Tracked, dict[str, Any], dict[str, Any]]:
             inc = material(run, k, [drafting_ticket(4 * k + j + 2, name, AC16_TEXTS[name])
                                     for j, name in enumerate(ELEMENTS[:3])])
             content = model_reply(**{name: element(AC16_TEXTS[name], [inc.evidence[j]])
                                      for j, name in enumerate(ELEMENTS[:3])})
-            return inc, expect(draft(run, inc, content), 201)
+            return inc, content, expect(draft(run, inc, content), 201)
         return run.once(f"ac17-b-{k}", build)
 
     def impact_undetermined(k: int):
         def case(run: Run) -> str:
-            inc, body = no_impact_draft(run, k)
+            inc, content, body = no_impact_draft(run, k)
             impact = body["elements"]["impact"]
-            problems = citation_problems(body, inc)
+            problems = citation_problems(body, inc) + dropped_problems(body, content)
             if impact != element(UNDETERMINED, []):
                 problems.insert(0, f"impact is {impact}")
             return problems_or(problems, f"Incident {k + 1} without impact evidence",
